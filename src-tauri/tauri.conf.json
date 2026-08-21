@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "localcodepilot-temp",
+  "productName": "LocalCodePilot",
   "version": "0.1.0",
   "identifier": "com.localcodepilot.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "localcodepilot-temp",
+        "title": "LocalCodePilot",
         "width": 800,
         "height": 600
       }
