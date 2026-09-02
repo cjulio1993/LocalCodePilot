@@ -1,0 +1,17 @@
+[package]
+name = "localcodepilot-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "localcodepilot-desktop"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+rfd.workspace = true
+localcodepilot-core.workspace = true
+localcodepilot-platform.workspace = true
+localcodepilot-runtime.workspace = true
+

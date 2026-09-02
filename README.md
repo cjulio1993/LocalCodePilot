@@ -1,7 +1,32 @@
-# Tauri + Vue + TypeScript
+# LocalCodePilot
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Aplicação nativa escrita integralmente em Rust. O domínio é independente das interfaces.
 
-## Recommended IDE Setup
+## Arquitetura
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- `core`: projetos, runtimes, processos, portas e ambientes; não depende de UI ou SO.
+- `platform`: integração nativa com Windows, Linux e macOS.
+- `runtime`: detecção de Rust, Node, PHP e Python.
+- `services`: modelos de MySQL, PostgreSQL e Redis.
+- `cli`: interface de terminal baseada no core.
+- `desktop`: interface `egui`/`eframe` baseada no mesmo core.
+
+## Executar
+
+```powershell
+cargo run -p localcodepilot-desktop
+```
+
+## Verificar e gerar uma versão otimizada
+
+```powershell
+cargo test
+cargo build --release
+```
+
+## CLI
+
+```powershell
+cargo run -p localcodepilot-cli -- status
+cargo run -p localcodepilot-cli -- inspect .
+```

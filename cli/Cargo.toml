@@ -1,0 +1,15 @@
+[package]
+name = "localcodepilot-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "localcodepilot"
+path = "src/main.rs"
+
+[dependencies]
+localcodepilot-core.workspace = true
+localcodepilot-platform.workspace = true
+localcodepilot-runtime.workspace = true
+

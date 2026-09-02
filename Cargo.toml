@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["core", "platform", "runtime", "services", "cli", "desktop"]
+default-members = ["desktop"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+localcodepilot-core = { path = "core" }
+localcodepilot-platform = { path = "platform" }
+localcodepilot-runtime = { path = "runtime" }
+localcodepilot-services = { path = "services" }
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+rfd = "0.17.2"
+sysinfo = "0.39.6"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
