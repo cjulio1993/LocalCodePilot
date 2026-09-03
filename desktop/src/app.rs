@@ -368,7 +368,7 @@ impl LocalCodePilot {
             .cloned()
             .collect();
 
-        projects.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        projects.sort_by_key(|project| std::cmp::Reverse(project.modified_at));
         if let Some(max_projects) = max_projects {
             projects.truncate(max_projects);
         }
@@ -600,10 +600,7 @@ fn open_in_vscode(path: &Path) -> Result<(), String> {
                     .join("Code.exe"),
             );
         }
-        for executable in candidates
-            .into_iter()
-            .filter(|candidate| candidate.is_file())
-        {
+        if let Some(executable) = candidates.into_iter().find(|candidate| candidate.is_file()) {
             return Command::new(executable)
                 .arg(path)
                 .spawn()
