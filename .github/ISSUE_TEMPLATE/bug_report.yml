@@ -1,0 +1,51 @@
+name: Relatar um bug / Bug report
+description: Informe um comportamento reproduzível no LocalCodePilot.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Obrigado pelo relato. Não inclua credenciais ou vulnerabilidades de segurança.
+  - type: textarea
+    id: description
+    attributes:
+      label: Descrição / Description
+      description: O que aconteceu e o que você esperava?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Como reproduzir / Steps to reproduce
+      description: Forneça os menores passos possíveis.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versão ou commit / Version or commit
+      placeholder: main ou hash do commit
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Sistema operacional / Operating system
+      options: [Windows, Linux, macOS, Outro / Other]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs relevantes / Relevant logs
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmações / Confirmations
+      options:
+        - label: Procurei issues existentes sobre o mesmo problema.
+          required: true
+        - label: Removi credenciais, tokens e dados pessoais do relato.
+          required: true
+

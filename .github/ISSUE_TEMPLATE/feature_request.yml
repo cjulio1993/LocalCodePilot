@@ -1,0 +1,33 @@
+name: Sugerir uma funcionalidade / Feature request
+description: Proponha uma melhoria alinhada à visão do LocalCodePilot.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema / Problem
+      description: Qual problema real esta funcionalidade resolveria?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposta / Proposal
+      description: Como você imagina a solução?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas / Alternatives considered
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmações / Confirmations
+      options:
+        - label: Procurei propostas existentes antes de abrir esta issue.
+          required: true
+        - label: Entendo que o projeto está em construção e a proposta pode não entrar no roadmap.
+          required: true
+

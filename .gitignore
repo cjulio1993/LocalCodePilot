@@ -13,6 +13,9 @@ dist-ssr
 target
 *.local
 
+# Instruções privadas do mantenedor; nunca versionar.
+OPEN_SOURCE_SETUP_LOCAL.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
