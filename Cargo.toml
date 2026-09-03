@@ -16,6 +16,7 @@ localcodepilot-services = { path = "services" }
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 rfd = "0.17.2"
 sysinfo = "0.39.6"
+egui-phosphor = "0.10"
 
 [profile.release]
 lto = "thin"

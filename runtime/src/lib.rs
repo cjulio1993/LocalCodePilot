@@ -1,4 +1,4 @@
-use localcodepilot_core::runtimes::RuntimeKind;
+use localcodepilot_core::{discovery::RuntimeDetector, runtimes::RuntimeKind};
 use std::path::Path;
 
 pub fn detect(path: &Path) -> Vec<RuntimeKind> {
@@ -16,6 +16,15 @@ pub fn detect(path: &Path) -> Vec<RuntimeKind> {
         }
     }
     found
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ManifestRuntimeDetector;
+
+impl RuntimeDetector for ManifestRuntimeDetector {
+    fn detect(&self, path: &Path) -> Vec<RuntimeKind> {
+        detect(path)
+    }
 }
 
 #[cfg(test)]

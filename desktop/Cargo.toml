@@ -10,8 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 eframe.workspace = true
-rfd.workspace = true
+egui-phosphor.workspace = true
 localcodepilot-core.workspace = true
 localcodepilot-platform.workspace = true
 localcodepilot-runtime.workspace = true
-

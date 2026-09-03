@@ -2,8 +2,14 @@ use crate::theme;
 use eframe::egui::{
     self, Align, Color32, FontId, Frame, Layout, Margin, RichText, Sense, Stroke, Vec2,
 };
-use localcodepilot_core::{projects::Project, runtimes::RuntimeKind};
-use localcodepilot_platform::{NativePlatform, Platform};
+use egui_phosphor::regular::{
+    BELL, CARET_RIGHT, CIRCLE, CLOCK, CODE_SIMPLE, DOTS_THREE, FOLDER, FOLDER_OPEN, GEAR, LAYOUT,
+    MEMORY, PLAY, PLUS, TERMINAL, TERMINAL_WINDOW,
+};
+use localcodepilot_core::{discovery::DiscoveryService, projects::Project};
+use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemProjectSource};
+use localcodepilot_runtime::ManifestRuntimeDetector;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -20,21 +26,34 @@ pub struct LocalCodePilot {
     platform: NativePlatform,
     search: String,
     status: Option<String>,
+    discovery: Option<Receiver<Result<Vec<Project>, String>>>,
 }
 
 impl LocalCodePilot {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::configure(&cc.egui_ctx);
-        let sample = Project::new(
-            std::env::current_dir().unwrap_or_else(|_| "LocalCodePilot".into()),
-            vec![RuntimeKind::Rust],
-        );
+        let (sender, receiver) = mpsc::channel();
+        let mut fonts = eframe::egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        cc.egui_ctx.set_fonts(fonts);
+        std::thread::spawn(move || {
+            let service = DiscoveryService::new(
+                FilesystemProjectSource::common_locations(),
+                ManifestRuntimeDetector,
+            );
+            let result = service
+                .discover()
+                .map(|catalog| catalog.into_projects())
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
         Self {
             page: Page::Overview,
-            projects: vec![sample],
+            projects: Vec::new(),
             platform: NativePlatform::default(),
             search: String::new(),
-            status: None,
+            status: Some("Procurando projetos na máquina...".into()),
+            discovery: Some(receiver),
         }
     }
 
@@ -55,7 +74,11 @@ impl LocalCodePilot {
                         .corner_radius(10)
                         .inner_margin(Margin::same(9))
                         .show(ui, |ui| {
-                            ui.label(RichText::new(">_").strong().color(Color32::WHITE));
+                            ui.label(
+                                RichText::new(TERMINAL_WINDOW)
+                                    .strong()
+                                    .color(Color32::WHITE),
+                            );
                         });
                     ui.vertical(|ui| {
                         ui.label(RichText::new("LocalCodePilot").strong().size(14.0));
@@ -74,15 +97,15 @@ impl LocalCodePilot {
                         .size(10.0),
                 );
                 ui.add_space(4.0);
-                self.nav_button(ui, Page::Overview, "▦", "Visão geral", None);
+                self.nav_button(ui, Page::Overview, LAYOUT, "Visão geral", None);
                 self.nav_button(
                     ui,
                     Page::Projects,
-                    "▰",
+                    FOLDER_OPEN,
                     "Projetos",
                     Some(self.projects.len()),
                 );
-                self.nav_button(ui, Page::Processes, ">_", "Processos", None);
+                self.nav_button(ui, Page::Processes, TERMINAL, "Processos", None);
                 ui.add_space(18.0);
                 ui.label(
                     RichText::new("SISTEMA")
@@ -91,13 +114,13 @@ impl LocalCodePilot {
                         .size(10.0),
                 );
                 ui.add_space(4.0);
-                self.nav_button(ui, Page::Plugins, "◇", "Plugins", None);
-                self.nav_button(ui, Page::Settings, "⚙", "Configurações", None);
+                self.nav_button(ui, Page::Plugins, CODE_SIMPLE, "Plugins", None);
+                self.nav_button(ui, Page::Settings, GEAR, "Configurações", None);
 
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.colored_label(theme::SUCCESS, "●");
+                        ui.colored_label(theme::SUCCESS, CIRCLE);
                         ui.vertical(|ui| {
                             ui.label(RichText::new("Ambiente local").strong().size(11.0));
                             ui.label(
@@ -180,7 +203,11 @@ impl LocalCodePilot {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Workspace  ›").color(theme::MUTED).size(12.0));
+                    ui.label(
+                        RichText::new(format!("Workspace  {CARET_RIGHT}"))
+                            .color(theme::MUTED)
+                            .size(12.0),
+                    );
                     ui.label(RichText::new(self.page_title()).size(12.0));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         Frame::new()
@@ -191,11 +218,14 @@ impl LocalCodePilot {
                             .show(ui, |ui| {
                                 ui.label(RichText::new("JC").strong().size(10.0));
                             });
-                        ui.label(RichText::new("●").color(theme::PRIMARY).size(10.0));
+
+                        ui.label(RichText::new(BELL).color(theme::PRIMARY).size(16.0));
+
                         ui.add_sized(
                             [220.0, 32.0],
                             egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("Buscar projeto..."),
+                                .hint_text("Buscar projeto...")
+                                .horizontal_align(Align::Center),
                         );
                     });
                 });
@@ -212,15 +242,25 @@ impl LocalCodePilot {
         }
     }
 
-    fn add_project(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Selecione a pasta do projeto")
-            .pick_folder()
-        {
-            let runtimes = localcodepilot_runtime::detect(&path);
-            let project = Project::new(path, runtimes);
-            self.status = Some(format!("Projeto {} adicionado", project.name));
-            self.projects.push(project);
+    fn poll_discovery(&mut self) {
+        let Some(receiver) = &self.discovery else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Ok(projects)) => {
+                self.status = Some(format!("{} projeto(s) encontrado(s)", projects.len()));
+                self.projects = projects;
+                self.discovery = None;
+            }
+            Ok(Err(error)) => {
+                self.status = Some(format!("Não foi possível concluir a varredura: {error}"));
+                self.discovery = None;
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.status = Some("A varredura foi interrompida".into());
+                self.discovery = None;
+            }
+            Err(TryRecvError::Empty) => {}
         }
     }
 
@@ -244,7 +284,7 @@ impl LocalCodePilot {
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("＋  Novo projeto")
+                            RichText::new(format!("{PLUS}  Novo projeto"))
                                 .color(Color32::WHITE)
                                 .strong(),
                         )
@@ -253,7 +293,9 @@ impl LocalCodePilot {
                     )
                     .clicked()
                 {
-                    self.add_project();
+                    self.status = Some(
+                        "O assistente de criação de projetos será adicionado futuramente".into(),
+                    );
                 }
             });
         });
@@ -263,7 +305,7 @@ impl LocalCodePilot {
         ui.columns(3, |columns| {
             stat_card(
                 &mut columns[0],
-                "▰",
+                FOLDER_OPEN,
                 "Projetos",
                 &self.projects.len().to_string(),
                 "disponíveis",
@@ -271,7 +313,7 @@ impl LocalCodePilot {
             );
             stat_card(
                 &mut columns[1],
-                "▶",
+                PLAY,
                 "Processos ativos",
                 "0",
                 "pronto para iniciar",
@@ -279,7 +321,7 @@ impl LocalCodePilot {
             );
             stat_card(
                 &mut columns[2],
-                "⌁",
+                MEMORY,
                 "Uso de memória",
                 &format!("{used_gb:.1} GB"),
                 "no sistema",
@@ -297,7 +339,10 @@ impl LocalCodePilot {
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.link("Ver todos  →").clicked() {
+                let link_ver_todos =
+                    format!("{} Ver todos os projetos", egui_phosphor::regular::LIST);
+
+                if ui.link(link_ver_todos).clicked() {
                     self.page = Page::Projects;
                 }
             });
@@ -342,14 +387,16 @@ impl LocalCodePilot {
                 if ui
                     .add_sized(
                         [220.0, 150.0],
-                        egui::Button::new("＋\n\nAdicionar projeto\nSelecione uma pasta local")
+                        egui::Button::new(format!("{PLUS}\n\nCriar projeto\nAssistente em breve"))
                             .fill(Color32::TRANSPARENT)
                             .stroke(Stroke::new(1.0_f32, theme::BORDER))
                             .corner_radius(12),
                     )
                     .clicked()
                 {
-                    self.add_project();
+                    self.status = Some(
+                        "O assistente de criação de projetos será adicionado futuramente".into(),
+                    );
                 }
             });
     }
@@ -395,6 +442,7 @@ impl LocalCodePilot {
 
 impl eframe::App for LocalCodePilot {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_discovery();
         self.sidebar(ctx);
         self.topbar(ctx);
         self.content(ctx);
@@ -464,12 +512,12 @@ fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) {
             ui.set_min_size(Vec2::new(width, 116.0));
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("▰")
+                    RichText::new(FOLDER)
                         .color(color)
                         .font(FontId::proportional(24.0)),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new("•••").color(theme::MUTED));
+                    ui.label(RichText::new(DOTS_THREE).color(theme::MUTED));
                 });
             });
             ui.add_space(10.0);
@@ -482,14 +530,18 @@ fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) {
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.colored_label(color, "●");
+                ui.colored_label(color, CIRCLE);
                 ui.label(
                     RichText::new(project.display_stack())
                         .color(theme::MUTED)
                         .size(9.0),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new("◷  Agora").color(theme::MUTED).size(9.0));
+                    ui.label(
+                        RichText::new(format!("{CLOCK}  Agora"))
+                            .color(theme::MUTED)
+                            .size(9.0),
+                    );
                 });
             });
         });

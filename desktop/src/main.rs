@@ -1,4 +1,5 @@
 mod app;
+mod pages;
 mod theme;
 
 use app::LocalCodePilot;

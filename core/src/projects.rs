@@ -46,6 +46,10 @@ impl ProjectCatalog {
         &self.projects
     }
 
+    pub fn into_projects(self) -> Vec<Project> {
+        self.projects
+    }
+
     pub fn add(&mut self, project: Project) -> bool {
         if self
             .projects

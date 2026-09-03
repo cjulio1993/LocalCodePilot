@@ -5,7 +5,7 @@ Aplicação nativa escrita integralmente em Rust. O domínio é independente das
 ## Arquitetura
 
 - `core`: projetos, runtimes, processos, portas e ambientes; não depende de UI ou SO.
-- `platform`: integração nativa com Windows, Linux e macOS.
+- `platform`: integração nativa com Windows, Linux e macOS, incluindo varredura segura do filesystem.
 - `runtime`: detecção de Rust, Node, PHP e Python.
 - `services`: modelos de MySQL, PostgreSQL e Redis.
 - `cli`: interface de terminal baseada no core.
@@ -28,5 +28,6 @@ cargo build --release
 
 ```powershell
 cargo run -p localcodepilot-cli -- status
+cargo run -p localcodepilot-cli -- scan
 cargo run -p localcodepilot-cli -- inspect .
 ```

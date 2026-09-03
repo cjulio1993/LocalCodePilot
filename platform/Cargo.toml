@@ -5,5 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+localcodepilot-core.workspace = true
 sysinfo.workspace = true
-

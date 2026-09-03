@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use sysinfo::System;
 
+pub mod filesystem;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatingSystem {
     Windows,

@@ -1,10 +1,12 @@
-use localcodepilot_core::projects::Project;
-use localcodepilot_platform::{NativePlatform, Platform};
+use localcodepilot_core::{discovery::DiscoveryService, projects::Project};
+use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemProjectSource};
+use localcodepilot_runtime::ManifestRuntimeDetector;
 use std::{env, path::PathBuf, process::ExitCode};
 
 fn main() -> ExitCode {
     match env::args().nth(1).as_deref() {
         None | Some("status") => status(),
+        Some("scan") => scan(),
         Some("inspect") => inspect(env::args_os().nth(2).map(PathBuf::from)),
         Some("--help" | "-h" | "help") => {
             help();
@@ -47,6 +49,33 @@ fn inspect(path: Option<PathBuf>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn scan() -> ExitCode {
+    let service = DiscoveryService::new(
+        FilesystemProjectSource::common_locations(),
+        ManifestRuntimeDetector,
+    );
+    match service.discover() {
+        Ok(catalog) => {
+            for project in catalog.projects() {
+                println!(
+                    "{} — {}\n  {}",
+                    project.name,
+                    project.display_stack(),
+                    project.path.display()
+                );
+            }
+            println!("\n{} projeto(s) encontrado(s)", catalog.projects().len());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("A varredura falhou: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn help() {
-    println!("LocalCodePilot CLI\n\n  localcodepilot status\n  localcodepilot inspect <pasta>");
+    println!(
+        "LocalCodePilot CLI\n\n  localcodepilot status\n  localcodepilot scan\n  localcodepilot inspect <pasta>"
+    );
 }
