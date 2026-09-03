@@ -6,6 +6,8 @@ pub fn detect(path: &Path) -> Vec<RuntimeKind> {
         ("Cargo.toml", RuntimeKind::Rust),
         ("package.json", RuntimeKind::Node),
         ("composer.json", RuntimeKind::Php),
+        ("index.php", RuntimeKind::Php),
+        ("wp-config.php", RuntimeKind::Php),
         ("pyproject.toml", RuntimeKind::Python),
         ("requirements.txt", RuntimeKind::Python),
     ];
