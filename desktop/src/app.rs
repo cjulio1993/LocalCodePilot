@@ -1,15 +1,17 @@
 use crate::theme;
-use eframe::egui::{
-    self, Align, Color32, FontId, Frame, Layout, Margin, RichText, Sense, Stroke, Vec2,
-};
+use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
-    BELL, CARET_RIGHT, CIRCLE, CLOCK, CODE_SIMPLE, DOTS_THREE, FOLDER, FOLDER_OPEN, GEAR, LAYOUT,
-    MEMORY, PLAY, PLUS, TERMINAL, TERMINAL_WINDOW,
+    BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, MEMORY, PLAY, PLUS,
+    TERMINAL, TERMINAL_WINDOW,
 };
-use localcodepilot_core::{discovery::DiscoveryService, projects::Project};
+use localcodepilot_core::{discovery::DiscoveryService, projects::Project, runtimes::RuntimeKind};
 use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemProjectSource};
 use localcodepilot_runtime::ManifestRuntimeDetector;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::mpsc::{self, Receiver, TryRecvError},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -33,6 +35,7 @@ impl LocalCodePilot {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::configure(&cc.egui_ctx);
         let (sender, receiver) = mpsc::channel();
+        let repaint = cc.egui_ctx.clone();
         let mut fonts = eframe::egui::FontDefinitions::default();
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
@@ -46,6 +49,7 @@ impl LocalCodePilot {
                 .map(|catalog| catalog.into_projects())
                 .map_err(|error| error.to_string());
             let _ = sender.send(result);
+            repaint.request_repaint();
         });
         Self {
             page: Page::Overview,
@@ -348,12 +352,12 @@ impl LocalCodePilot {
             });
         });
         ui.add_space(8.0);
-        self.project_grid(ui);
+        self.project_grid(ui, Some(3));
     }
 
-    fn project_grid(&mut self, ui: &mut egui::Ui) {
-        let query = self.search.to_lowercase();
-        let projects: Vec<_> = self
+    fn project_grid(&mut self, ui: &mut egui::Ui, max_projects: Option<usize>) {
+        let query = self.search.trim().to_lowercase();
+        let mut projects: Vec<_> = self
             .projects
             .iter()
             .filter(|p| {
@@ -363,40 +367,69 @@ impl LocalCodePilot {
             })
             .cloned()
             .collect();
-        let columns = if ui.available_width() > 900.0 {
+
+        projects.sort_by_key(|project| std::cmp::Reverse(project.modified_at));
+        if let Some(max_projects) = max_projects {
+            projects.truncate(max_projects);
+        }
+
+        if projects.is_empty() {
+            let (title, detail) = if self.discovery.is_some() {
+                (
+                    "Procurando projetos...",
+                    "Aguarde enquanto examinamos as pastas mais comuns da sua máquina.",
+                )
+            } else if !query.is_empty() {
+                (
+                    "Nenhum resultado para esta busca",
+                    "Tente buscar pelo nome do projeto ou por parte do caminho.",
+                )
+            } else {
+                (
+                    "Nenhum projeto encontrado",
+                    "A descoberta procura manifestos Rust, Node.js, PHP e Python.",
+                )
+            };
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0_f32, theme::BORDER))
+                .corner_radius(12)
+                .inner_margin(Margin::same(24))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(title).strong().size(14.0));
+                    ui.label(RichText::new(detail).color(theme::MUTED).size(11.0));
+                });
+            return;
+        }
+
+        let available_width = ui.available_width().max(220.0);
+        let columns: usize = if available_width > 900.0 {
             3
-        } else if ui.available_width() > 560.0 {
+        } else if available_width > 560.0 {
             2
         } else {
             1
         };
+        let grid_spacing = 14.0 * (columns.saturating_sub(1)) as f32;
+        let frame_margin = 34.0;
+        let card_width =
+            ((available_width - grid_spacing) / columns as f32 - frame_margin).max(180.0);
+
         egui::Grid::new("project_grid")
             .num_columns(columns)
             .spacing([14.0, 14.0])
             .show(ui, |ui| {
                 for (index, project) in projects.iter().enumerate() {
-                    project_card(
-                        ui,
-                        project,
-                        ui.available_width().max(220.0) / columns as f32 - 10.0,
-                    );
+                    if let Some(path) = project_card(ui, project, card_width) {
+                        self.status = Some(match open_in_vscode(&path) {
+                            Ok(()) => format!("Abrindo {} no VS Code...", project.name),
+                            Err(error) => error,
+                        });
+                    }
                     if (index + 1) % columns == 0 {
                         ui.end_row();
                     }
-                }
-                if ui
-                    .add_sized(
-                        [220.0, 150.0],
-                        egui::Button::new(format!("{PLUS}\n\nCriar projeto\nAssistente em breve"))
-                            .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::new(1.0_f32, theme::BORDER))
-                            .corner_radius(12),
-                    )
-                    .clicked()
-                {
-                    self.status = Some(
-                        "O assistente de criação de projetos será adicionado futuramente".into(),
-                    );
                 }
             });
     }
@@ -414,10 +447,14 @@ impl LocalCodePilot {
                     Page::Projects => {
                         ui.heading("Projetos");
                         ui.label(
-                            RichText::new("Todos os seus projetos locais").color(theme::MUTED),
+                            RichText::new(format!(
+                                "{} projeto(s) local(is) encontrado(s)",
+                                self.projects.len()
+                            ))
+                            .color(theme::MUTED),
                         );
                         ui.add_space(20.0);
-                        self.project_grid(ui);
+                        self.project_grid(ui, None);
                     }
                     page => {
                         ui.heading(self.page_title());
@@ -501,48 +538,102 @@ fn stat_card(
         });
 }
 
-fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) {
-    let color = theme::PRIMARY;
+fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) -> Option<PathBuf> {
+    let mut open_path = None;
     Frame::new()
         .fill(theme::SURFACE)
         .stroke(Stroke::new(1.0_f32, theme::BORDER))
         .corner_radius(12)
-        .inner_margin(Margin::same(17))
+        .inner_margin(Margin::same(18))
         .show(ui, |ui| {
-            ui.set_min_size(Vec2::new(width, 116.0));
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(FOLDER)
-                        .color(color)
-                        .font(FontId::proportional(24.0)),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new(DOTS_THREE).color(theme::MUTED));
-                });
-            });
-            ui.add_space(10.0);
-            ui.label(RichText::new(&project.name).strong().size(13.0));
-            ui.label(
-                RichText::new(project.path.to_string_lossy())
-                    .color(Color32::from_rgb(116, 125, 141))
-                    .monospace()
-                    .size(9.0),
-            );
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.colored_label(color, CIRCLE);
-                ui.label(
-                    RichText::new(project.display_stack())
-                        .color(theme::MUTED)
-                        .size(9.0),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.set_width(width);
+            ui.set_min_height(72.0);
+            ui.label(RichText::new(&project.name).strong().size(15.0))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_ui(|ui| {
+                    ui.set_max_width(420.0);
+                    ui.label(RichText::new("Local do projeto").strong().size(11.0));
                     ui.label(
-                        RichText::new(format!("{CLOCK}  Agora"))
+                        RichText::new(project.path.to_string_lossy())
                             .color(theme::MUTED)
-                            .size(9.0),
+                            .monospace()
+                            .size(10.0),
                     );
+                    ui.add_space(6.0);
+                    if ui
+                        .button(RichText::new(format!("{CODE_SIMPLE}  Abrir no VS Code")).strong())
+                        .clicked()
+                    {
+                        open_path = Some(project.path.clone());
+                    }
                 });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if project.runtimes.is_empty() {
+                    runtime_badge(ui, "Projeto local", theme::MUTED);
+                } else {
+                    for runtime in &project.runtimes {
+                        runtime_badge(ui, &runtime.to_string(), runtime_color(*runtime));
+                    }
+                }
             });
         });
+    open_path
+}
+
+fn open_in_vscode(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates = Vec::new();
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(
+                PathBuf::from(local_app_data)
+                    .join("Programs")
+                    .join("Microsoft VS Code")
+                    .join("Code.exe"),
+            );
+        }
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(
+                PathBuf::from(program_files)
+                    .join("Microsoft VS Code")
+                    .join("Code.exe"),
+            );
+        }
+        if let Some(executable) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+            return Command::new(executable)
+                .arg(path)
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| format!("Não foi possível abrir o VS Code: {error}"));
+        }
+    }
+
+    Command::new(if cfg!(windows) { "code.cmd" } else { "code" })
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| {
+            "VS Code não encontrado. Instale-o ou adicione o comando 'code' ao PATH.".into()
+        })
+}
+
+fn runtime_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
+    Frame::new()
+        .fill(color.gamma_multiply(0.14))
+        .stroke(Stroke::new(1.0_f32, color.gamma_multiply(0.55)))
+        .corner_radius(6)
+        .inner_margin(Margin::symmetric(7, 3))
+        .show(ui, |ui| {
+            ui.label(RichText::new(label).color(color).strong().size(9.0));
+        });
+}
+
+fn runtime_color(runtime: RuntimeKind) -> Color32 {
+    match runtime {
+        RuntimeKind::Rust => Color32::from_rgb(244, 125, 76),
+        RuntimeKind::Node => Color32::from_rgb(104, 190, 101),
+        RuntimeKind::Php => Color32::from_rgb(137, 147, 210),
+        RuntimeKind::Python => Color32::from_rgb(255, 205, 75),
+    }
 }

@@ -11,6 +11,8 @@ const PROJECT_MARKERS: &[&str] = &[
     "composer.json",
     "pyproject.toml",
     "requirements.txt",
+    "index.php",
+    "wp-config.php",
 ];
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
@@ -23,6 +25,8 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "build",
     ".venv",
     "venv",
+    "sodium_compat",
+    "PHPMailer-master",
 ];
 
 #[derive(Debug, Clone)]
@@ -35,22 +39,30 @@ impl FilesystemProjectSource {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self {
             roots: unique_existing(roots),
-            max_depth: 5,
+            max_depth: 8,
         }
     }
 
     pub fn common_locations() -> Self {
         let mut roots = Vec::new();
         if let Some(home) = home_directory() {
-            for relative in ["Projects", "Projetos", "dev", "code", "workspace"] {
+            for relative in [
+                "Projects",
+                "Projetos",
+                "repos",
+                "dev",
+                "code",
+                "workspace",
+                "Desktop",
+                "Documents",
+                "Documentos",
+            ] {
                 roots.push(home.join(relative));
             }
-            roots.push(
-                home.join("OneDrive")
-                    .join("Área de Trabalho")
-                    .join("projetos"),
-            );
-            roots.push(home.join("OneDrive").join("Desktop").join("projects"));
+            let one_drive = home.join("OneDrive");
+            for relative in ["Área de Trabalho", "Desktop", "Documents", "Documentos"] {
+                roots.push(one_drive.join(relative));
+            }
         }
         if let Ok(current) = std::env::current_dir()
             && let Some(parent) = current.parent()
@@ -96,7 +108,11 @@ impl ProjectSource for FilesystemProjectSource {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name.starts_with('.') || IGNORED_DIRECTORIES.contains(&name.as_ref()) {
+                if name.starts_with('.')
+                    || IGNORED_DIRECTORIES
+                        .iter()
+                        .any(|ignored| name.eq_ignore_ascii_case(ignored))
+                {
                     continue;
                 }
                 if entry
@@ -151,6 +167,28 @@ mod tests {
             .unwrap();
         assert_eq!(paths.len(), 1);
         assert!(paths[0].ends_with("app"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn does_not_list_subprojects_inside_a_project() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-nested-{nonce}"));
+        let nested = root.join("apps").join("web");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.join("Cargo.toml"), "").unwrap();
+        fs::write(nested.join("package.json"), "{}").unwrap();
+
+        let paths = FilesystemProjectSource::new(vec![root.clone()])
+            .candidate_paths()
+            .unwrap();
+
+        assert_eq!(paths.len(), 1);
+        assert!(paths.iter().any(|path| path == &root));
+        assert!(!paths.iter().any(|path| path == &nested));
         fs::remove_dir_all(root).unwrap();
     }
 }
