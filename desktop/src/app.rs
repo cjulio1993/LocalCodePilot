@@ -28,35 +28,26 @@ pub struct LocalCodePilot {
     platform: NativePlatform,
     search: String,
     status: Option<String>,
+    scan_roots: Vec<PathBuf>,
     discovery: Option<Receiver<Result<Vec<Project>, String>>>,
 }
 
 impl LocalCodePilot {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::configure(&cc.egui_ctx);
-        let (sender, receiver) = mpsc::channel();
-        let repaint = cc.egui_ctx.clone();
         let mut fonts = eframe::egui::FontDefinitions::default();
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
-        std::thread::spawn(move || {
-            let service = DiscoveryService::new(
-                FilesystemProjectSource::common_locations(),
-                ManifestRuntimeDetector,
-            );
-            let result = service
-                .discover()
-                .map(|catalog| catalog.into_projects())
-                .map_err(|error| error.to_string());
-            let _ = sender.send(result);
-            repaint.request_repaint();
-        });
+        let source = FilesystemProjectSource::common_locations();
+        let scan_roots = source.roots().to_vec();
+        let receiver = spawn_discovery(source, cc.egui_ctx.clone());
         Self {
             page: Page::Overview,
             projects: Vec::new(),
             platform: NativePlatform::default(),
             search: String::new(),
             status: Some("Procurando projetos na máquina...".into()),
+            scan_roots,
             discovery: Some(receiver),
         }
     }
@@ -268,6 +259,40 @@ impl LocalCodePilot {
         }
     }
 
+    fn refresh_projects(&mut self, ctx: &egui::Context) {
+        if self.discovery.is_some() {
+            return;
+        }
+        self.status = Some("Atualizando a lista de projetos...".into());
+        self.discovery = Some(spawn_discovery(
+            FilesystemProjectSource::new(self.scan_roots.clone()),
+            ctx.clone(),
+        ));
+    }
+
+    fn add_scan_root(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let path = path.canonicalize().unwrap_or(path);
+        if self.scan_roots.iter().any(|root| root == &path) {
+            self.status = Some("Essa pasta já faz parte da varredura".into());
+            return;
+        }
+        self.scan_roots.push(path);
+        self.status = Some("Pasta adicionada. Procurando projetos...".into());
+        self.discovery = Some(spawn_discovery(
+            FilesystemProjectSource::new(self.scan_roots.clone()),
+            ctx.clone(),
+        ));
+    }
+
+    fn remove_scan_root(&mut self, ctx: &egui::Context, path: &Path) {
+        self.scan_roots.retain(|root| root != path);
+        self.status = Some("Pasta removida. Atualizando os projetos...".into());
+        self.discovery = Some(spawn_discovery(
+            FilesystemProjectSource::new(self.scan_roots.clone()),
+            ctx.clone(),
+        ));
+    }
+
     fn overview(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -434,6 +459,79 @@ impl LocalCodePilot {
             });
     }
 
+    fn projects_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.heading("Projetos");
+                ui.label(
+                    RichText::new(format!(
+                        "{} projeto(s) em {} pasta(s) de busca",
+                        self.projects.len(),
+                        self.scan_roots.len()
+                    ))
+                    .color(theme::MUTED),
+                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let scanning = self.discovery.is_some();
+                if ui
+                    .add_enabled(!scanning, egui::Button::new("Atualizar"))
+                    .clicked()
+                {
+                    self.refresh_projects(ctx);
+                }
+                if ui
+                    .add_enabled(
+                        !scanning,
+                        egui::Button::new(format!("{PLUS}  Adicionar pasta")).fill(theme::PRIMARY),
+                    )
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .set_title("Escolha uma pasta com projetos")
+                        .pick_folder()
+                {
+                    self.add_scan_root(ctx, path);
+                }
+                if scanning {
+                    ui.spinner();
+                    ui.label(RichText::new("Procurando...").color(theme::MUTED));
+                }
+            });
+        });
+        let mut root_to_remove = None;
+        ui.collapsing(
+            format!("Pastas examinadas ({})", self.scan_roots.len()),
+            |ui| {
+                for root in &self.scan_roots {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(root.to_string_lossy())
+                                .color(theme::MUTED)
+                                .monospace()
+                                .size(10.0),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add_enabled(
+                                    self.discovery.is_none(),
+                                    egui::Button::new("Remover").small(),
+                                )
+                                .clicked()
+                            {
+                                root_to_remove = Some(root.clone());
+                            }
+                        });
+                    });
+                }
+            },
+        );
+        if let Some(root) = root_to_remove {
+            self.remove_scan_root(ctx, &root);
+        }
+        ui.add_space(20.0);
+        self.project_grid(ui, None);
+    }
+
     fn content(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(
@@ -444,18 +542,7 @@ impl LocalCodePilot {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Overview => self.overview(ui),
-                    Page::Projects => {
-                        ui.heading("Projetos");
-                        ui.label(
-                            RichText::new(format!(
-                                "{} projeto(s) local(is) encontrado(s)",
-                                self.projects.len()
-                            ))
-                            .color(theme::MUTED),
-                        );
-                        ui.add_space(20.0);
-                        self.project_grid(ui, None);
-                    }
+                    Page::Projects => self.projects_page(ctx, ui),
                     page => {
                         ui.heading(self.page_title());
                         ui.add_space(8.0);
@@ -498,6 +585,23 @@ impl eframe::App for LocalCodePilot {
                 });
         }
     }
+}
+
+fn spawn_discovery(
+    source: FilesystemProjectSource,
+    repaint: egui::Context,
+) -> Receiver<Result<Vec<Project>, String>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let service = DiscoveryService::new(source, ManifestRuntimeDetector);
+        let result = service
+            .discover()
+            .map(|catalog| catalog.into_projects())
+            .map_err(|error| error.to_string());
+        let _ = sender.send(result);
+        repaint.request_repaint();
+    });
+    receiver
 }
 
 fn stat_card(

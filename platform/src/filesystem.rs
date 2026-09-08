@@ -90,9 +90,10 @@ impl ProjectSource for FilesystemProjectSource {
             if !visited.insert(canonical) || !path.is_dir() {
                 continue;
             }
-            if PROJECT_MARKERS
-                .iter()
-                .any(|marker| path.join(marker).is_file())
+            if path.join(".git").exists()
+                || PROJECT_MARKERS
+                    .iter()
+                    .any(|marker| path.join(marker).is_file())
             {
                 projects.push(path.clone());
                 continue;
@@ -189,6 +190,26 @@ mod tests {
         assert_eq!(paths.len(), 1);
         assert!(paths.iter().any(|path| path == &root));
         assert!(!paths.iter().any(|path| path == &nested));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uses_git_repository_as_the_project_root() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-git-root-{nonce}"));
+        let nested = root.join("app");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("composer.json"), "{}").unwrap();
+
+        let paths = FilesystemProjectSource::new(vec![root.clone()])
+            .candidate_paths()
+            .unwrap();
+
+        assert_eq!(paths, vec![root.clone()]);
         fs::remove_dir_all(root).unwrap();
     }
 }
