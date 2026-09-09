@@ -29,9 +29,9 @@ Ao iniciar a aplicação, o LocalCodePilot:
 
 1. Consulta locais comuns de projetos na máquina.
 2. Percorre esses diretórios em segundo plano.
-3. Ignora pastas de dependências, builds, controle de versão e ambientes virtuais.
-4. Reconhece projetos por arquivos como `Cargo.toml`, `package.json`, `composer.json`, `pyproject.toml` e `requirements.txt`.
-5. Detecta os runtimes encontrados e monta um catálogo compartilhado pelo desktop e pela CLI.
+3. Ignora pastas de dependências, builds, metadados de arquivos compactados e ambientes virtuais.
+4. Reconhece a raiz de repositórios Git, projetos com manifesto e pastas locais com arquivos de código.
+5. Detecta os runtimes e comandos disponíveis e monta um catálogo compartilhado pelo desktop e pela CLI.
 
 Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.venv` e `venv` não são examinados. A profundidade da busca também é limitada para evitar varreduras excessivas.
 
@@ -41,21 +41,35 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Dashboard com projetos descobertos automaticamente.
 - Varredura de diretórios executada fora da thread da interface.
 - Detecção inicial de Rust, Node.js, PHP e Python.
+- Reconhecimento de projetos locais sem Git ou manifesto por extensões de código.
+- Identificação da raiz de repositórios e suporte inicial a monorepos.
 - Busca de projetos no catálogo.
 - Prevenção de caminhos duplicados.
+- Configuração, adição, remoção e persistência das pastas de busca.
+- Três projetos modificados mais recentemente na visão geral.
+- Abertura da pasta de um projeto no Visual Studio Code.
 - Informações básicas do sistema e uso de memória.
 - CLI com comandos `status`, `scan` e `inspect`.
 - Interface com ícones Phosphor.
 - Estrutura modular baseada em Cargo workspace.
 
+### Experimental e em testes
+
+- Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Django e Python.
+- Inicialização e interrupção manual de processos pela interface.
+- Exibição de estado, PID e saída básica dos processos.
+- Execução de comandos na pasta correta de módulos em monorepos.
+- Encerramento dos processos gerenciados ao fechar o aplicativo.
+
+O gerenciamento de processos ainda está em fase inicial. Antes de usá-lo em projetos importantes, confira o comando e a pasta de execução apresentados na interface. Detecção de portas, configuração personalizada de comandos, logs persistentes e tratamento mais completo de árvores de processos ainda não estão finalizados.
+
 ### Em desenvolvimento
 
-- Página completa de gerenciamento de projetos.
 - Detecção de frameworks e metadados mais detalhados.
-- Gerenciamento real de processos e portas.
+- Detecção e gerenciamento de portas.
+- Configuração e edição manual dos comandos de cada projeto.
 - Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
-- Configuração dos diretórios usados pela descoberta.
-- Persistência do catálogo e das preferências.
+- Persistência do catálogo, processos e demais preferências.
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade, responsividade e experiência de uso.
@@ -182,9 +196,9 @@ When the application starts, LocalCodePilot:
 
 1. Resolves common project locations on the machine.
 2. Scans those directories in the background.
-3. Skips dependency, build, version-control, and virtual-environment directories.
-4. Recognizes projects through files such as `Cargo.toml`, `package.json`, `composer.json`, `pyproject.toml`, and `requirements.txt`.
-5. Detects the available runtimes and builds a catalog shared by the desktop and CLI.
+3. Skips dependency, build, archive-metadata, and virtual-environment directories.
+4. Recognizes Git repository roots, manifest-based projects, and local folders containing source files.
+5. Detects available runtimes and commands and builds a catalog shared by the desktop and CLI.
 
 Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.venv`, and `venv` are not scanned. Search depth is also limited to prevent unnecessarily broad filesystem scans.
 
@@ -194,21 +208,35 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Dashboard populated through automatic project discovery.
 - Directory scanning outside the UI thread.
 - Initial detection for Rust, Node.js, PHP, and Python.
+- Local-project detection without Git or manifests based on source-file extensions.
+- Repository-root identification and initial monorepo support.
 - Project catalog search.
 - Duplicate-path prevention.
+- Configurable, removable, and persistent project discovery locations.
+- Three most recently modified projects on the overview page.
+- Opening project folders in Visual Studio Code.
 - Basic system and memory information.
 - CLI commands for `status`, `scan`, and `inspect`.
 - Phosphor icons in the desktop interface.
 - Modular Cargo workspace architecture.
 
+### Experimental and under testing
+
+- Command detection for Cargo, npm, Composer, PHP, Laravel, Django, and Python.
+- Manual process start and stop controls in the desktop interface.
+- Process state, PID, and basic output display.
+- Commands launched from the correct module directory in monorepos.
+- Managed-process termination when the application closes.
+
+Process management is still at an early stage. Before using it with important projects, verify the command and working directory shown in the interface. Port detection, custom command configuration, persistent logs, and more complete process-tree handling are not finished yet.
+
 ### Work in progress
 
-- Complete project-management page.
 - Framework detection and richer project metadata.
-- Actual process and port management.
+- Port detection and management.
+- Manual command configuration and editing per project.
 - Starting and controlling services such as MySQL, PostgreSQL, and Redis.
-- Configurable project discovery locations.
-- Catalog and preference persistence.
+- Catalog, process, and remaining preference persistence.
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility, responsive layout, and user-experience improvements.
