@@ -8,6 +8,18 @@ pub enum RuntimeKind {
     Python,
 }
 
+impl RuntimeKind {
+    pub fn from_source_extension(extension: &str) -> Option<Self> {
+        match extension.to_ascii_lowercase().as_str() {
+            "rs" => Some(Self::Rust),
+            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" => Some(Self::Node),
+            "php" | "phtml" => Some(Self::Php),
+            "py" | "pyw" => Some(Self::Python),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for RuntimeKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
