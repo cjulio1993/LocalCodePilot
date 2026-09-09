@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::{config, theme};
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
     BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, MEMORY, PLAY, PLUS,
@@ -38,8 +38,10 @@ impl LocalCodePilot {
         let mut fonts = eframe::egui::FontDefinitions::default();
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
-        let source = FilesystemProjectSource::common_locations();
-        let scan_roots = source.roots().to_vec();
+        let default_source = FilesystemProjectSource::common_locations();
+        let scan_roots =
+            config::load_scan_roots().unwrap_or_else(|| default_source.roots().to_vec());
+        let source = FilesystemProjectSource::new(scan_roots.clone());
         let receiver = spawn_discovery(source, cc.egui_ctx.clone());
         Self {
             page: Page::Overview,
@@ -277,7 +279,10 @@ impl LocalCodePilot {
             return;
         }
         self.scan_roots.push(path);
-        self.status = Some("Pasta adicionada. Procurando projetos...".into());
+        self.status = Some(match config::save_scan_roots(&self.scan_roots) {
+            Ok(()) => "Pasta adicionada. Procurando projetos...".into(),
+            Err(error) => format!("Pasta adicionada, mas não foi possível salvar: {error}"),
+        });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             ctx.clone(),
@@ -286,7 +291,22 @@ impl LocalCodePilot {
 
     fn remove_scan_root(&mut self, ctx: &egui::Context, path: &Path) {
         self.scan_roots.retain(|root| root != path);
-        self.status = Some("Pasta removida. Atualizando os projetos...".into());
+        self.status = Some(match config::save_scan_roots(&self.scan_roots) {
+            Ok(()) => "Pasta removida. Atualizando os projetos...".into(),
+            Err(error) => format!("Pasta removida, mas não foi possível salvar: {error}"),
+        });
+        self.discovery = Some(spawn_discovery(
+            FilesystemProjectSource::new(self.scan_roots.clone()),
+            ctx.clone(),
+        ));
+    }
+
+    fn reset_scan_roots(&mut self, ctx: &egui::Context) {
+        self.scan_roots = FilesystemProjectSource::common_locations().roots().to_vec();
+        self.status = Some(match config::save_scan_roots(&self.scan_roots) {
+            Ok(()) => "Pastas padrão restauradas. Atualizando os projetos...".into(),
+            Err(error) => format!("Pastas restauradas, mas não foi possível salvar: {error}"),
+        });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             ctx.clone(),
@@ -522,6 +542,16 @@ impl LocalCodePilot {
                             }
                         });
                     });
+                }
+                ui.add_space(6.0);
+                if ui
+                    .add_enabled(
+                        self.discovery.is_none(),
+                        egui::Button::new("Restaurar pastas padrão"),
+                    )
+                    .clicked()
+                {
+                    self.reset_scan_roots(ctx);
                 }
             },
         );
