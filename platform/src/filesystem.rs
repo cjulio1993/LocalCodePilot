@@ -1,4 +1,4 @@
-use localcodepilot_core::discovery::ProjectSource;
+use localcodepilot_core::{discovery::ProjectSource, runtimes::RuntimeKind};
 use std::{
     collections::{HashSet, VecDeque},
     fs, io,
@@ -27,6 +27,8 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "venv",
     "sodium_compat",
     "PHPMailer-master",
+    "_macosx",
+    "__macosx",
 ];
 
 #[derive(Debug, Clone)]
@@ -94,6 +96,7 @@ impl ProjectSource for FilesystemProjectSource {
                 || PROJECT_MARKERS
                     .iter()
                     .any(|marker| path.join(marker).is_file())
+                || contains_loose_source_project(&path)
             {
                 projects.push(path.clone());
                 continue;
@@ -126,6 +129,34 @@ impl ProjectSource for FilesystemProjectSource {
         }
         Ok(projects)
     }
+}
+
+fn contains_loose_source_project(path: &PathBuf) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    let mut counts = [0_u8; 4];
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let entry_path = entry.path();
+        let Some(extension) = entry_path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let index = match RuntimeKind::from_source_extension(extension) {
+            Some(RuntimeKind::Rust) => 0,
+            Some(RuntimeKind::Node) => 1,
+            Some(RuntimeKind::Php) => 2,
+            Some(RuntimeKind::Python) => 3,
+            None => continue,
+        };
+        counts[index] = counts[index].saturating_add(1);
+        if counts[index] >= 2 {
+            return true;
+        }
+    }
+    false
 }
 
 fn unique_existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -210,6 +241,46 @@ mod tests {
             .unwrap();
 
         assert_eq!(paths, vec![root.clone()]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovers_local_exercises_without_git_or_manifest() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let container = std::env::temp_dir().join(format!("localcodepilot-exercises-{nonce}"));
+        let exercises = container.join("exercios");
+        fs::create_dir_all(&exercises).unwrap();
+        fs::write(exercises.join("exercicio1.php"), "<?php").unwrap();
+        fs::write(exercises.join("exercicio2.php"), "<?php").unwrap();
+
+        let paths = FilesystemProjectSource::new(vec![container.clone()])
+            .candidate_paths()
+            .unwrap();
+
+        assert_eq!(paths, vec![exercises]);
+        fs::remove_dir_all(container).unwrap();
+    }
+
+    #[test]
+    fn ignores_macos_archive_metadata_directories() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-macosx-{nonce}"));
+        let metadata = root.join("__MACOSX").join("curso").join("app");
+        fs::create_dir_all(&metadata).unwrap();
+        fs::write(metadata.join("Controller.php"), "<?php").unwrap();
+        fs::write(metadata.join("Model.php"), "<?php").unwrap();
+
+        let paths = FilesystemProjectSource::new(vec![root.clone()])
+            .candidate_paths()
+            .unwrap();
+
+        assert!(paths.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

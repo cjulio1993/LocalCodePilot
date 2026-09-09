@@ -15,6 +15,8 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "build",
     ".venv",
     "venv",
+    "_macosx",
+    "__macosx",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

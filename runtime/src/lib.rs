@@ -19,6 +19,8 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "build",
     ".venv",
     "venv",
+    "_macosx",
+    "__macosx",
 ];
 
 pub fn detect(path: &Path) -> Vec<RuntimeKind> {
@@ -57,6 +59,23 @@ pub fn detect(path: &Path) -> Vec<RuntimeKind> {
 fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
     for &(marker, runtime) in CANDIDATES {
         if path.join(marker).is_file() && !found.contains(&runtime) {
+            found.push(runtime);
+        }
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let entry_path = entry.path();
+        let Some(extension) = entry_path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Some(runtime) = RuntimeKind::from_source_extension(extension)
+            && !found.contains(&runtime)
+        {
             found.push(runtime);
         }
     }
@@ -100,6 +119,20 @@ mod tests {
         fs::create_dir_all(path.join(".git")).unwrap();
         fs::create_dir_all(path.join("painel-controle")).unwrap();
         fs::write(path.join("painel-controle").join("composer.json"), "{}").unwrap();
+
+        assert_eq!(detect(&path), vec![RuntimeKind::Php]);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn detects_php_from_source_files_without_manifest() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-loose-php-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("exercicio1.php"), "<?php").unwrap();
 
         assert_eq!(detect(&path), vec![RuntimeKind::Php]);
         fs::remove_dir_all(path).unwrap();
