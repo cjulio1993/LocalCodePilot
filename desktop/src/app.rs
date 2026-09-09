@@ -4,13 +4,21 @@ use egui_phosphor::regular::{
     BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, MEMORY, PLAY, PLUS,
     TERMINAL, TERMINAL_WINDOW,
 };
-use localcodepilot_core::{discovery::DiscoveryService, projects::Project, runtimes::RuntimeKind};
+use localcodepilot_core::{
+    discovery::DiscoveryService,
+    processes::{ProcessState, ProjectProcess},
+    projects::Project,
+    runtimes::RuntimeKind,
+};
 use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemProjectSource};
-use localcodepilot_runtime::ManifestRuntimeDetector;
+use localcodepilot_runtime::{ManifestRuntimeDetector, detect_processes};
 use std::{
+    collections::{HashMap, VecDeque},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, TryRecvError},
+    time::Duration,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,9 +30,23 @@ enum Page {
     Settings,
 }
 
+struct RunningProcess {
+    child: Child,
+    output: Receiver<String>,
+    logs: VecDeque<String>,
+    finished: bool,
+}
+
+enum ProcessAction {
+    Start(String),
+    Stop(String),
+}
+
 pub struct LocalCodePilot {
     page: Page,
     projects: Vec<Project>,
+    processes: Vec<ProjectProcess>,
+    running_processes: HashMap<String, RunningProcess>,
     platform: NativePlatform,
     search: String,
     status: Option<String>,
@@ -46,6 +68,8 @@ impl LocalCodePilot {
         Self {
             page: Page::Overview,
             projects: Vec::new(),
+            processes: Vec::new(),
+            running_processes: HashMap::new(),
             platform: NativePlatform::default(),
             search: String::new(),
             status: Some("Procurando projetos na máquina...".into()),
@@ -246,6 +270,7 @@ impl LocalCodePilot {
         match receiver.try_recv() {
             Ok(Ok(projects)) => {
                 self.status = Some(format!("{} projeto(s) encontrado(s)", projects.len()));
+                self.processes = projects.iter().flat_map(detect_processes).collect();
                 self.projects = projects;
                 self.discovery = None;
             }
@@ -351,6 +376,11 @@ impl LocalCodePilot {
         ui.add_space(22.0);
         let snapshot = self.platform.snapshot();
         let used_gb = snapshot.used_memory_bytes as f64 / 1_073_741_824.0;
+        let active_processes = self
+            .running_processes
+            .values()
+            .filter(|process| !process.finished)
+            .count();
         ui.columns(3, |columns| {
             stat_card(
                 &mut columns[0],
@@ -364,8 +394,8 @@ impl LocalCodePilot {
                 &mut columns[1],
                 PLAY,
                 "Processos ativos",
-                "0",
-                "pronto para iniciar",
+                &active_processes.to_string(),
+                "em execução",
                 theme::SUCCESS,
             );
             stat_card(
@@ -562,6 +592,254 @@ impl LocalCodePilot {
         self.project_grid(ui, None);
     }
 
+    fn start_process(&mut self, id: &str) {
+        let Some(index) = self.processes.iter().position(|process| process.id == id) else {
+            return;
+        };
+        if self
+            .running_processes
+            .get(id)
+            .is_some_and(|running| !running.finished)
+        {
+            return;
+        }
+        let process = self.processes[index].clone();
+        self.processes[index].state = ProcessState::Starting;
+        let mut command = process_command(&process);
+        command
+            .current_dir(&process.working_directory)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        match command.spawn() {
+            Ok(mut child) => {
+                let process_id = child.id();
+                let (sender, output) = mpsc::channel();
+                if let Some(stdout) = child.stdout.take() {
+                    spawn_output_reader(stdout, sender.clone());
+                }
+                if let Some(stderr) = child.stderr.take() {
+                    spawn_output_reader(stderr, sender);
+                }
+                self.running_processes.insert(
+                    id.to_owned(),
+                    RunningProcess {
+                        child,
+                        output,
+                        logs: VecDeque::new(),
+                        finished: false,
+                    },
+                );
+                self.processes[index].state = ProcessState::Running;
+                self.processes[index].process_id = Some(process_id);
+                self.status = Some(format!("{} iniciado (PID {process_id})", process.name));
+            }
+            Err(error) => {
+                self.processes[index].state = ProcessState::Failed;
+                self.processes[index].process_id = None;
+                self.status = Some(format!(
+                    "Não foi possível iniciar {}: {error}",
+                    process.name
+                ));
+            }
+        }
+    }
+
+    fn stop_process(&mut self, id: &str) {
+        let Some(running) = self.running_processes.get_mut(id) else {
+            return;
+        };
+        if running.finished {
+            return;
+        }
+        terminate_process(&mut running.child);
+        running.finished = true;
+        if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
+            process.state = ProcessState::Stopped;
+            process.process_id = None;
+            self.status = Some(format!("{} interrompido", process.name));
+        }
+    }
+
+    fn poll_processes(&mut self, ctx: &egui::Context) {
+        let mut state_updates = Vec::new();
+        let mut has_running_process = false;
+        for (id, running) in &mut self.running_processes {
+            while let Ok(line) = running.output.try_recv() {
+                running.logs.push_back(line);
+                if running.logs.len() > 500 {
+                    running.logs.pop_front();
+                }
+            }
+            if running.finished {
+                continue;
+            }
+            match running.child.try_wait() {
+                Ok(Some(status)) => {
+                    running.finished = true;
+                    state_updates.push((
+                        id.clone(),
+                        if status.success() {
+                            ProcessState::Stopped
+                        } else {
+                            ProcessState::Failed
+                        },
+                    ));
+                }
+                Ok(None) => has_running_process = true,
+                Err(_) => {
+                    running.finished = true;
+                    state_updates.push((id.clone(), ProcessState::Failed));
+                }
+            }
+        }
+        for (id, state) in state_updates {
+            if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
+                process.state = state;
+                process.process_id = None;
+            }
+        }
+        if has_running_process {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn processes_page(&mut self, ui: &mut egui::Ui) {
+        let mut action = None;
+        ui.heading("Processos");
+        ui.label(
+            RichText::new(format!(
+                "{} comando(s) detectado(s) em seus projetos",
+                self.processes.len()
+            ))
+            .color(theme::MUTED),
+        );
+        ui.add_space(20.0);
+
+        if self.processes.is_empty() {
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0_f32, theme::BORDER))
+                .corner_radius(12)
+                .inner_margin(Margin::same(24))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Nenhum comando detectado").strong());
+                    ui.label(
+                        RichText::new(
+                            "Atualize os projetos para procurar scripts e comandos disponíveis.",
+                        )
+                        .color(theme::MUTED),
+                    );
+                });
+            return;
+        }
+
+        for project in &self.projects {
+            let commands: Vec<_> = self
+                .processes
+                .iter()
+                .filter(|process| process.project_path == project.path)
+                .cloned()
+                .collect();
+            if commands.is_empty() {
+                continue;
+            }
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0_f32, theme::BORDER))
+                .corner_radius(12)
+                .inner_margin(Margin::same(18))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(&project.name).strong().size(15.0));
+                    ui.add_space(8.0);
+                    for command in commands {
+                        let (state_label, state_color) = process_state_display(command.state);
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&command.name).size(12.0));
+                                ui.label(
+                                    RichText::new(command.command_line())
+                                        .color(theme::MUTED)
+                                        .monospace()
+                                        .size(10.0),
+                                );
+                                if command.working_directory != command.project_path
+                                    && let Ok(relative) = command
+                                        .working_directory
+                                        .strip_prefix(&command.project_path)
+                                {
+                                    ui.label(
+                                        RichText::new(format!("em {}", relative.display()))
+                                            .color(theme::MUTED)
+                                            .size(9.0),
+                                    );
+                                }
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                match command.state {
+                                    ProcessState::Running => {
+                                        if ui.button("Parar").clicked() {
+                                            action = Some(ProcessAction::Stop(command.id.clone()));
+                                        }
+                                    }
+                                    ProcessState::Starting => {
+                                        ui.add_enabled(false, egui::Button::new("Iniciando..."));
+                                    }
+                                    ProcessState::Stopped | ProcessState::Failed => {
+                                        if ui
+                                            .button(RichText::new(format!("{PLAY}  Iniciar")))
+                                            .clicked()
+                                        {
+                                            action = Some(ProcessAction::Start(command.id.clone()));
+                                        }
+                                    }
+                                }
+                                runtime_badge(ui, state_label, state_color);
+                                if let Some(process_id) = command.process_id {
+                                    ui.label(
+                                        RichText::new(format!("PID {process_id}"))
+                                            .color(theme::MUTED)
+                                            .monospace()
+                                            .size(9.0),
+                                    );
+                                }
+                            });
+                        });
+                        if let Some(running) = self.running_processes.get(&command.id)
+                            && !running.logs.is_empty()
+                        {
+                            egui::CollapsingHeader::new(format!("Saída ({})", running.logs.len()))
+                                .id_salt(format!("logs-{}", command.id))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .max_height(160.0)
+                                        .stick_to_bottom(true)
+                                        .show(ui, |ui| {
+                                            for line in &running.logs {
+                                                ui.label(
+                                                    RichText::new(line)
+                                                        .color(theme::MUTED)
+                                                        .monospace()
+                                                        .size(9.0),
+                                                );
+                                            }
+                                        });
+                                });
+                        }
+                        ui.add_space(6.0);
+                    }
+                });
+            ui.add_space(12.0);
+        }
+        match action {
+            Some(ProcessAction::Start(id)) => self.start_process(&id),
+            Some(ProcessAction::Stop(id)) => self.stop_process(&id),
+            None => {}
+        }
+    }
+
     fn content(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(
@@ -573,6 +851,7 @@ impl LocalCodePilot {
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Overview => self.overview(ui),
                     Page::Projects => self.projects_page(ctx, ui),
+                    Page::Processes => self.processes_page(ui),
                     page => {
                         ui.heading(self.page_title());
                         ui.add_space(8.0);
@@ -580,7 +859,6 @@ impl LocalCodePilot {
                             RichText::new(format!(
                                 "A área de {} está pronta para a próxima etapa.",
                                 match page {
-                                    Page::Processes => "processos",
                                     Page::Plugins => "plugins",
                                     Page::Settings => "configurações",
                                     _ => "workspace",
@@ -597,6 +875,7 @@ impl LocalCodePilot {
 impl eframe::App for LocalCodePilot {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_discovery();
+        self.poll_processes(ctx);
         self.sidebar(ctx);
         self.topbar(ctx);
         self.content(ctx);
@@ -617,6 +896,16 @@ impl eframe::App for LocalCodePilot {
     }
 }
 
+impl Drop for LocalCodePilot {
+    fn drop(&mut self) {
+        for running in self.running_processes.values_mut() {
+            if !running.finished {
+                terminate_process(&mut running.child);
+            }
+        }
+    }
+}
+
 fn spawn_discovery(
     source: FilesystemProjectSource,
     repaint: egui::Context,
@@ -632,6 +921,60 @@ fn spawn_discovery(
         repaint.request_repaint();
     });
     receiver
+}
+
+fn process_command(process: &ProjectProcess) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/D", "/C"])
+            .arg(&process.program)
+            .args(&process.args);
+        command
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut command = Command::new(&process.program);
+        command.args(&process.args);
+        command
+    }
+}
+
+fn spawn_output_reader(reader: impl Read + Send + 'static, sender: mpsc::Sender<String>) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+fn terminate_process(child: &mut Child) {
+    #[cfg(target_os = "windows")]
+    {
+        let process_id = child.id().to_string();
+        if Command::new("taskkill")
+            .args(["/PID", &process_id, "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            return;
+        }
+    }
+    let _ = child.kill();
+}
+
+fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
+    match state {
+        ProcessState::Stopped => ("Parado", theme::MUTED),
+        ProcessState::Starting => ("Iniciando", Color32::from_rgb(255, 205, 75)),
+        ProcessState::Running => ("Executando", theme::SUCCESS),
+        ProcessState::Failed => ("Falhou", Color32::from_rgb(235, 87, 87)),
+    }
 }
 
 fn stat_card(
