@@ -15,3 +15,6 @@ rfd.workspace = true
 localcodepilot-core.workspace = true
 localcodepilot-platform.workspace = true
 localcodepilot-runtime.workspace = true
+
+[build-dependencies]
+embed-resource = "3.0"

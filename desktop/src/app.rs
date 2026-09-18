@@ -1,14 +1,16 @@
 use crate::{config, theme};
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
-    BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, MEMORY, PLAY, PLUS,
-    TERMINAL, TERMINAL_WINDOW,
+    ARROW_SQUARE_OUT, BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, MEMORY,
+    PLAY, PLUS, TERMINAL,
 };
 use localcodepilot_core::{
     discovery::DiscoveryService,
+    ports::{LocalServerUrl, extract_local_urls},
     processes::{ProcessState, ProjectProcess},
     projects::Project,
     runtimes::RuntimeKind,
+    technologies::TechnologyKind,
 };
 use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemProjectSource};
 use localcodepilot_runtime::{ManifestRuntimeDetector, detect_processes};
@@ -37,6 +39,7 @@ struct RunningProcess {
     child: Child,
     output: Receiver<String>,
     logs: VecDeque<String>,
+    urls: Vec<LocalServerUrl>,
     finished: bool,
 }
 
@@ -50,6 +53,7 @@ enum ProcessAction {
     Stop(String),
     Restart(String),
     ClearLogs(String),
+    OpenUrl(String),
 }
 
 pub struct LocalCodePilot {
@@ -58,6 +62,7 @@ pub struct LocalCodePilot {
     processes: Vec<ProjectProcess>,
     running_processes: HashMap<String, RunningProcess>,
     platform: NativePlatform,
+    logo_texture: egui::TextureHandle,
     search: String,
     notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
@@ -75,12 +80,14 @@ impl LocalCodePilot {
             config::load_scan_roots().unwrap_or_else(|| default_source.roots().to_vec());
         let source = FilesystemProjectSource::new(scan_roots.clone());
         let receiver = spawn_discovery(source, cc.egui_ctx.clone());
+        let logo_texture = load_logo_texture(&cc.egui_ctx);
         Self {
             page: Page::Overview,
             projects: Vec::new(),
             processes: Vec::new(),
             running_processes: HashMap::new(),
             platform: NativePlatform::default(),
+            logo_texture,
             search: String::new(),
             notification: Some(Notification {
                 message: "Procurando projetos na máquina...".into(),
@@ -164,17 +171,11 @@ impl LocalCodePilot {
             .show(root_ui, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    Frame::new()
-                        .fill(theme::PRIMARY)
-                        .corner_radius(10)
-                        .inner_margin(Margin::same(9))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(TERMINAL_WINDOW)
-                                    .strong()
-                                    .color(Color32::WHITE),
-                            );
-                        });
+                    ui.add(
+                        egui::Image::new(&self.logo_texture)
+                            .fit_to_exact_size(egui::vec2(42.0, 42.0))
+                            .alt_text("Logo do LocalCodePilot"),
+                    );
                     ui.vertical(|ui| {
                         ui.label(RichText::new("LocalCodePilot").strong().size(14.0));
                         ui.label(
@@ -316,12 +317,19 @@ impl LocalCodePilot {
 
                         ui.label(RichText::new(BELL).color(theme::PRIMARY).size(16.0));
 
-                        ui.add_sized(
-                            [220.0, 32.0],
-                            egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("Buscar projeto...")
-                                .horizontal_align(Align::Center),
-                        );
+                        let search_hint = match self.page {
+                            Page::Overview | Page::Projects => Some("Buscar projeto..."),
+                            Page::Processes => Some("Buscar processo..."),
+                            Page::Plugins | Page::Settings => None,
+                        };
+                        if let Some(search_hint) = search_hint {
+                            ui.add_sized(
+                                [220.0, 32.0],
+                                egui::TextEdit::singleline(&mut self.search)
+                                    .hint_text(search_hint)
+                                    .horizontal_align(Align::Center),
+                            );
+                        }
                     });
                 });
             });
@@ -755,6 +763,7 @@ impl LocalCodePilot {
                         child,
                         output,
                         logs: VecDeque::new(),
+                        urls: Vec::new(),
                         finished: false,
                     },
                 );
@@ -818,6 +827,11 @@ impl LocalCodePilot {
         let mut has_running_process = false;
         for (id, running) in &mut self.running_processes {
             while let Ok(line) = running.output.try_recv() {
+                for url in extract_local_urls(&line) {
+                    if !running.urls.contains(&url) {
+                        running.urls.push(url);
+                    }
+                }
                 running.logs.push_back(line);
                 if running.logs.len() > 500 {
                     running.logs.pop_front();
@@ -876,12 +890,31 @@ impl LocalCodePilot {
 
     fn processes_page(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
+        let query = self.search.trim().to_lowercase();
+        let matching_processes = self
+            .processes
+            .iter()
+            .filter(|process| {
+                let project = self
+                    .projects
+                    .iter()
+                    .find(|project| project.path == process.project_path);
+                process_matches_search(process, project, &query)
+            })
+            .count();
         ui.heading("Processos");
         ui.label(
-            RichText::new(format!(
-                "{} comando(s) detectado(s) em seus projetos",
-                self.processes.len()
-            ))
+            RichText::new(if query.is_empty() {
+                format!(
+                    "{} comando(s) detectado(s) em seus projetos",
+                    self.processes.len()
+                )
+            } else {
+                format!(
+                    "{matching_processes} de {} comando(s) encontrado(s)",
+                    self.processes.len()
+                )
+            })
             .color(theme::MUTED),
         );
         ui.add_space(20.0);
@@ -905,11 +938,40 @@ impl LocalCodePilot {
             return;
         }
 
+        if matching_processes == 0 {
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0_f32, theme::BORDER))
+                .corner_radius(12)
+                .inner_margin(Margin::same(24))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Nenhum processo encontrado").strong());
+                    ui.label(
+                        RichText::new(
+                            "Busque pelo projeto, tecnologia, comando ou caminho da pasta.",
+                        )
+                        .color(theme::MUTED),
+                    );
+                });
+            return;
+        }
+
         for project in &self.projects {
+            let project_matches = project.name.to_lowercase().contains(&query)
+                || project
+                    .path
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&query)
+                || project.display_stack().to_lowercase().contains(&query);
             let commands: Vec<_> = self
                 .processes
                 .iter()
                 .filter(|process| process.project_path == project.path)
+                .filter(|process| {
+                    project_matches || process_matches_search(process, Some(project), &query)
+                })
                 .cloned()
                 .collect();
             if commands.is_empty() {
@@ -925,7 +987,22 @@ impl LocalCodePilot {
                     ui.label(RichText::new(&project.name).strong().size(15.0));
                     ui.add_space(10.0);
                     for command in commands {
-                        let (state_label, state_color) = process_state_display(command.state);
+                        let server_url = if command.state == ProcessState::Running
+                            && process_exposes_application_url(project, &command)
+                        {
+                            self.running_processes
+                                .get(&command.id)
+                                .and_then(|running| running.urls.last())
+                                .cloned()
+                        } else {
+                            None
+                        };
+                        let (state_label, state_color) =
+                            if command.state == ProcessState::Running && server_url.is_some() {
+                                ("Disponível", theme::SUCCESS)
+                            } else {
+                                process_state_display(command.state)
+                            };
                         Frame::new()
                             .fill(theme::BACKGROUND)
                             .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.75)))
@@ -990,6 +1067,29 @@ impl LocalCodePilot {
                                         }
                                     });
                                 });
+                                if let Some(server_url) = &server_url {
+                                    ui.add_space(3.0);
+                                    if ui
+                                        .link(
+                                            RichText::new(format!(
+                                                "Abrir {} no navegador {ARROW_SQUARE_OUT}",
+                                                project.name
+                                            ))
+                                            .color(theme::SUCCESS)
+                                            .size(10.0),
+                                        )
+                                        .on_hover_text(format!(
+                                            "Abrir no navegador · porta {}",
+                                            server_url.port().value()
+                                        ))
+                                        .clicked()
+                                    {
+                                        action = Some(ProcessAction::OpenUrl(
+                                            server_url.address().to_owned(),
+                                        ));
+                                    }
+                                    ui.add_space(2.0);
+                                }
                                 ui.add_space(4.0);
                                 ui.label(
                                     RichText::new(command.command_line())
@@ -1069,6 +1169,10 @@ impl LocalCodePilot {
             Some(ProcessAction::Stop(id)) => self.stop_process(&id),
             Some(ProcessAction::Restart(id)) => self.restart_process(&id),
             Some(ProcessAction::ClearLogs(id)) => self.clear_process_logs(&id),
+            Some(ProcessAction::OpenUrl(url)) => {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
+                self.notify(format!("Abrindo {url}"));
+            }
             None => {}
         }
     }
@@ -1145,6 +1249,17 @@ fn spawn_discovery(
         repaint.request_repaint();
     });
     receiver
+}
+
+fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../../assets/branding/icon-512.png"))
+            .expect("the embedded LocalCodePilot logo must be a valid PNG");
+    let image = egui::ColorImage::from_rgba_unmultiplied(
+        [icon.width as usize, icon.height as usize],
+        &icon.rgba,
+    );
+    ctx.load_texture("localcodepilot-logo", image, egui::TextureOptions::LINEAR)
 }
 
 fn process_command(process: &ProjectProcess) -> Command {
@@ -1246,6 +1361,44 @@ fn terminate_process(child: &mut Child) {
     let _ = child.wait();
 }
 
+fn process_matches_search(
+    process: &ProjectProcess,
+    project: Option<&Project>,
+    query: &str,
+) -> bool {
+    query.is_empty()
+        || process.project_name.to_lowercase().contains(query)
+        || process.name.to_lowercase().contains(query)
+        || process.command_line().to_lowercase().contains(query)
+        || process
+            .project_path
+            .to_string_lossy()
+            .to_lowercase()
+            .contains(query)
+        || process
+            .working_directory
+            .to_string_lossy()
+            .to_lowercase()
+            .contains(query)
+        || project.is_some_and(|project| project.display_stack().to_lowercase().contains(query))
+}
+
+fn process_exposes_application_url(project: &Project, process: &ProjectProcess) -> bool {
+    if !project.technologies.contains(&TechnologyKind::Laravel) {
+        return true;
+    }
+
+    process.program.eq_ignore_ascii_case("php")
+        && process
+            .args
+            .first()
+            .is_some_and(|argument| argument == "artisan")
+        && process
+            .args
+            .get(1)
+            .is_some_and(|argument| argument == "serve")
+}
+
 fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
     match state {
         ProcessState::Stopped => ("Parado", theme::MUTED),
@@ -1324,11 +1477,19 @@ fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) -> Option<Path
                 });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if project.runtimes.is_empty() {
+                if project.runtimes.is_empty() && project.technologies.is_empty() {
                     runtime_badge(ui, "Projeto local", theme::MUTED);
                 } else {
-                    for runtime in &project.runtimes {
-                        runtime_badge(ui, &runtime.to_string(), runtime_color(*runtime));
+                    for technology in &project.technologies {
+                        runtime_badge(ui, &technology.to_string(), technology_color(*technology));
+                    }
+                    for runtime in project
+                        .runtimes
+                        .iter()
+                        .copied()
+                        .filter(|runtime| project.shows_runtime(*runtime))
+                    {
+                        runtime_badge(ui, &runtime.to_string(), runtime_color(runtime));
                     }
                 }
             });
@@ -1393,9 +1554,26 @@ fn runtime_color(runtime: RuntimeKind) -> Color32 {
     }
 }
 
+fn technology_color(technology: TechnologyKind) -> Color32 {
+    match technology {
+        TechnologyKind::Laravel => Color32::from_rgb(255, 70, 70),
+        TechnologyKind::Vue => Color32::from_rgb(66, 184, 131),
+        TechnologyKind::React => Color32::from_rgb(97, 218, 251),
+        TechnologyKind::TypeScript => Color32::from_rgb(49, 120, 198),
+        TechnologyKind::JavaScript => Color32::from_rgb(240, 219, 79),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::executable_available;
+    use super::{executable_available, process_exposes_application_url, process_matches_search};
+    use localcodepilot_core::{
+        processes::{ProcessState, ProjectProcess},
+        projects::Project,
+        runtimes::RuntimeKind,
+        technologies::TechnologyKind,
+    };
+    use std::path::PathBuf;
 
     #[test]
     fn finds_an_executable_by_its_full_path() {
@@ -1409,5 +1587,56 @@ mod tests {
         assert!(!executable_available(
             "localcodepilot-program-that-does-not-exist-7d2bcfd8"
         ));
+    }
+
+    #[test]
+    fn searches_processes_by_project_technology_and_command() {
+        let project = Project::new(PathBuf::from("app-gestao"), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::Laravel, TechnologyKind::Vue]);
+        let process = ProjectProcess {
+            id: "app-gestao::npm run dev".into(),
+            project_name: project.name.clone(),
+            project_path: project.path.clone(),
+            working_directory: project.path.clone(),
+            name: "Desenvolvimento".into(),
+            program: "npm".into(),
+            args: vec!["run".into(), "dev".into()],
+            state: ProcessState::Stopped,
+            process_id: None,
+            exit_code: None,
+        };
+
+        assert!(process_matches_search(&process, Some(&project), "laravel"));
+        assert!(process_matches_search(&process, Some(&project), "npm run"));
+        assert!(process_matches_search(
+            &process,
+            Some(&project),
+            "app-gestao"
+        ));
+        assert!(!process_matches_search(&process, Some(&project), "django"));
+    }
+
+    #[test]
+    fn exposes_only_the_laravel_server_url_in_laravel_projects() {
+        let project = Project::new(PathBuf::from("app-gestao"), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::Laravel, TechnologyKind::Vue]);
+        let mut process = ProjectProcess {
+            id: "app-gestao::npm run dev".into(),
+            project_name: project.name.clone(),
+            project_path: project.path.clone(),
+            working_directory: project.path.clone(),
+            name: "Frontend".into(),
+            program: "npm".into(),
+            args: vec!["run".into(), "dev".into()],
+            state: ProcessState::Running,
+            process_id: Some(123),
+            exit_code: None,
+        };
+
+        assert!(!process_exposes_application_url(&project, &process));
+
+        process.program = "php".into();
+        process.args = vec!["artisan".into(), "serve".into()];
+        assert!(process_exposes_application_url(&project, &process));
     }
 }

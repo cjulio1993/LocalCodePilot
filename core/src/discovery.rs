@@ -1,6 +1,7 @@
 use crate::{
     projects::{Project, ProjectCatalog},
     runtimes::RuntimeKind,
+    technologies::TechnologyKind,
 };
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,10 @@ pub trait ProjectSource {
 
 pub trait RuntimeDetector {
     fn detect(&self, path: &Path) -> Vec<RuntimeKind>;
+
+    fn detect_technologies(&self, _path: &Path) -> Vec<TechnologyKind> {
+        Vec::new()
+    }
 }
 
 pub struct DiscoveryService<S, D> {
@@ -31,8 +36,9 @@ where
         let mut catalog = ProjectCatalog::default();
         for path in self.source.candidate_paths()? {
             let runtimes = self.detector.detect(&path);
-            if !runtimes.is_empty() {
-                catalog.add(Project::new(path, runtimes));
+            let technologies = self.detector.detect_technologies(&path);
+            if !runtimes.is_empty() || !technologies.is_empty() {
+                catalog.add(Project::new(path, runtimes).with_technologies(technologies));
             }
         }
         Ok(catalog)
