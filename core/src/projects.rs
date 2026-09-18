@@ -1,4 +1,4 @@
-use crate::runtimes::RuntimeKind;
+use crate::{runtimes::RuntimeKind, technologies::TechnologyKind};
 use std::{
     collections::VecDeque,
     fs,
@@ -24,6 +24,7 @@ pub struct Project {
     pub name: String,
     pub path: PathBuf,
     pub runtimes: Vec<RuntimeKind>,
+    pub technologies: Vec<TechnologyKind>,
     pub modified_at: Option<SystemTime>,
 }
 
@@ -40,19 +41,41 @@ impl Project {
             name,
             path,
             runtimes,
+            technologies: Vec::new(),
             modified_at,
         }
     }
 
+    pub fn with_technologies(mut self, technologies: Vec<TechnologyKind>) -> Self {
+        self.technologies = technologies;
+        self
+    }
+
+    pub fn shows_runtime(&self, runtime: RuntimeKind) -> bool {
+        runtime != RuntimeKind::Node
+            || !self
+                .technologies
+                .iter()
+                .any(|technology| technology.uses_node_tooling())
+    }
+
     pub fn display_stack(&self) -> String {
-        if self.runtimes.is_empty() {
+        let labels = self
+            .technologies
+            .iter()
+            .map(ToString::to_string)
+            .chain(
+                self.runtimes
+                    .iter()
+                    .copied()
+                    .filter(|runtime| self.shows_runtime(*runtime))
+                    .map(|runtime| runtime.to_string()),
+            )
+            .collect::<Vec<_>>();
+        if labels.is_empty() {
             "Projeto local".into()
         } else {
-            self.runtimes
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" + ")
+            labels.join(" + ")
         }
     }
 }
@@ -146,6 +169,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::technologies::TechnologyKind;
 
     #[test]
     fn catalog_rejects_duplicate_paths() {
@@ -153,5 +177,13 @@ mod tests {
         let project = Project::new(PathBuf::from("project"), vec![RuntimeKind::Rust]);
         assert!(catalog.add(project.clone()));
         assert!(!catalog.add(project));
+    }
+
+    #[test]
+    fn display_stack_prefers_detected_technologies_over_node() {
+        let project = Project::new(PathBuf::from("project"), vec![RuntimeKind::Node])
+            .with_technologies(vec![TechnologyKind::Vue, TechnologyKind::TypeScript]);
+
+        assert_eq!(project.display_stack(), "Vue + TypeScript");
     }
 }

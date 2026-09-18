@@ -43,7 +43,8 @@ fn inspect(path: Option<PathBuf>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let runtimes = localcodepilot_runtime::detect(&path);
-    let project = Project::new(path, runtimes);
+    let technologies = localcodepilot_runtime::detect_technologies(&path);
+    let project = Project::new(path, runtimes).with_technologies(technologies);
     println!("{} — {}", project.name, project.display_stack());
     println!("{}", project.path.display());
     ExitCode::SUCCESS

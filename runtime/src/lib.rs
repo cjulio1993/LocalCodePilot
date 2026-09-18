@@ -3,6 +3,7 @@ use localcodepilot_core::{
     processes::{ProcessState, ProjectProcess},
     projects::Project,
     runtimes::RuntimeKind,
+    technologies::TechnologyKind,
 };
 use std::{collections::VecDeque, fs, path::Path};
 
@@ -62,6 +63,40 @@ pub fn detect(path: &Path) -> Vec<RuntimeKind> {
     found
 }
 
+pub fn detect_technologies(path: &Path) -> Vec<TechnologyKind> {
+    let mut found = Vec::new();
+    detect_technologies_in_directory(path, &mut found);
+
+    if path.join(".git").exists() {
+        let mut queue = VecDeque::from([(path.to_path_buf(), 0_usize)]);
+        while let Some((directory, depth)) = queue.pop_front() {
+            if depth > 0 {
+                detect_technologies_in_directory(&directory, &mut found);
+            }
+            if depth >= 8 {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && !name.starts_with('.')
+                    && !IGNORED_DIRECTORIES
+                        .iter()
+                        .any(|ignored| name.eq_ignore_ascii_case(ignored))
+                {
+                    queue.push_back((entry.path(), depth + 1));
+                }
+            }
+        }
+    }
+    found.sort_by_key(|technology| technology_priority(*technology));
+    found
+}
+
 pub fn detect_processes(project: &Project) -> Vec<ProjectProcess> {
     let mut processes = Vec::new();
     detect_processes_in_directory(project, &project.path, &mut processes);
@@ -101,24 +136,19 @@ fn detect_processes_in_directory(
     processes: &mut Vec<ProjectProcess>,
 ) {
     let belongs_to_laravel = has_marker_in_ancestors(directory, &project.path, "artisan");
-    if directory.join("Cargo.toml").is_file() {
-        push_process(
-            processes,
+    detect_cargo_process(project, directory, processes);
+    if belongs_to_laravel {
+        detect_laravel_frontend_process(project, directory, processes);
+    } else {
+        detect_json_scripts(
             project,
             directory,
-            "Executar projeto",
-            "cargo",
+            "package.json",
+            "npm",
             &["run"],
+            processes,
         );
     }
-    detect_json_scripts(
-        project,
-        directory,
-        "package.json",
-        "npm",
-        &["run"],
-        processes,
-    );
     if !belongs_to_laravel {
         detect_json_scripts(
             project,
@@ -163,6 +193,161 @@ fn detect_processes_in_directory(
             push_process(processes, project, directory, name, "python", &args);
         }
     }
+}
+
+fn detect_laravel_frontend_process(
+    project: &Project,
+    directory: &Path,
+    processes: &mut Vec<ProjectProcess>,
+) {
+    let Ok(contents) = fs::read_to_string(directory.join("package.json")) else {
+        return;
+    };
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return;
+    };
+    let Some(command) = document
+        .get("scripts")
+        .and_then(|scripts| scripts.get("dev"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    let command = command.to_ascii_lowercase();
+    let uses_laravel_frontend_tooling = command.contains("vite")
+        || command.contains("mix")
+        || command.contains("webpack")
+        || package_has_dependency(&document, "laravel-vite-plugin")
+        || package_has_dependency(&document, "laravel-mix");
+
+    if uses_laravel_frontend_tooling {
+        push_process(
+            processes,
+            project,
+            directory,
+            "Frontend",
+            "npm",
+            &["run", "dev"],
+        );
+    }
+}
+
+fn package_has_dependency(document: &serde_json::Value, dependency: &str) -> bool {
+    ["dependencies", "devDependencies"]
+        .iter()
+        .filter_map(|section| document.get(section).and_then(serde_json::Value::as_object))
+        .any(|dependencies| dependencies.contains_key(dependency))
+}
+
+fn detect_cargo_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let Some(manifest) = read_cargo_manifest(directory) else {
+        return;
+    };
+
+    // Um membro de workspace possui seu próprio Cargo.toml, mas deve ser
+    // executado por meio do manifesto que coordena o workspace.
+    if has_cargo_workspace_ancestor(directory, &project.path) {
+        return;
+    }
+
+    if let Some(workspace) = manifest.get("workspace").and_then(toml::Value::as_table) {
+        if workspace_has_runnable_default_member(directory, workspace) {
+            push_process(
+                processes,
+                project,
+                directory,
+                "Executar workspace",
+                "cargo",
+                &["run"],
+            );
+        } else if workspace.get("default-members").is_none()
+            && cargo_package_is_runnable(directory, &manifest)
+        {
+            push_process(
+                processes,
+                project,
+                directory,
+                "Executar projeto",
+                "cargo",
+                &["run"],
+            );
+        }
+        return;
+    }
+
+    if cargo_package_is_runnable(directory, &manifest) {
+        push_process(
+            processes,
+            project,
+            directory,
+            "Executar projeto",
+            "cargo",
+            &["run"],
+        );
+    }
+}
+
+fn read_cargo_manifest(directory: &Path) -> Option<toml::Value> {
+    let contents = fs::read_to_string(directory.join("Cargo.toml")).ok()?;
+    toml::from_str(&contents).ok()
+}
+
+fn cargo_package_is_runnable(directory: &Path, manifest: &toml::Value) -> bool {
+    let Some(package) = manifest.get("package").and_then(toml::Value::as_table) else {
+        return false;
+    };
+    let has_explicit_binary = manifest
+        .get("bin")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|binaries| !binaries.is_empty());
+    let automatic_binaries_enabled = package
+        .get("autobins")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+
+    has_explicit_binary || (automatic_binaries_enabled && directory.join("src/main.rs").is_file())
+}
+
+fn workspace_has_runnable_default_member(
+    workspace_root: &Path,
+    workspace: &toml::value::Table,
+) -> bool {
+    let Some(default_members) = workspace
+        .get("default-members")
+        .and_then(toml::Value::as_array)
+    else {
+        return false;
+    };
+    let [member] = default_members.as_slice() else {
+        return false;
+    };
+    let Some(member) = member.as_str() else {
+        return false;
+    };
+    if member.contains(['*', '?', '[', ']']) {
+        return false;
+    }
+
+    let member_directory = workspace_root.join(member);
+    read_cargo_manifest(&member_directory)
+        .is_some_and(|manifest| cargo_package_is_runnable(&member_directory, &manifest))
+}
+
+fn has_cargo_workspace_ancestor(directory: &Path, project_root: &Path) -> bool {
+    let mut current = directory.parent();
+    while let Some(path) = current {
+        if !path.starts_with(project_root) {
+            break;
+        }
+        if read_cargo_manifest(path).is_some_and(|manifest| manifest.get("workspace").is_some()) {
+            return true;
+        }
+        if path == project_root {
+            break;
+        }
+        current = path.parent();
+    }
+    false
 }
 
 fn detect_json_scripts(
@@ -286,12 +471,93 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
     }
 }
 
+fn detect_technologies_in_directory(path: &Path, found: &mut Vec<TechnologyKind>) {
+    if path.join("artisan").is_file() {
+        push_unique(found, TechnologyKind::Laravel);
+    }
+
+    let package_path = path.join("package.json");
+    let package = fs::read_to_string(&package_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok());
+    if let Some(package) = &package {
+        let has_dependency = |candidate: &str| {
+            ["dependencies", "devDependencies"]
+                .iter()
+                .filter_map(|section| package.get(section).and_then(|value| value.as_object()))
+                .any(|dependencies| dependencies.contains_key(candidate))
+        };
+        if has_dependency("vue") || has_dependency("nuxt") || has_dependency("@vitejs/plugin-vue") {
+            push_unique(found, TechnologyKind::Vue);
+        }
+        if has_dependency("react")
+            || has_dependency("react-dom")
+            || has_dependency("next")
+            || has_dependency("@vitejs/plugin-react")
+        {
+            push_unique(found, TechnologyKind::React);
+        }
+    }
+
+    let mut has_javascript = package.is_some();
+    let mut has_typescript = path.join("tsconfig.json").is_file()
+        || package.as_ref().is_some_and(|package| {
+            ["dependencies", "devDependencies"]
+                .iter()
+                .filter_map(|section| package.get(section).and_then(|value| value.as_object()))
+                .any(|dependencies| dependencies.contains_key("typescript"))
+        });
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                continue;
+            }
+            match entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("ts" | "tsx") => has_typescript = true,
+                Some("js" | "jsx" | "mjs" | "cjs" | "vue") => has_javascript = true,
+                _ => {}
+            }
+        }
+    }
+    if has_typescript {
+        push_unique(found, TechnologyKind::TypeScript);
+    } else if has_javascript {
+        push_unique(found, TechnologyKind::JavaScript);
+    }
+}
+
+fn push_unique(found: &mut Vec<TechnologyKind>, technology: TechnologyKind) {
+    if !found.contains(&technology) {
+        found.push(technology);
+    }
+}
+
+fn technology_priority(technology: TechnologyKind) -> usize {
+    match technology {
+        TechnologyKind::Laravel => 0,
+        TechnologyKind::Vue => 1,
+        TechnologyKind::React => 2,
+        TechnologyKind::TypeScript => 3,
+        TechnologyKind::JavaScript => 4,
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ManifestRuntimeDetector;
 
 impl RuntimeDetector for ManifestRuntimeDetector {
     fn detect(&self, path: &Path) -> Vec<RuntimeKind> {
         detect(path)
+    }
+
+    fn detect_technologies(&self, path: &Path) -> Vec<TechnologyKind> {
+        detect_technologies(path)
     }
 }
 
@@ -311,6 +577,68 @@ mod tests {
         fs::write(path.join("Cargo.toml"), "").unwrap();
         fs::write(path.join("package.json"), "{}").unwrap();
         assert_eq!(detect(&path), vec![RuntimeKind::Rust, RuntimeKind::Node]);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn detects_laravel_vue_and_typescript() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-technologies-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("artisan"), "").unwrap();
+        fs::write(path.join("tsconfig.json"), "{}").unwrap();
+        fs::write(
+            path.join("package.json"),
+            r#"{"dependencies":{"vue":"^3.0.0"},"devDependencies":{"typescript":"^5.0.0"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_technologies(&path),
+            [
+                TechnologyKind::Laravel,
+                TechnologyKind::Vue,
+                TechnologyKind::TypeScript
+            ]
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn detects_react_with_javascript() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-react-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(
+            path.join("package.json"),
+            r#"{"dependencies":{"react":"^19.0.0","react-dom":"^19.0.0"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_technologies(&path),
+            [TechnologyKind::React, TechnologyKind::JavaScript]
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn detects_plain_javascript_without_a_manifest() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-javascript-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("app.js"), "console.log('hello')").unwrap();
+
+        assert_eq!(detect_technologies(&path), [TechnologyKind::JavaScript]);
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -405,14 +733,45 @@ mod tests {
     }
 
     #[test]
+    fn ignores_a_node_server_that_is_not_laravel_frontend_tooling() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-laravel-node-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("artisan"), "").unwrap();
+        fs::write(
+            path.join("package.json"),
+            r#"{"scripts":{"dev":"node server.js"}}"#,
+        )
+        .unwrap();
+        let project = Project::new(path.clone(), vec![RuntimeKind::Node, RuntimeKind::Php]);
+
+        let commands: Vec<_> = detect_processes(&project)
+            .iter()
+            .map(ProjectProcess::command_line)
+            .collect();
+
+        assert_eq!(commands, ["php artisan serve"]);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn detects_common_rust_php_and_python_commands() {
         let nonce = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!("localcodepilot-commands-{nonce}"));
-        fs::create_dir(&path).unwrap();
-        for file in ["Cargo.toml", "artisan", "manage.py"] {
+        fs::create_dir_all(path.join("src")).unwrap();
+        fs::write(
+            path.join("Cargo.toml"),
+            "[package]\nname = \"example\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(path.join("src/main.rs"), "fn main() {}\n").unwrap();
+        for file in ["artisan", "manage.py"] {
             fs::write(path.join(file), "").unwrap();
         }
         let project = Project::new(path.clone(), vec![]);
@@ -430,6 +789,64 @@ mod tests {
                 "python manage.py runserver"
             ]
         );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn detects_only_the_default_program_in_a_cargo_workspace() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-workspace-{nonce}"));
+        fs::create_dir_all(path.join(".git")).unwrap();
+        fs::write(
+            path.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"core\", \"cli\", \"desktop\"]\ndefault-members = [\"desktop\"]\n",
+        )
+        .unwrap();
+
+        for member in ["core", "cli", "desktop"] {
+            let member_path = path.join(member);
+            fs::create_dir_all(member_path.join("src")).unwrap();
+            fs::write(
+                member_path.join("Cargo.toml"),
+                format!("[package]\nname = \"{member}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+        }
+        fs::write(path.join("core/src/lib.rs"), "").unwrap();
+        fs::write(path.join("cli/src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(path.join("desktop/src/main.rs"), "fn main() {}\n").unwrap();
+
+        let project = Project::new(path.clone(), vec![RuntimeKind::Rust]);
+        let commands = detect_processes(&project);
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "Executar workspace");
+        assert_eq!(commands[0].command_line(), "cargo run");
+        assert_eq!(commands[0].working_directory, path.canonicalize().unwrap());
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn does_not_offer_cargo_run_for_a_library_package() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-library-{nonce}"));
+        fs::create_dir_all(path.join("src")).unwrap();
+        fs::write(
+            path.join("Cargo.toml"),
+            "[package]\nname = \"library\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(path.join("src/lib.rs"), "").unwrap();
+
+        let project = Project::new(path.clone(), vec![RuntimeKind::Rust]);
+
+        assert!(detect_processes(&project).is_empty());
         fs::remove_dir_all(path).unwrap();
     }
 
