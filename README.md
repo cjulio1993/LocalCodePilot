@@ -4,9 +4,9 @@
   <img src="assets/branding/logo.svg" alt="LocalCodePilot" width="600">
 </p>
 
-> Um gerenciador local de projetos e ambientes de desenvolvimento, nativo e escrito em Rust.
+> Uma plataforma local para descobrir, executar e organizar projetos, processos e ferramentas em um só lugar.
 
-> A native, Rust-based manager for local development projects and environments.
+> A local platform to discover, run, and organize projects, processes, and tools in one place.
 
 **Status: em construção / work in progress.** O LocalCodePilot ainda está em desenvolvimento inicial. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
