@@ -18,8 +18,11 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, TryRecvError},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+const NOTIFICATION_DURATION: Duration = Duration::from_millis(4_200);
+const NOTIFICATION_FADE_START: Duration = Duration::from_millis(3_200);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -37,9 +40,16 @@ struct RunningProcess {
     finished: bool,
 }
 
+struct Notification {
+    message: String,
+    created_at: Instant,
+}
+
 enum ProcessAction {
     Start(String),
     Stop(String),
+    Restart(String),
+    ClearLogs(String),
 }
 
 pub struct LocalCodePilot {
@@ -49,7 +59,7 @@ pub struct LocalCodePilot {
     running_processes: HashMap<String, RunningProcess>,
     platform: NativePlatform,
     search: String,
-    status: Option<String>,
+    notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
     discovery: Option<Receiver<Result<Vec<Project>, String>>>,
 }
@@ -72,22 +82,86 @@ impl LocalCodePilot {
             running_processes: HashMap::new(),
             platform: NativePlatform::default(),
             search: String::new(),
-            status: Some("Procurando projetos na máquina...".into()),
+            notification: Some(Notification {
+                message: "Procurando projetos na máquina...".into(),
+                created_at: Instant::now(),
+            }),
             scan_roots,
             discovery: Some(receiver),
         }
     }
 
-    fn sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("sidebar")
-            .exact_width(248.0)
+    fn notify(&mut self, message: impl Into<String>) {
+        self.notification = Some(Notification {
+            message: message.into(),
+            created_at: Instant::now(),
+        });
+    }
+
+    fn show_notification(&mut self, root_ui: &mut egui::Ui) {
+        let Some(notification) = &self.notification else {
+            return;
+        };
+        let elapsed = notification.created_at.elapsed();
+        if elapsed >= NOTIFICATION_DURATION {
+            self.notification = None;
+            return;
+        }
+
+        let opacity = if elapsed < NOTIFICATION_FADE_START {
+            1.0
+        } else {
+            let fade_elapsed = elapsed - NOTIFICATION_FADE_START;
+            let fade_duration = NOTIFICATION_DURATION - NOTIFICATION_FADE_START;
+            1.0 - fade_elapsed.as_secs_f32() / fade_duration.as_secs_f32()
+        };
+        let message = notification.message.clone();
+        root_ui
+            .ctx()
+            .request_repaint_after(Duration::from_millis(50));
+
+        egui::Area::new("notification".into())
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, [-24.0, -24.0])
+            .show(root_ui, |ui| {
+                Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(
+                        26,
+                        29,
+                        38,
+                        (220.0 * opacity) as u8,
+                    ))
+                    .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(opacity)))
+                    .corner_radius(10)
+                    .inner_margin(Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.set_max_width(360.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(CIRCLE)
+                                    .color(theme::SUCCESS.gamma_multiply(opacity))
+                                    .size(8.0),
+                            );
+                            ui.label(
+                                RichText::new(message)
+                                    .color(theme::TEXT.gamma_multiply(opacity))
+                                    .size(11.0),
+                            );
+                        });
+                    });
+            });
+    }
+
+    fn sidebar(&mut self, root_ui: &mut egui::Ui) {
+        egui::Panel::left("sidebar")
+            .exact_size(248.0)
             .frame(
                 Frame::new()
                     .fill(theme::SIDEBAR)
                     .inner_margin(Margin::same(14))
                     .stroke(Stroke::new(1.0_f32, theme::BORDER)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     Frame::new()
@@ -213,16 +287,16 @@ impl LocalCodePilot {
         }
     }
 
-    fn topbar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("topbar")
-            .exact_height(64.0)
+    fn topbar(&mut self, root_ui: &mut egui::Ui) {
+        egui::Panel::top("topbar")
+            .exact_size(64.0)
             .frame(
                 Frame::new()
                     .fill(theme::BACKGROUND)
                     .inner_margin(Margin::symmetric(26, 14))
                     .stroke(Stroke::new(1.0_f32, theme::BORDER)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!("Workspace  {CARET_RIGHT}"))
@@ -269,17 +343,17 @@ impl LocalCodePilot {
         };
         match receiver.try_recv() {
             Ok(Ok(projects)) => {
-                self.status = Some(format!("{} projeto(s) encontrado(s)", projects.len()));
+                self.notify(format!("{} projeto(s) encontrado(s)", projects.len()));
                 self.processes = projects.iter().flat_map(detect_processes).collect();
                 self.projects = projects;
                 self.discovery = None;
             }
             Ok(Err(error)) => {
-                self.status = Some(format!("Não foi possível concluir a varredura: {error}"));
+                self.notify(format!("Não foi possível concluir a varredura: {error}"));
                 self.discovery = None;
             }
             Err(TryRecvError::Disconnected) => {
-                self.status = Some("A varredura foi interrompida".into());
+                self.notify("A varredura foi interrompida");
                 self.discovery = None;
             }
             Err(TryRecvError::Empty) => {}
@@ -287,10 +361,14 @@ impl LocalCodePilot {
     }
 
     fn refresh_projects(&mut self, ctx: &egui::Context) {
+        if self.has_active_processes() {
+            self.notify("Pare os processos ativos antes de atualizar os projetos");
+            return;
+        }
         if self.discovery.is_some() {
             return;
         }
-        self.status = Some("Atualizando a lista de projetos...".into());
+        self.notify("Atualizando a lista de projetos...");
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             ctx.clone(),
@@ -298,13 +376,17 @@ impl LocalCodePilot {
     }
 
     fn add_scan_root(&mut self, ctx: &egui::Context, path: PathBuf) {
+        if self.has_active_processes() {
+            self.notify("Pare os processos ativos antes de adicionar uma pasta");
+            return;
+        }
         let path = path.canonicalize().unwrap_or(path);
         if self.scan_roots.iter().any(|root| root == &path) {
-            self.status = Some("Essa pasta já faz parte da varredura".into());
+            self.notify("Essa pasta já faz parte da varredura");
             return;
         }
         self.scan_roots.push(path);
-        self.status = Some(match config::save_scan_roots(&self.scan_roots) {
+        self.notify(match config::save_scan_roots(&self.scan_roots) {
             Ok(()) => "Pasta adicionada. Procurando projetos...".into(),
             Err(error) => format!("Pasta adicionada, mas não foi possível salvar: {error}"),
         });
@@ -315,8 +397,12 @@ impl LocalCodePilot {
     }
 
     fn remove_scan_root(&mut self, ctx: &egui::Context, path: &Path) {
+        if self.has_active_processes() {
+            self.notify("Pare os processos ativos antes de remover uma pasta");
+            return;
+        }
         self.scan_roots.retain(|root| root != path);
-        self.status = Some(match config::save_scan_roots(&self.scan_roots) {
+        self.notify(match config::save_scan_roots(&self.scan_roots) {
             Ok(()) => "Pasta removida. Atualizando os projetos...".into(),
             Err(error) => format!("Pasta removida, mas não foi possível salvar: {error}"),
         });
@@ -327,8 +413,12 @@ impl LocalCodePilot {
     }
 
     fn reset_scan_roots(&mut self, ctx: &egui::Context) {
+        if self.has_active_processes() {
+            self.notify("Pare os processos ativos antes de restaurar as pastas");
+            return;
+        }
         self.scan_roots = FilesystemProjectSource::common_locations().roots().to_vec();
-        self.status = Some(match config::save_scan_roots(&self.scan_roots) {
+        self.notify(match config::save_scan_roots(&self.scan_roots) {
             Ok(()) => "Pastas padrão restauradas. Atualizando os projetos...".into(),
             Err(error) => format!("Pastas restauradas, mas não foi possível salvar: {error}"),
         });
@@ -367,9 +457,7 @@ impl LocalCodePilot {
                     )
                     .clicked()
                 {
-                    self.status = Some(
-                        "O assistente de criação de projetos será adicionado futuramente".into(),
-                    );
+                    self.notify("O assistente de criação de projetos será adicionado futuramente");
                 }
             });
         });
@@ -497,7 +585,7 @@ impl LocalCodePilot {
             .show(ui, |ui| {
                 for (index, project) in projects.iter().enumerate() {
                     if let Some(path) = project_card(ui, project, card_width) {
-                        self.status = Some(match open_in_vscode(&path) {
+                        self.notify(match open_in_vscode(&path) {
                             Ok(()) => format!("Abrindo {} no VS Code...", project.name),
                             Err(error) => error,
                         });
@@ -510,6 +598,7 @@ impl LocalCodePilot {
     }
 
     fn projects_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let has_active_processes = self.has_active_processes();
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.heading("Projetos");
@@ -524,15 +613,16 @@ impl LocalCodePilot {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let scanning = self.discovery.is_some();
+                let can_change_roots = !scanning && !has_active_processes;
                 if ui
-                    .add_enabled(!scanning, egui::Button::new("Atualizar"))
+                    .add_enabled(can_change_roots, egui::Button::new("Atualizar"))
                     .clicked()
                 {
                     self.refresh_projects(ctx);
                 }
                 if ui
                     .add_enabled(
-                        !scanning,
+                        can_change_roots,
                         egui::Button::new(format!("{PLUS}  Adicionar pasta")).fill(theme::PRIMARY),
                     )
                     .clicked()
@@ -548,6 +638,13 @@ impl LocalCodePilot {
                 }
             });
         });
+        if has_active_processes {
+            ui.label(
+                RichText::new("Pare os processos ativos para alterar ou atualizar os projetos.")
+                    .color(Color32::from_rgb(255, 205, 75))
+                    .size(10.0),
+            );
+        }
         let mut root_to_remove = None;
         ui.collapsing(
             format!("Pastas examinadas ({})", self.scan_roots.len()),
@@ -563,7 +660,7 @@ impl LocalCodePilot {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
                                 .add_enabled(
-                                    self.discovery.is_none(),
+                                    self.discovery.is_none() && !has_active_processes,
                                     egui::Button::new("Remover").small(),
                                 )
                                 .clicked()
@@ -576,7 +673,7 @@ impl LocalCodePilot {
                 ui.add_space(6.0);
                 if ui
                     .add_enabled(
-                        self.discovery.is_none(),
+                        self.discovery.is_none() && !has_active_processes,
                         egui::Button::new("Restaurar pastas padrão"),
                     )
                     .clicked()
@@ -594,17 +691,48 @@ impl LocalCodePilot {
 
     fn start_process(&mut self, id: &str) {
         let Some(index) = self.processes.iter().position(|process| process.id == id) else {
+            self.notify("O comando selecionado não está mais disponível");
             return;
         };
+        if self.discovery.is_some() {
+            self.notify("Aguarde a varredura terminar antes de iniciar um processo");
+            return;
+        }
         if self
             .running_processes
             .get(id)
             .is_some_and(|running| !running.finished)
         {
+            self.notify(format!(
+                "{} já está em execução",
+                self.processes[index].name
+            ));
             return;
         }
         let process = self.processes[index].clone();
+        if !process.working_directory.is_dir() {
+            self.processes[index].state = ProcessState::Failed;
+            self.processes[index].process_id = None;
+            self.processes[index].exit_code = None;
+            self.notify(format!(
+                "Não foi possível iniciar {}: a pasta '{}' não existe mais",
+                process.name,
+                process.working_directory.display()
+            ));
+            return;
+        }
+        if !executable_available(&process.program) {
+            self.processes[index].state = ProcessState::Failed;
+            self.processes[index].process_id = None;
+            self.processes[index].exit_code = None;
+            self.notify(format!(
+                "Não foi possível iniciar {}: o programa '{}' não foi encontrado no PATH",
+                process.name, process.program
+            ));
+            return;
+        }
         self.processes[index].state = ProcessState::Starting;
+        self.processes[index].exit_code = None;
         let mut command = process_command(&process);
         command
             .current_dir(&process.working_directory)
@@ -632,12 +760,14 @@ impl LocalCodePilot {
                 );
                 self.processes[index].state = ProcessState::Running;
                 self.processes[index].process_id = Some(process_id);
-                self.status = Some(format!("{} iniciado (PID {process_id})", process.name));
+                self.processes[index].exit_code = None;
+                self.notify(format!("{} iniciado (PID {process_id})", process.name));
             }
             Err(error) => {
                 self.processes[index].state = ProcessState::Failed;
                 self.processes[index].process_id = None;
-                self.status = Some(format!(
+                self.processes[index].exit_code = None;
+                self.notify(format!(
                     "Não foi possível iniciar {}: {error}",
                     process.name
                 ));
@@ -657,8 +787,30 @@ impl LocalCodePilot {
         if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
             process.state = ProcessState::Stopped;
             process.process_id = None;
-            self.status = Some(format!("{} interrompido", process.name));
+            process.exit_code = None;
+            let process_name = process.name.clone();
+            self.notify(format!("{process_name} interrompido"));
         }
+    }
+
+    fn restart_process(&mut self, id: &str) {
+        self.stop_process(id);
+        self.start_process(id);
+    }
+
+    fn clear_process_logs(&mut self, id: &str) {
+        let Some(running) = self.running_processes.get_mut(id) else {
+            self.notify("Esse processo ainda não possui saída para limpar");
+            return;
+        };
+        running.logs.clear();
+        self.notify("Saída do processo limpa");
+    }
+
+    fn has_active_processes(&self) -> bool {
+        self.running_processes
+            .values()
+            .any(|running| !running.finished)
     }
 
     fn poll_processes(&mut self, ctx: &egui::Context) {
@@ -684,19 +836,37 @@ impl LocalCodePilot {
                         } else {
                             ProcessState::Failed
                         },
+                        status.code(),
+                        None,
                     ));
                 }
                 Ok(None) => has_running_process = true,
-                Err(_) => {
+                Err(error) => {
                     running.finished = true;
-                    state_updates.push((id.clone(), ProcessState::Failed));
+                    state_updates.push((
+                        id.clone(),
+                        ProcessState::Failed,
+                        None,
+                        Some(error.to_string()),
+                    ));
                 }
             }
         }
-        for (id, state) in state_updates {
+        for (id, state, exit_code, error) in state_updates {
             if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
                 process.state = state;
                 process.process_id = None;
+                process.exit_code = exit_code;
+                let message = match (error, exit_code) {
+                    (Some(error), _) => {
+                        format!("Não foi possível consultar {}: {error}", process.name)
+                    }
+                    (None, Some(code)) => {
+                        format!("{} finalizado com código {code}", process.name)
+                    }
+                    (None, None) => format!("{} foi finalizado", process.name),
+                };
+                self.notify(message);
             }
         }
         if has_running_process {
@@ -753,82 +923,143 @@ impl LocalCodePilot {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new(&project.name).strong().size(15.0));
-                    ui.add_space(8.0);
+                    ui.add_space(10.0);
                     for command in commands {
                         let (state_label, state_color) = process_state_display(command.state);
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(&command.name).size(12.0));
+                        Frame::new()
+                            .fill(theme::BACKGROUND)
+                            .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.75)))
+                            .corner_radius(9)
+                            .inner_margin(Margin::same(13))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(&command.name).strong().size(12.0));
+                                        runtime_badge(ui, state_label, state_color);
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        match command.state {
+                                            ProcessState::Running => {
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new("Parar")
+                                                            .fill(
+                                                                Color32::from_rgb(235, 87, 87)
+                                                                    .gamma_multiply(0.18),
+                                                            )
+                                                            .stroke(Stroke::new(
+                                                                1.0,
+                                                                Color32::from_rgb(235, 87, 87)
+                                                                    .gamma_multiply(0.65),
+                                                            )),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    action = Some(ProcessAction::Stop(
+                                                        command.id.clone(),
+                                                    ));
+                                                }
+                                                if ui.button("Reiniciar").clicked() {
+                                                    action = Some(ProcessAction::Restart(
+                                                        command.id.clone(),
+                                                    ));
+                                                }
+                                            }
+                                            ProcessState::Starting => {
+                                                ui.add_enabled(
+                                                    false,
+                                                    egui::Button::new("Iniciando..."),
+                                                );
+                                            }
+                                            ProcessState::Stopped | ProcessState::Failed => {
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(RichText::new(format!(
+                                                            "{PLAY}  Iniciar"
+                                                        )))
+                                                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    action = Some(ProcessAction::Start(
+                                                        command.id.clone(),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    });
+                                });
+                                ui.add_space(4.0);
                                 ui.label(
                                     RichText::new(command.command_line())
                                         .color(theme::MUTED)
                                         .monospace()
                                         .size(10.0),
                                 );
-                                if command.working_directory != command.project_path
-                                    && let Ok(relative) = command
-                                        .working_directory
-                                        .strip_prefix(&command.project_path)
+                                ui.horizontal(|ui| {
+                                    if command.working_directory != command.project_path
+                                        && let Ok(relative) = command
+                                            .working_directory
+                                            .strip_prefix(&command.project_path)
+                                    {
+                                        ui.label(
+                                            RichText::new(format!("Pasta: {}", relative.display()))
+                                                .color(theme::MUTED)
+                                                .size(9.0),
+                                        );
+                                    }
+                                    if let Some(process_id) = command.process_id {
+                                        ui.label(
+                                            RichText::new(format!("PID {process_id}"))
+                                                .color(theme::MUTED)
+                                                .monospace()
+                                                .size(9.0),
+                                        );
+                                    }
+                                    if let Some(exit_code) = command.exit_code {
+                                        ui.label(
+                                            RichText::new(format!("Código de saída: {exit_code}"))
+                                                .color(theme::MUTED)
+                                                .monospace()
+                                                .size(9.0),
+                                        );
+                                    }
+                                });
+                                if let Some(running) = self.running_processes.get(&command.id)
+                                    && !running.logs.is_empty()
                                 {
-                                    ui.label(
-                                        RichText::new(format!("em {}", relative.display()))
-                                            .color(theme::MUTED)
-                                            .size(9.0),
-                                    );
-                                }
-                            });
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                match command.state {
-                                    ProcessState::Running => {
-                                        if ui.button("Parar").clicked() {
-                                            action = Some(ProcessAction::Stop(command.id.clone()));
-                                        }
-                                    }
-                                    ProcessState::Starting => {
-                                        ui.add_enabled(false, egui::Button::new("Iniciando..."));
-                                    }
-                                    ProcessState::Stopped | ProcessState::Failed => {
+                                    ui.add_space(4.0);
+                                    egui::CollapsingHeader::new(format!(
+                                        "Saída ({})",
+                                        running.logs.len()
+                                    ))
+                                    .id_salt(format!("logs-{}", command.id))
+                                    .show(ui, |ui| {
                                         if ui
-                                            .button(RichText::new(format!("{PLAY}  Iniciar")))
+                                            .add(egui::Button::new("Limpar saída").small())
                                             .clicked()
                                         {
-                                            action = Some(ProcessAction::Start(command.id.clone()));
+                                            action =
+                                                Some(ProcessAction::ClearLogs(command.id.clone()));
                                         }
-                                    }
-                                }
-                                runtime_badge(ui, state_label, state_color);
-                                if let Some(process_id) = command.process_id {
-                                    ui.label(
-                                        RichText::new(format!("PID {process_id}"))
-                                            .color(theme::MUTED)
-                                            .monospace()
-                                            .size(9.0),
-                                    );
+                                        egui::ScrollArea::vertical()
+                                            .max_height(160.0)
+                                            .stick_to_bottom(true)
+                                            .show(ui, |ui| {
+                                                for line in &running.logs {
+                                                    ui.label(
+                                                        RichText::new(line)
+                                                            .color(theme::MUTED)
+                                                            .monospace()
+                                                            .size(9.0),
+                                                    );
+                                                }
+                                            });
+                                    });
                                 }
                             });
-                        });
-                        if let Some(running) = self.running_processes.get(&command.id)
-                            && !running.logs.is_empty()
-                        {
-                            egui::CollapsingHeader::new(format!("Saída ({})", running.logs.len()))
-                                .id_salt(format!("logs-{}", command.id))
-                                .show(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .max_height(160.0)
-                                        .stick_to_bottom(true)
-                                        .show(ui, |ui| {
-                                            for line in &running.logs {
-                                                ui.label(
-                                                    RichText::new(line)
-                                                        .color(theme::MUTED)
-                                                        .monospace()
-                                                        .size(9.0),
-                                                );
-                                            }
-                                        });
-                                });
-                        }
-                        ui.add_space(6.0);
+                        ui.add_space(8.0);
                     }
                 });
             ui.add_space(12.0);
@@ -836,21 +1067,24 @@ impl LocalCodePilot {
         match action {
             Some(ProcessAction::Start(id)) => self.start_process(&id),
             Some(ProcessAction::Stop(id)) => self.stop_process(&id),
+            Some(ProcessAction::Restart(id)) => self.restart_process(&id),
+            Some(ProcessAction::ClearLogs(id)) => self.clear_process_logs(&id),
             None => {}
         }
     }
 
-    fn content(&mut self, ctx: &egui::Context) {
+    fn content(&mut self, root_ui: &mut egui::Ui) {
+        let ctx = root_ui.ctx().clone();
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
                     .fill(theme::BACKGROUND)
                     .inner_margin(Margin::same(36)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Overview => self.overview(ui),
-                    Page::Projects => self.projects_page(ctx, ui),
+                    Page::Projects => self.projects_page(&ctx, ui),
                     Page::Processes => self.processes_page(ui),
                     page => {
                         ui.heading(self.page_title());
@@ -873,26 +1107,16 @@ impl LocalCodePilot {
 }
 
 impl eframe::App for LocalCodePilot {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_discovery();
         self.poll_processes(ctx);
-        self.sidebar(ctx);
-        self.topbar(ctx);
-        self.content(ctx);
-        if let Some(message) = self.status.clone() {
-            egui::Area::new("status".into())
-                .anchor(egui::Align2::RIGHT_BOTTOM, [-20.0, -20.0])
-                .show(ctx, |ui| {
-                    Frame::new()
-                        .fill(theme::SURFACE)
-                        .stroke(Stroke::new(1.0_f32, theme::SUCCESS))
-                        .corner_radius(8)
-                        .inner_margin(Margin::same(12))
-                        .show(ui, |ui| {
-                            ui.label(message);
-                        });
-                });
-        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.sidebar(ui);
+        self.topbar(ui);
+        self.content(ui);
+        self.show_notification(ui);
     }
 }
 
@@ -941,6 +1165,58 @@ fn process_command(process: &ProjectProcess) -> Command {
     }
 }
 
+fn executable_available(program: &str) -> bool {
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 {
+        return executable_candidate(program_path);
+    }
+
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|directory| {
+        let candidate = directory.join(program);
+        if executable_candidate(&candidate) {
+            return true;
+        }
+
+        #[cfg(target_os = "windows")]
+        if candidate.extension().is_none() {
+            let path_extensions =
+                std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+            return path_extensions
+                .to_string_lossy()
+                .split(';')
+                .any(|extension| {
+                    let extension = extension.trim().trim_start_matches('.');
+                    !extension.is_empty()
+                        && executable_candidate(&candidate.with_extension(extension))
+                });
+        }
+
+        false
+    })
+}
+
+fn executable_candidate(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn spawn_output_reader(reader: impl Read + Send + 'static, sender: mpsc::Sender<String>) {
     std::thread::spawn(move || {
         for line in BufReader::new(reader).lines().map_while(Result::ok) {
@@ -962,10 +1238,12 @@ fn terminate_process(child: &mut Child) {
             .status()
             .is_ok_and(|status| status.success())
         {
+            let _ = child.wait();
             return;
         }
     }
     let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
@@ -1112,5 +1390,24 @@ fn runtime_color(runtime: RuntimeKind) -> Color32 {
         RuntimeKind::Node => Color32::from_rgb(104, 190, 101),
         RuntimeKind::Php => Color32::from_rgb(137, 147, 210),
         RuntimeKind::Python => Color32::from_rgb(255, 205, 75),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::executable_available;
+
+    #[test]
+    fn finds_an_executable_by_its_full_path() {
+        let current_executable = std::env::current_exe().expect("current executable should exist");
+
+        assert!(executable_available(&current_executable.to_string_lossy()));
+    }
+
+    #[test]
+    fn rejects_a_program_that_does_not_exist() {
+        assert!(!executable_available(
+            "localcodepilot-program-that-does-not-exist-7d2bcfd8"
+        ));
     }
 }

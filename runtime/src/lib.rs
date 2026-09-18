@@ -27,6 +27,7 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "_macosx",
     "__macosx",
 ];
+const CONTINUOUS_SCRIPT_NAMES: &[&str] = &["dev", "start", "serve", "server", "watch", "preview"];
 
 pub fn detect(path: &Path) -> Vec<RuntimeKind> {
     let mut found = Vec::new();
@@ -99,6 +100,7 @@ fn detect_processes_in_directory(
     directory: &Path,
     processes: &mut Vec<ProjectProcess>,
 ) {
+    let belongs_to_laravel = has_marker_in_ancestors(directory, &project.path, "artisan");
     if directory.join("Cargo.toml").is_file() {
         push_process(
             processes,
@@ -117,14 +119,16 @@ fn detect_processes_in_directory(
         &["run"],
         processes,
     );
-    detect_json_scripts(
-        project,
-        directory,
-        "composer.json",
-        "composer",
-        &["run-script"],
-        processes,
-    );
+    if !belongs_to_laravel {
+        detect_json_scripts(
+            project,
+            directory,
+            "composer.json",
+            "composer",
+            &["run-script"],
+            processes,
+        );
+    }
     if directory.join("artisan").is_file() {
         push_process(
             processes,
@@ -134,7 +138,9 @@ fn detect_processes_in_directory(
             "php",
             &["artisan", "serve"],
         );
-    } else if directory.join("index.php").is_file() || directory.join("wp-config.php").is_file() {
+    } else if !belongs_to_laravel
+        && (directory.join("index.php").is_file() || directory.join("wp-config.php").is_file())
+    {
         push_process(
             processes,
             project,
@@ -177,13 +183,15 @@ fn detect_json_scripts(
         return;
     };
     let mut names: Vec<_> = scripts
-        .keys()
-        .filter(|name| !name.starts_with("pre") && !name.starts_with("post"))
-        .filter(|name| {
+        .iter()
+        .filter(|(name, _)| !name.starts_with("pre") && !name.starts_with("post"))
+        .filter(|(name, _)| {
             name.chars().all(|character| {
                 character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':' | '.')
             })
         })
+        .filter(|(name, command)| is_continuous_script(name, command))
+        .map(|(name, _)| name)
         .collect();
     names.sort();
     for name in names {
@@ -191,6 +199,39 @@ fn detect_json_scripts(
         args.push(name);
         push_process(processes, project, directory, name, program, &args);
     }
+}
+
+fn is_continuous_script(name: &str, command: &serde_json::Value) -> bool {
+    let normalized_name = name.to_ascii_lowercase();
+    if CONTINUOUS_SCRIPT_NAMES.iter().any(|candidate| {
+        normalized_name == *candidate
+            || normalized_name.starts_with(&format!("{candidate}:"))
+            || normalized_name.starts_with(&format!("{candidate}-"))
+    }) {
+        return true;
+    }
+
+    command.as_str().is_some_and(|command| {
+        let command = command.to_ascii_lowercase();
+        command.contains("--watch") || command.contains("webpack serve")
+    })
+}
+
+fn has_marker_in_ancestors(directory: &Path, project_root: &Path, marker: &str) -> bool {
+    let mut current = Some(directory);
+    while let Some(path) = current {
+        if !path.starts_with(project_root) {
+            break;
+        }
+        if path.join(marker).is_file() {
+            return true;
+        }
+        if path == project_root {
+            break;
+        }
+        current = path.parent();
+    }
+    false
 }
 
 fn push_process(
@@ -216,6 +257,7 @@ fn push_process(
         args,
         state: ProcessState::Stopped,
         process_id: None,
+        exit_code: None,
     });
 }
 
@@ -311,7 +353,7 @@ mod tests {
         fs::create_dir(&path).unwrap();
         fs::write(
             path.join("package.json"),
-            r#"{"scripts":{"dev":"vite","test":"vitest","predev":"prepare"}}"#,
+            r#"{"scripts":{"build":"vite build","dev":"vite","test":"vitest","predev":"prepare"}}"#,
         )
         .unwrap();
         fs::write(
@@ -326,10 +368,39 @@ mod tests {
             .map(ProjectProcess::command_line)
             .collect();
 
-        assert_eq!(
-            commands,
-            ["npm run dev", "npm run test", "composer run-script serve"]
-        );
+        assert_eq!(commands, ["npm run dev", "composer run-script serve"]);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn keeps_only_development_servers_in_a_laravel_project() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-laravel-{nonce}"));
+        fs::create_dir_all(path.join("public")).unwrap();
+        fs::write(path.join("artisan"), "").unwrap();
+        fs::write(path.join("public").join("index.php"), "<?php").unwrap();
+        fs::write(
+            path.join("package.json"),
+            r#"{"scripts":{"build":"vite build","dev":"vite","test":"vitest"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            path.join("composer.json"),
+            r#"{"scripts":{"dev":"composer run-all","test":"phpunit"}}"#,
+        )
+        .unwrap();
+        fs::create_dir(path.join(".git")).unwrap();
+        let project = Project::new(path.clone(), vec![RuntimeKind::Node, RuntimeKind::Php]);
+
+        let commands: Vec<_> = detect_processes(&project)
+            .iter()
+            .map(ProjectProcess::command_line)
+            .collect();
+
+        assert_eq!(commands, ["npm run dev", "php artisan serve"]);
         fs::remove_dir_all(path).unwrap();
     }
 
