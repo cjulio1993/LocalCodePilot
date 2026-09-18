@@ -27,6 +27,7 @@ pub struct ProjectProcess {
     pub args: Vec<String>,
     pub state: ProcessState,
     pub process_id: Option<u32>,
+    pub exit_code: Option<i32>,
 }
 
 impl ProjectProcess {
