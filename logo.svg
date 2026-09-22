@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
+  <title id="title">LocalCodePilot</title>
+  <desc id="desc">A project core surrounded by three modular paths.</desc>
+  <style>.wordmark{fill:#171b19}.core{fill:#171b19;stroke:#e9e8df;stroke-width:5}.lower-path{stroke:#171b19}</style>
+  <g transform="translate(24 24)" fill="none" stroke-width="34" stroke-linecap="round">
+    <path d="M43 77 Q91 30 146 49" stroke="#3974FF"/>
+    <path d="M169 66 Q194 108 173 155" stroke="#42C7D9"/>
+    <path class="lower-path" d="M145 178 Q92 201 47 163"/>
+  </g>
+  <circle class="core" cx="126" cy="135" r="31"/>
+  <text class="wordmark" x="260" y="176" font-family="Inter, 'DejaVu Sans', Arial, sans-serif" font-size="104" font-weight="700" letter-spacing="-5">LocalCodePilot</text>
+</svg>
