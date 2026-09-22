@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a101c">
+  <meta name="description" content="LocalCodePilot descobre, organiza e ajuda a executar seus projetos locais. Aplicação desktop e CLI open source, em desenvolvimento.">
+  <title>LocalCodePilot — Seus projetos, sob controle</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="demo.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#conteudo">Pular para o conteúdo</a>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="#inicio" aria-label="LocalCodePilot, início"><img src="logo.svg" alt="LocalCodePilot"></a>
+      <nav aria-label="Navegação principal"><a href="#como-funciona">Como funciona</a><a href="#recursos">Recursos</a><a href="#comecar">Começar</a></nav>
+      <a class="header-github" href="https://github.com/cjulio1993/LocalCodePilot" target="_blank" rel="noopener noreferrer">Ver no GitHub <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <main id="conteudo">
+    <section class="hero wrap" id="inicio" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="eyebrow-line"></span> VERSÃO ALPHA EM BREVE</div>
+        <h1 id="hero-title">Projetos espalhados.<br><em>Ideias no lugar.</em></h1>
+        <p class="lead">O LocalCodePilot encontra projetos na sua máquina e mostra o que importa para você voltar ao trabalho.</p>
+        <div class="hero-actions"><a class="button primary" href="https://github.com/cjulio1993/LocalCodePilot#executar-o-desktop" target="_blank" rel="noopener noreferrer">Começar pelo GitHub <span aria-hidden="true">↗</span></a><a class="button secondary" href="#como-funciona">Entenda o projeto <span aria-hidden="true">↓</span></a></div>
+        <p class="hero-note">A primeira versão alpha será lançada em breve. Acompanhe o desenvolvimento no GitHub.</p>
+      </div>
+      <div class="product-window" aria-label="Demonstração interativa do fluxo de projetos">
+        <div class="window-top"><span class="window-mark">LCP<span>/</span>PLAYGROUND</span><span class="window-caption">DEMO INTERATIVA · PROCESSO SIMULADO</span><span class="window-controls" aria-hidden="true">● ● ●</span></div>
+        <div class="demo-body">
+          <div class="demo-label">01 / ESCOLHA UM PROJETO</div>
+          <div class="demo-projects" role="group" aria-label="Projetos de exemplo">
+            <button class="demo-project active" type="button" data-project="laravel" aria-pressed="true"><span class="project-icon">{ }</span><span>api-laravel<small>PHP · Laravel</small></span></button>
+            <button class="demo-project" type="button" data-project="node" aria-pressed="false"><span class="project-icon">JS</span><span>frontend-app<small>Node.js · Vite</small></span></button>
+            <button class="demo-project" type="button" data-project="rust" aria-pressed="false"><span class="project-icon">Rs</span><span>rust-workspace<small>Rust · Cargo</small></span></button>
+          </div>
+          <div class="demo-info"><div><span class="demo-label">ARQUIVO DETECTADO</span><strong id="demo-manifest">composer.json</strong></div><div><span class="demo-label">COMANDO SUGERIDO</span><code id="demo-command">php artisan serve</code></div></div>
+          <div class="demo-console"><div class="console-head"><span>PROCESSO / SAÍDA</span><span id="demo-state" class="state" role="status">PARADO</span></div><div class="console-lines" id="demo-log" aria-live="polite"><p><span>&gt;</span> Projeto detectado. Pronto para iniciar.</p></div></div>
+          <div class="demo-controls"><button type="button" id="demo-run" class="demo-run">Iniciar simulação <span aria-hidden="true">↗</span></button><button type="button" id="demo-reset" class="demo-reset">Reiniciar</button></div>
+        </div>
+      </div>
+      <div class="hero-index" aria-hidden="true">01 / LOCAL FIRST</div>
+    </section>
+    <section class="signal-band" aria-label="Características principais"><div class="wrap signal-inner"><span>ENCONTRE</span><b>✳</b><span>ENTENDA</span><b>✳</b><span>EXECUTE</span><b>✳</b><span>ORGANIZE</span></div></section>
+    <section class="section wrap" id="como-funciona"><div class="section-intro"><p class="section-kicker">01 / COMO FUNCIONA</p><h2>O projeto vem primeiro.<br><span>A ferramenta acompanha.</span></h2><p>O LocalCodePilot procura projetos em diretórios configurados, identifica seus arquivos e organiza as informações para você seguir trabalhando.</p></div>
+      <div class="steps"><article><span class="step-no">01</span><div class="step-icon">⌕</div><h3>Descubra</h3><p>Encontre repositórios Git, projetos com manifesto e pastas de código sem cadastrar cada caminho.</p></article><article><span class="step-no">02</span><div class="step-icon">◇</div><h3>Reconheça</h3><p>Veja as tecnologias detectadas em projetos Rust, Node.js, PHP e Python, inclusive em monorepos.</p></article><article><span class="step-no">03</span><div class="step-icon">⌘</div><h3>Explore</h3><p>Inspecione projetos pela interface desktop ou pela CLI. Iniciar e interromper processos está em fase experimental.</p></article></div>
+    </section>
+    <section class="feature-section" id="recursos"><div class="wrap feature-grid"><div><p class="section-kicker">02 / O QUE JÁ EXISTE</p><h2>Menos tempo procurando.<br><span>Mais contexto para construir.</span></h2><p class="feature-lead">Uma base local para navegar pelos seus projetos, com o mesmo núcleo para a interface visual e o terminal.</p><a class="text-link" href="https://github.com/cjulio1993/LocalCodePilot#o-que-j%C3%A1-funciona" target="_blank" rel="noopener noreferrer">Veja a lista completa no repositório <span>↗</span></a></div><div class="feature-list"><div><span>01</span><div><h3>Descoberta automática</h3><p>Varredura em segundo plano, com exclusão de pastas de dependências e builds.</p></div></div><div><span>02</span><div><h3>Projetos no contexto</h3><p>Busca no catálogo, raiz de repositórios, monorepos e pastas locais sem Git.</p></div></div><div><span>03</span><div><h3>Desktop e CLI</h3><p>Interface nativa em Rust e comandos <code>status</code>, <code>scan</code> e <code>inspect</code>.</p></div></div></div></div></section>
+    <section class="roadmap wrap"><p class="section-kicker">03 / EM CONSTRUÇÃO</p><div class="roadmap-head"><h2>O próximo passo já está à vista.</h2><p>Uma versão alpha será lançada em breve. Veja o que está em testes e o que vem depois.</p></div><div class="roadmap-grid"><div class="roadmap-card now"><span class="badge">EM TESTES PARA A ALPHA</span><h3>Processos locais</h3><p>Detectar comandos, iniciar e interromper processos, acompanhar estado, PID e saída básica.</p></div><div class="roadmap-card"><span class="badge muted">NO PLANO</span><h3>Mais controle</h3><p>Portas, comandos personalizados, logs persistentes e serviços locais.</p></div><div class="roadmap-card"><span class="badge muted">VISÃO FUTURA</span><h3>Contexto conectado</h3><p>Explorar integrações que ajudem a retomar o trabalho entre projetos e ferramentas.</p></div></div></section>
+    <section class="cta-section" id="comecar"><div class="wrap cta-inner"><div><p class="section-kicker">VERSÃO ALPHA EM BREVE</p><h2>Seu próximo projeto<br><em>começa daqui.</em></h2><p>O código está aberto. Acompanhe a evolução e o lançamento da alpha pelo GitHub.</p></div><div class="cta-links"><a class="button primary" href="https://github.com/cjulio1993/LocalCodePilot" target="_blank" rel="noopener noreferrer">Explorar o repositório <span>↗</span></a><a class="button secondary" href="https://github.com/cjulio1993/LocalCodePilot/releases" target="_blank" rel="noopener noreferrer">Acompanhar lançamentos <span>↗</span></a><small>Os downloads serão anunciados na página de versões. macOS está no planejamento.</small></div></div></section>
+  </main>
+  <footer class="site-footer"><div class="wrap footer-inner"><img src="logo.svg" alt="LocalCodePilot"><p>Projetos locais. Visão completa.</p><a href="https://github.com/cjulio1993/LocalCodePilot" target="_blank" rel="noopener noreferrer">GitHub ↗</a></div></footer>
+</body>
+</html>
