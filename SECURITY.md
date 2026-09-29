@@ -2,9 +2,9 @@
 
 ## Versões suportadas / Supported versions
 
-O LocalCodePilot ainda não possui uma versão estável. Apenas o código mais recente da branch `main` recebe correções de segurança neste estágio.
+O LocalCodePilot ainda não possui uma versão estável. A alpha mais recente e o código atual da branch `main` recebem correções de segurança neste estágio.
 
-LocalCodePilot does not have a stable release yet. At this stage, only the latest code on the `main` branch receives security fixes.
+LocalCodePilot does not have a stable release yet. At this stage, the latest alpha and current code on the `main` branch receive security fixes.
 
 ## Reportar uma vulnerabilidade / Reporting a vulnerability
 
@@ -31,4 +31,3 @@ Use **Security → Report a vulnerability** on the repository page to submit a p
 O mantenedor confirmará o recebimento assim que possível, investigará o problema e coordenará a correção antes da divulgação pública. Não há programa de recompensa financeira neste momento.
 
 The maintainer will acknowledge the report as soon as possible, investigate it, and coordinate a fix before public disclosure. There is currently no paid bug bounty program.
-

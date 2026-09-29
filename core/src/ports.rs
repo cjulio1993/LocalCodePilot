@@ -64,7 +64,7 @@ pub fn extract_local_urls(text: &str) -> Vec<LocalServerUrl> {
     urls
 }
 
-fn strip_terminal_sequences(text: &str) -> String {
+pub fn strip_terminal_sequences(text: &str) -> String {
     let mut clean = String::with_capacity(text.len());
     let mut characters = text.chars().peekable();
     while let Some(character) = characters.next() {
