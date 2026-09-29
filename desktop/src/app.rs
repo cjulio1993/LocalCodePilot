@@ -6,7 +6,7 @@ use egui_phosphor::regular::{
 };
 use localcodepilot_core::{
     discovery::DiscoveryService,
-    ports::{LocalServerUrl, extract_local_urls},
+    ports::{LocalServerUrl, extract_local_urls, strip_terminal_sequences},
     processes::{ProcessState, ProjectProcess},
     projects::Project,
     runtimes::RuntimeKind,
@@ -16,11 +16,12 @@ use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemPr
 use localcodepilot_runtime::{ManifestRuntimeDetector, detect_processes};
 use std::{
     collections::{HashMap, VecDeque},
+    fs,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, TryRecvError},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 const NOTIFICATION_DURATION: Duration = Duration::from_millis(4_200);
@@ -52,8 +53,146 @@ enum ProcessAction {
     Start(String),
     Stop(String),
     Restart(String),
+    StartProject(PathBuf),
+    StopProject(PathBuf),
+    InstallDependencies(PathBuf),
+    ViewDependencyLogs(PathBuf),
+    PrepareLaravelMigration(PathBuf),
     ClearLogs(String),
+    ViewLogs(String),
     OpenUrl(String),
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProjectEnvironment {
+    command_count: usize,
+    missing_programs: Vec<String>,
+    missing_dependencies: Vec<String>,
+    install_steps: Vec<DependencyInstall>,
+    laravel_constraint: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DependencyInstall {
+    label: String,
+    program: String,
+    args: Vec<String>,
+    working_directory: PathBuf,
+}
+
+enum DependencyInstallEvent {
+    Log(String),
+    Finished(Result<(), String>),
+}
+
+#[derive(Debug, Clone)]
+enum DependencyInstallStatus {
+    Running,
+    Succeeded,
+    Failed { error: String, suggestion: String },
+}
+
+struct DependencyInstallSession {
+    receiver: Option<Receiver<DependencyInstallEvent>>,
+    logs: VecDeque<String>,
+    status: DependencyInstallStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaravelMigrationPhase {
+    Confirm,
+    Unavailable,
+    Previewing,
+    Ready,
+    Applying,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+struct LaravelMigrationFiles {
+    composer_json: String,
+    composer_lock: Option<Vec<u8>>,
+}
+
+enum LaravelMigrationEvent {
+    Log(String),
+    PreviewFinished(Result<LaravelMigrationFiles, String>),
+    ApplyFinished(Result<PathBuf, String>),
+}
+
+struct LaravelMigration {
+    project_path: PathBuf,
+    project_name: String,
+    current_constraint: String,
+    target_constraint: String,
+    php_version: String,
+    phase: LaravelMigrationPhase,
+    receiver: Option<Receiver<LaravelMigrationEvent>>,
+    logs: VecDeque<String>,
+    preview: Option<LaravelMigrationFiles>,
+    backup_path: Option<PathBuf>,
+    error: Option<String>,
+}
+
+impl DependencyInstallSession {
+    fn is_running(&self) -> bool {
+        matches!(self.status, DependencyInstallStatus::Running)
+    }
+}
+
+impl ProjectEnvironment {
+    fn is_ready(&self) -> bool {
+        self.command_count > 0
+            && self.missing_programs.is_empty()
+            && self.missing_dependencies.is_empty()
+    }
+
+    fn status(&self) -> (&'static str, Color32) {
+        if self.command_count == 0 {
+            ("Nenhum serviço detectado", theme::MUTED)
+        } else if !self.missing_programs.is_empty() {
+            ("Runtime não encontrado", Color32::from_rgb(255, 205, 75))
+        } else if !self.missing_dependencies.is_empty() {
+            ("Dependências ausentes", Color32::from_rgb(255, 205, 75))
+        } else {
+            ("Pronto", theme::SUCCESS)
+        }
+    }
+
+    fn problem_details(&self) -> Option<String> {
+        if !self.missing_programs.is_empty() {
+            Some(format!("Instale: {}", self.missing_programs.join(", ")))
+        } else if !self.missing_dependencies.is_empty() {
+            Some(format!(
+                "Instale as dependências de: {}",
+                self.missing_dependencies.join(", ")
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn can_install_dependencies(&self) -> bool {
+        self.missing_programs.is_empty() && !self.install_steps.is_empty()
+    }
+
+    fn legacy_laravel_constraint(&self) -> Option<&str> {
+        self.laravel_constraint
+            .as_deref()
+            .filter(|constraint| laravel_major(constraint).is_some_and(|major| major <= 11))
+    }
+}
+
+enum ProjectCardAction {
+    Open(PathBuf),
+    OpenUrl(String),
+    Start(PathBuf),
+    Stop(PathBuf),
+    ViewLogs(PathBuf),
+    InstallDependencies(PathBuf),
+    ViewDependencyLogs(PathBuf),
+    PrepareLaravelMigration(PathBuf),
 }
 
 pub struct LocalCodePilot {
@@ -61,8 +200,16 @@ pub struct LocalCodePilot {
     projects: Vec<Project>,
     processes: Vec<ProjectProcess>,
     running_processes: HashMap<String, RunningProcess>,
+    project_environments: HashMap<PathBuf, ProjectEnvironment>,
+    focused_project: Option<PathBuf>,
+    terminal_process: Option<String>,
+    dependency_installs: HashMap<PathBuf, DependencyInstallSession>,
+    dependency_terminal: Option<PathBuf>,
+    laravel_migration: Option<LaravelMigration>,
     platform: NativePlatform,
     logo_texture: egui::TextureHandle,
+    username: String,
+    user_initials: String,
     search: String,
     notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
@@ -81,13 +228,23 @@ impl LocalCodePilot {
         let source = FilesystemProjectSource::new(scan_roots.clone());
         let receiver = spawn_discovery(source, cc.egui_ctx.clone());
         let logo_texture = load_logo_texture(&cc.egui_ctx);
+        let username = current_username();
+        let user_initials = initials_from_username(&username);
         Self {
             page: Page::Overview,
             projects: Vec::new(),
             processes: Vec::new(),
             running_processes: HashMap::new(),
+            project_environments: HashMap::new(),
+            focused_project: None,
+            terminal_process: None,
+            dependency_installs: HashMap::new(),
+            dependency_terminal: None,
+            laravel_migration: None,
             platform: NativePlatform::default(),
             logo_texture,
+            username,
+            user_initials,
             search: String::new(),
             notification: Some(Notification {
                 message: "Procurando projetos na máquina...".into(),
@@ -312,8 +469,10 @@ impl LocalCodePilot {
                             .corner_radius(9)
                             .inner_margin(Margin::same(8))
                             .show(ui, |ui| {
-                                ui.label(RichText::new("JC").strong().size(10.0));
-                            });
+                                ui.label(RichText::new(&self.user_initials).strong().size(10.0));
+                            })
+                            .response
+                            .on_hover_text(&self.username);
 
                         ui.label(RichText::new(BELL).color(theme::PRIMARY).size(16.0));
 
@@ -353,6 +512,15 @@ impl LocalCodePilot {
             Ok(Ok(projects)) => {
                 self.notify(format!("{} projeto(s) encontrado(s)", projects.len()));
                 self.processes = projects.iter().flat_map(detect_processes).collect();
+                self.project_environments = projects
+                    .iter()
+                    .map(|project| {
+                        (
+                            project.path.clone(),
+                            inspect_project_environment(project, &self.processes),
+                        )
+                    })
+                    .collect();
                 self.projects = projects;
                 self.discovery = None;
             }
@@ -582,27 +750,78 @@ impl LocalCodePilot {
         } else {
             1
         };
-        let grid_spacing = 14.0 * (columns.saturating_sub(1)) as f32;
-        let frame_margin = 34.0;
-        let card_width =
-            ((available_width - grid_spacing) / columns as f32 - frame_margin).max(180.0);
-
-        egui::Grid::new("project_grid")
-            .num_columns(columns)
-            .spacing([14.0, 14.0])
-            .show(ui, |ui| {
-                for (index, project) in projects.iter().enumerate() {
-                    if let Some(path) = project_card(ui, project, card_width) {
-                        self.notify(match open_in_vscode(&path) {
-                            Ok(()) => format!("Abrindo {} no VS Code...", project.name),
-                            Err(error) => error,
-                        });
-                    }
-                    if (index + 1) % columns == 0 {
-                        ui.end_row();
+        for row in projects.chunks(columns) {
+            ui.columns(columns, |column_uis| {
+                for (column, project) in row.iter().enumerate() {
+                    let column_ui = &mut column_uis[column];
+                    let card_width = (column_ui.available_width() - 36.0).max(180.0);
+                    let environment = self
+                        .project_environments
+                        .get(&project.path)
+                        .cloned()
+                        .unwrap_or_default();
+                    let active_processes =
+                        project_process_ids(&self.processes, &project.path, true).len();
+                    let dependency_install = self
+                        .dependency_installs
+                        .get(&project.path)
+                        .map(|session| session.status.clone());
+                    let application_url = self
+                        .processes
+                        .iter()
+                        .filter(|process| process.project_path == project.path)
+                        .filter(|process| process_exposes_application_url(project, process))
+                        .filter_map(|process| self.running_processes.get(&process.id))
+                        .filter_map(|running| running.urls.last())
+                        .map(|url| url.address().to_owned())
+                        .next();
+                    match project_card(
+                        column_ui,
+                        project,
+                        &environment,
+                        active_processes,
+                        dependency_install,
+                        application_url.as_deref(),
+                        card_width,
+                    ) {
+                        Some(ProjectCardAction::Open(path)) => {
+                            self.notify(match open_in_vscode(&path) {
+                                Ok(()) => format!("Abrindo {} no VS Code...", project.name),
+                                Err(error) => error,
+                            });
+                        }
+                        Some(ProjectCardAction::OpenUrl(url)) => {
+                            column_ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
+                            self.notify(format!("Abrindo {url}"));
+                        }
+                        Some(ProjectCardAction::Start(path)) => self.start_project(&path),
+                        Some(ProjectCardAction::Stop(path)) => self.stop_project(&path),
+                        Some(ProjectCardAction::ViewLogs(path)) => {
+                            let active_processes =
+                                project_process_ids(&self.processes, &path, true);
+                            self.focused_project = Some(path);
+                            if let [process_id] = active_processes.as_slice() {
+                                self.terminal_process = Some(process_id.clone());
+                            } else {
+                                self.search.clear();
+                                self.page = Page::Processes;
+                            }
+                        }
+                        Some(ProjectCardAction::InstallDependencies(path)) => {
+                            self.install_dependencies(&path, column_ui.ctx().clone());
+                        }
+                        Some(ProjectCardAction::ViewDependencyLogs(path)) => {
+                            self.dependency_terminal = Some(path);
+                        }
+                        Some(ProjectCardAction::PrepareLaravelMigration(path)) => {
+                            self.prepare_laravel_migration(&path);
+                        }
+                        None => {}
                     }
                 }
             });
+            ui.add_space(14.0);
+        }
     }
 
     fn projects_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -802,6 +1021,279 @@ impl LocalCodePilot {
         }
     }
 
+    fn start_project(&mut self, project_path: &Path) {
+        let environment = self
+            .project_environments
+            .get(project_path)
+            .cloned()
+            .or_else(|| {
+                self.projects
+                    .iter()
+                    .find(|project| project.path == project_path)
+                    .map(|project| inspect_project_environment(project, &self.processes))
+            })
+            .unwrap_or_default();
+        if !environment.is_ready() {
+            self.notify(
+                environment
+                    .problem_details()
+                    .unwrap_or_else(|| "Nenhum serviço executável foi detectado".into()),
+            );
+            return;
+        }
+        self.focused_project = Some(project_path.to_path_buf());
+        let process_ids = project_process_ids(&self.processes, project_path, false);
+        for process_id in process_ids {
+            self.start_process(&process_id);
+        }
+    }
+
+    fn stop_project(&mut self, project_path: &Path) {
+        let process_ids = project_process_ids(&self.processes, project_path, true);
+        for process_id in process_ids {
+            self.stop_process(&process_id);
+        }
+    }
+
+    fn install_dependencies(&mut self, project_path: &Path, repaint: egui::Context) {
+        if self
+            .dependency_installs
+            .get(project_path)
+            .is_some_and(DependencyInstallSession::is_running)
+        {
+            self.dependency_terminal = Some(project_path.to_path_buf());
+            return;
+        }
+        let Some(environment) = self.project_environments.get(project_path) else {
+            self.notify("O diagnóstico desse projeto não está disponível");
+            return;
+        };
+        if !environment.can_install_dependencies() {
+            self.notify(
+                environment
+                    .problem_details()
+                    .unwrap_or_else(|| "Não há dependências para instalar".into()),
+            );
+            return;
+        }
+        let steps = environment.install_steps.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_dependency_installs(&steps, &sender);
+            let _ = sender.send(DependencyInstallEvent::Finished(result));
+            repaint.request_repaint();
+        });
+        self.dependency_installs.insert(
+            project_path.to_path_buf(),
+            DependencyInstallSession {
+                receiver: Some(receiver),
+                logs: VecDeque::new(),
+                status: DependencyInstallStatus::Running,
+            },
+        );
+        self.dependency_terminal = Some(project_path.to_path_buf());
+        self.notify("Instalando dependências em segundo plano...");
+    }
+
+    fn poll_dependency_installs(&mut self, ctx: &egui::Context) {
+        let mut completed = Vec::new();
+        for (project_path, session) in &mut self.dependency_installs {
+            if session.is_running() {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+            let mut result = None;
+            while let Some(receiver) = session.receiver.as_ref() {
+                match receiver.try_recv() {
+                    Ok(DependencyInstallEvent::Log(line)) => {
+                        session.logs.push_back(line);
+                        if session.logs.len() > 1_000 {
+                            session.logs.pop_front();
+                        }
+                    }
+                    Ok(DependencyInstallEvent::Finished(finished)) => {
+                        result = Some(finished);
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        result = Some(Err("A instalação foi interrompida".into()));
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                }
+            }
+            if let Some(result) = result {
+                session.receiver = None;
+                session.status = match &result {
+                    Ok(()) => DependencyInstallStatus::Succeeded,
+                    Err(error) => {
+                        let logs = session.logs.iter().cloned().collect::<Vec<_>>().join("\n");
+                        DependencyInstallStatus::Failed {
+                            error: error.clone(),
+                            suggestion: dependency_error_suggestion(&logs, error),
+                        }
+                    }
+                };
+                completed.push((project_path.clone(), result));
+            }
+        }
+
+        for (project_path, result) in completed {
+            match result {
+                Ok(()) => {
+                    if let Some(project) = self
+                        .projects
+                        .iter()
+                        .find(|project| project.path == project_path)
+                    {
+                        let environment = inspect_project_environment(project, &self.processes);
+                        let ready = environment.is_ready();
+                        self.project_environments
+                            .insert(project_path.clone(), environment);
+                        self.notify(if ready {
+                            "Dependências instaladas. O ambiente está pronto."
+                        } else {
+                            "A instalação terminou, mas o ambiente ainda precisa de atenção."
+                        });
+                    }
+                }
+                Err(error) => {
+                    self.dependency_terminal = Some(project_path);
+                    self.notify(format!("Não foi possível instalar: {error}"));
+                }
+            }
+        }
+    }
+
+    fn prepare_laravel_migration(&mut self, project_path: &Path) {
+        let project_name = self
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| "Projeto Laravel".into());
+        match create_laravel_migration(project_path, project_name) {
+            Ok(migration) => self.laravel_migration = Some(migration),
+            Err(error) => self.notify(error),
+        }
+    }
+
+    fn start_laravel_migration_preview(&mut self, repaint: egui::Context) {
+        let Some(migration) = self.laravel_migration.as_mut() else {
+            return;
+        };
+        let project_path = migration.project_path.clone();
+        let target_constraint = migration.target_constraint.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = preview_laravel_migration(&project_path, &target_constraint, &sender);
+            let _ = sender.send(LaravelMigrationEvent::PreviewFinished(result));
+            repaint.request_repaint();
+        });
+        migration.phase = LaravelMigrationPhase::Previewing;
+        migration.receiver = Some(receiver);
+        migration.logs.clear();
+        migration.preview = None;
+        migration.error = None;
+    }
+
+    fn apply_laravel_migration(&mut self, repaint: egui::Context) {
+        let Some(migration) = self.laravel_migration.as_mut() else {
+            return;
+        };
+        let Some(preview) = migration.preview.clone() else {
+            migration.error = Some("A simulação precisa ser concluída antes da aplicação".into());
+            migration.phase = LaravelMigrationPhase::Failed;
+            return;
+        };
+        let project_path = migration.project_path.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = apply_laravel_migration_files(&project_path, &preview, &sender);
+            let _ = sender.send(LaravelMigrationEvent::ApplyFinished(result));
+            repaint.request_repaint();
+        });
+        migration.phase = LaravelMigrationPhase::Applying;
+        migration.receiver = Some(receiver);
+        migration.error = None;
+    }
+
+    fn poll_laravel_migration(&mut self, ctx: &egui::Context) {
+        let Some(migration) = self.laravel_migration.as_mut() else {
+            return;
+        };
+        if matches!(
+            migration.phase,
+            LaravelMigrationPhase::Previewing | LaravelMigrationPhase::Applying
+        ) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        let mut finished = false;
+        let mut applied_project = None;
+        while let Some(receiver) = migration.receiver.as_ref() {
+            match receiver.try_recv() {
+                Ok(LaravelMigrationEvent::Log(line)) => {
+                    migration.logs.push_back(line);
+                    if migration.logs.len() > 1_000 {
+                        migration.logs.pop_front();
+                    }
+                }
+                Ok(LaravelMigrationEvent::PreviewFinished(result)) => {
+                    finished = true;
+                    match result {
+                        Ok(preview) => {
+                            migration.preview = Some(preview);
+                            migration.phase = LaravelMigrationPhase::Ready;
+                        }
+                        Err(error) => {
+                            migration.error = Some(error);
+                            migration.phase = LaravelMigrationPhase::Failed;
+                        }
+                    }
+                    break;
+                }
+                Ok(LaravelMigrationEvent::ApplyFinished(result)) => {
+                    finished = true;
+                    match result {
+                        Ok(backup_path) => {
+                            migration.backup_path = Some(backup_path);
+                            migration.phase = LaravelMigrationPhase::Completed;
+                            applied_project = Some(migration.project_path.clone());
+                        }
+                        Err(error) => {
+                            migration.error = Some(error);
+                            migration.phase = LaravelMigrationPhase::Failed;
+                        }
+                    }
+                    break;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    migration.error = Some("A operação de migração foi interrompida".into());
+                    migration.phase = LaravelMigrationPhase::Failed;
+                    finished = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+        if finished {
+            migration.receiver = None;
+        }
+        if let Some(project_path) = applied_project {
+            self.dependency_installs.remove(&project_path);
+            if let Some(project) = self
+                .projects
+                .iter()
+                .find(|project| project.path == project_path)
+            {
+                self.project_environments.insert(
+                    project_path,
+                    inspect_project_environment(project, &self.processes),
+                );
+            }
+            self.notify("Migração aplicada. Revise e teste o projeto.");
+        }
+    }
+
     fn restart_process(&mut self, id: &str) {
         self.stop_process(id);
         self.start_process(id);
@@ -814,6 +1306,486 @@ impl LocalCodePilot {
         };
         running.logs.clear();
         self.notify("Saída do processo limpa");
+    }
+
+    fn show_terminal(&mut self, root_ui: &mut egui::Ui) {
+        let Some(process_id) = self.terminal_process.clone() else {
+            return;
+        };
+        let Some(process) = self
+            .processes
+            .iter()
+            .find(|process| process.id == process_id)
+            .cloned()
+        else {
+            self.terminal_process = None;
+            return;
+        };
+        let (logs, finished) = self
+            .running_processes
+            .get(&process_id)
+            .map(|running| {
+                (
+                    running.logs.iter().cloned().collect::<Vec<_>>(),
+                    running.finished,
+                )
+            })
+            .unwrap_or_default();
+        let mut open = true;
+        let mut clear_logs = false;
+        let mut stop_process = false;
+        let mut restart_process = false;
+
+        egui::Window::new(format!("{TERMINAL}  Terminal · {}", process.name))
+            .id(egui::Id::new("process-terminal"))
+            .open(&mut open)
+            .default_size([820.0, 520.0])
+            .min_size([480.0, 300.0])
+            .resizable(true)
+            .collapsible(false)
+            .show(root_ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let (status, color) = process_state_display(process.state);
+                    runtime_badge(ui, status, color);
+                    if let Some(pid) = process.process_id {
+                        ui.label(RichText::new(format!("PID {pid}")).color(theme::MUTED));
+                    }
+                    ui.label(
+                        RichText::new(process.command_line())
+                            .color(theme::MUTED)
+                            .monospace(),
+                    );
+                });
+                ui.label(
+                    RichText::new(process.working_directory.to_string_lossy())
+                        .color(Color32::from_rgb(112, 124, 145))
+                        .monospace()
+                        .size(10.0),
+                );
+                ui.add_space(8.0);
+                Frame::new()
+                    .fill(Color32::from_rgb(7, 10, 15))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(39, 48, 64)))
+                    .corner_radius(6)
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_min_height(350.0);
+                        egui::ScrollArea::both()
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                if logs.is_empty() {
+                                    ui.label(
+                                        RichText::new(if finished {
+                                            "O processo terminou sem gerar saída."
+                                        } else {
+                                            "Aguardando saída do processo..."
+                                        })
+                                        .color(Color32::from_rgb(126, 138, 157))
+                                        .monospace(),
+                                    );
+                                } else {
+                                    for line in &logs {
+                                        ui.label(
+                                            RichText::new(line)
+                                                .color(Color32::from_rgb(205, 214, 226))
+                                                .monospace()
+                                                .size(11.0),
+                                        );
+                                    }
+                                }
+                            });
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Limpar").clicked() {
+                        clear_logs = true;
+                    }
+                    if process.state == ProcessState::Running {
+                        if ui.button("Reiniciar").clicked() {
+                            restart_process = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new("Parar")
+                                    .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.18)),
+                            )
+                            .clicked()
+                        {
+                            stop_process = true;
+                        }
+                    }
+                });
+            });
+
+        if clear_logs {
+            self.clear_process_logs(&process_id);
+        }
+        if restart_process {
+            self.restart_process(&process_id);
+        } else if stop_process {
+            self.stop_process(&process_id);
+        }
+        if !open {
+            self.terminal_process = None;
+        }
+    }
+
+    fn show_dependency_terminal(&mut self, root_ui: &mut egui::Ui) {
+        let Some(project_path) = self.dependency_terminal.clone() else {
+            return;
+        };
+        let Some(session) = self.dependency_installs.get(&project_path) else {
+            self.dependency_terminal = None;
+            return;
+        };
+        let project_name = self
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| "Projeto".into());
+        let logs = session.logs.iter().cloned().collect::<Vec<_>>();
+        let status = session.status.clone();
+        let offers_laravel_migration = matches!(&status, DependencyInstallStatus::Failed { .. })
+            && composer_security_advisory(&logs.join("\n"))
+            && project_path.join("composer.json").is_file();
+        let mut open = true;
+        let mut clear_logs = false;
+        let mut retry = false;
+        let mut prepare_migration = false;
+
+        egui::Window::new(format!("{TERMINAL}  Instalação · {project_name}"))
+            .id(egui::Id::new(("dependency-terminal", &project_path)))
+            .open(&mut open)
+            .default_size([860.0, 560.0])
+            .min_size([500.0, 340.0])
+            .resizable(true)
+            .collapsible(false)
+            .show(root_ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let (label, color) = match &status {
+                        DependencyInstallStatus::Running => ("Instalando", theme::PRIMARY),
+                        DependencyInstallStatus::Succeeded => ("Concluído", theme::SUCCESS),
+                        DependencyInstallStatus::Failed { .. } => {
+                            ("Falhou", Color32::from_rgb(235, 87, 87))
+                        }
+                    };
+                    runtime_badge(ui, label, color);
+                    if matches!(&status, DependencyInstallStatus::Running) {
+                        ui.spinner();
+                    }
+                });
+                ui.label(
+                    RichText::new(project_path.to_string_lossy())
+                        .color(Color32::from_rgb(112, 124, 145))
+                        .monospace()
+                        .size(10.0),
+                );
+                ui.add_space(8.0);
+                Frame::new()
+                    .fill(Color32::from_rgb(7, 10, 15))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(39, 48, 64)))
+                    .corner_radius(6)
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_min_height(330.0);
+                        egui::ScrollArea::both()
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                if logs.is_empty() {
+                                    ui.label(
+                                        RichText::new("Preparando a instalação...")
+                                            .color(Color32::from_rgb(126, 138, 157))
+                                            .monospace(),
+                                    );
+                                } else {
+                                    for line in &logs {
+                                        ui.label(
+                                            RichText::new(line)
+                                                .color(Color32::from_rgb(205, 214, 226))
+                                                .monospace()
+                                                .size(11.0),
+                                        );
+                                    }
+                                }
+                            });
+                    });
+
+                if let DependencyInstallStatus::Failed { error, suggestion } = &status {
+                    ui.add_space(10.0);
+                    Frame::new()
+                        .fill(Color32::from_rgb(255, 205, 75).gamma_multiply(0.08))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgb(255, 205, 75).gamma_multiply(0.55),
+                        ))
+                        .corner_radius(7)
+                        .inner_margin(Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("Possíveis soluções")
+                                    .strong()
+                                    .color(Color32::from_rgb(255, 205, 75)),
+                            );
+                            ui.label(suggestion);
+                            ui.label(
+                                RichText::new(error)
+                                    .color(theme::MUTED)
+                                    .monospace()
+                                    .size(9.0),
+                            );
+                        });
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Limpar logs").clicked() {
+                        clear_logs = true;
+                    }
+                    if matches!(&status, DependencyInstallStatus::Failed { .. })
+                        && ui
+                            .add(
+                                egui::Button::new("Tentar novamente")
+                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                            )
+                            .clicked()
+                    {
+                        retry = true;
+                    }
+                    if offers_laravel_migration
+                        && ui
+                            .add(
+                                egui::Button::new("Preparar migração segura")
+                                    .fill(Color32::from_rgb(255, 205, 75).gamma_multiply(0.22)),
+                            )
+                            .clicked()
+                    {
+                        prepare_migration = true;
+                    }
+                });
+            });
+
+        if clear_logs && let Some(session) = self.dependency_installs.get_mut(&project_path) {
+            session.logs.clear();
+        }
+        if retry {
+            self.install_dependencies(&project_path, root_ui.ctx().clone());
+        }
+        if prepare_migration {
+            self.prepare_laravel_migration(&project_path);
+        }
+        if !open {
+            self.dependency_terminal = None;
+        }
+    }
+
+    fn show_laravel_migration(&mut self, root_ui: &mut egui::Ui) {
+        let Some(migration) = self.laravel_migration.as_ref() else {
+            return;
+        };
+        let phase = migration.phase;
+        let project_name = migration.project_name.clone();
+        let current_constraint = migration.current_constraint.clone();
+        let target_constraint = migration.target_constraint.clone();
+        let php_version = migration.php_version.clone();
+        let project_path = migration.project_path.clone();
+        let logs = migration.logs.iter().cloned().collect::<Vec<_>>();
+        let error = migration.error.clone();
+        let backup_path = migration.backup_path.clone();
+        let preview_was_ready = migration.preview.is_some();
+        let mut open = true;
+        let mut start_preview = false;
+        let mut apply = false;
+        let mut close = false;
+
+        egui::Window::new("Migração segura do Laravel")
+            .id(egui::Id::new("laravel-migration"))
+            .open(&mut open)
+            .default_size([720.0, 520.0])
+            .min_size([500.0, 360.0])
+            .resizable(true)
+            .collapsible(false)
+            .show(root_ui, |ui| {
+                ui.heading(&project_name);
+                ui.label(
+                    RichText::new(project_path.to_string_lossy())
+                        .color(theme::MUTED)
+                        .monospace()
+                        .size(10.0),
+                );
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    runtime_badge(ui, &format!("PHP {php_version}"), runtime_color(RuntimeKind::Php));
+                    runtime_badge(
+                        ui,
+                        &format!("Laravel {current_constraint} → {target_constraint}"),
+                        technology_color(TechnologyKind::Laravel),
+                    );
+                });
+                ui.add_space(10.0);
+
+                match phase {
+                    LaravelMigrationPhase::Confirm => {
+                        ui.label("O primeiro passo executa somente uma simulação em uma pasta temporária.");
+                        ui.label(
+                            RichText::new(
+                                "O projeto original, vendor e seus arquivos de código não serão alterados.",
+                            )
+                            .strong()
+                            .color(theme::SUCCESS),
+                        );
+                        ui.add_space(8.0);
+                        ui.label("A simulação irá:");
+                        ui.label("• copiar composer.json e composer.lock, quando existir;");
+                        ui.label(format!(
+                            "• testar laravel/framework {target_constraint} sem instalar pacotes, plugins ou scripts;"
+                        ));
+                        ui.label("• impedir a aplicação se as dependências forem incompatíveis.");
+                    }
+                    LaravelMigrationPhase::Unavailable => {
+                        ui.label(
+                            RichText::new(format!(
+                                "O PHP {php_version} instalado não permite testar {target_constraint}."
+                            ))
+                            .strong()
+                            .color(Color32::from_rgb(255, 205, 75)),
+                        );
+                        ui.label(
+                            "O projeto continuará na versão atual. Quando o suporte a Docker estiver disponível, a simulação poderá usar PHP 8.2 ou superior dentro do container sem exigir a atualização do PHP da máquina.",
+                        );
+                        ui.label(
+                            "O container resolve a compatibilidade do runtime; a atualização do Laravel continuará opcional e sujeita à confirmação.",
+                        );
+                    }
+                    LaravelMigrationPhase::Ready => {
+                        ui.label(
+                            RichText::new("A simulação foi concluída sem alterar o projeto.")
+                                .strong()
+                                .color(theme::SUCCESS),
+                        );
+                        ui.label(
+                            "Aplicar substituirá composer.json e composer.lock e executará composer install. Um backup será criado antes da alteração.",
+                        );
+                    }
+                    LaravelMigrationPhase::Completed => {
+                        ui.label(
+                            RichText::new("Migração das dependências concluída.")
+                                .strong()
+                                .color(theme::SUCCESS),
+                        );
+                        if let Some(backup_path) = &backup_path {
+                            ui.label(format!("Backup: {}", backup_path.display()));
+                        }
+                        ui.label("Revise e teste a aplicação, pois versões principais podem exigir ajustes no código.");
+                    }
+                    LaravelMigrationPhase::Failed => {
+                        ui.label(
+                            RichText::new("A migração não pôde ser concluída.")
+                                .strong()
+                                .color(Color32::from_rgb(235, 87, 87)),
+                        );
+                        if let Some(error) = &error {
+                            ui.label(error);
+                        }
+                        ui.label(if preview_was_ready {
+                            "composer.json e composer.lock foram restaurados. Confira os logs antes de tentar novamente."
+                        } else {
+                            "A falha ocorreu na cópia isolada; o projeto original não foi alterado."
+                        });
+                    }
+                    LaravelMigrationPhase::Previewing => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Testando a resolução das dependências em uma cópia isolada...");
+                        });
+                    }
+                    LaravelMigrationPhase::Applying => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Aplicando os manifests e instalando as dependências...");
+                        });
+                    }
+                }
+
+                if !logs.is_empty() {
+                    ui.add_space(10.0);
+                    Frame::new()
+                        .fill(Color32::from_rgb(7, 10, 15))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(39, 48, 64)))
+                        .corner_radius(6)
+                        .inner_margin(Margin::same(10))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::both()
+                                .max_height(240.0)
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    for line in &logs {
+                                        ui.label(
+                                            RichText::new(line)
+                                                .color(Color32::from_rgb(205, 214, 226))
+                                                .monospace()
+                                                .size(10.0),
+                                        );
+                                    }
+                                });
+                        });
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| match phase {
+                    LaravelMigrationPhase::Confirm | LaravelMigrationPhase::Failed => {
+                        if ui
+                            .add(
+                                egui::Button::new("Testar em cópia isolada")
+                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                            )
+                            .clicked()
+                        {
+                            start_preview = true;
+                        }
+                        if ui.button("Manter versão atual").clicked() {
+                            close = true;
+                        }
+                    }
+                    LaravelMigrationPhase::Ready => {
+                        if ui
+                            .add(
+                                egui::Button::new("Confirmar e aplicar ao projeto")
+                                    .fill(Color32::from_rgb(255, 205, 75).gamma_multiply(0.22)),
+                            )
+                            .clicked()
+                        {
+                            apply = true;
+                        }
+                        if ui.button("Cancelar").clicked() {
+                            close = true;
+                        }
+                    }
+                    LaravelMigrationPhase::Completed => {
+                        if ui.button("Fechar").clicked() {
+                            close = true;
+                        }
+                    }
+                    LaravelMigrationPhase::Unavailable => {
+                        if ui.button("Manter versão atual").clicked() {
+                            close = true;
+                        }
+                    }
+                    LaravelMigrationPhase::Previewing | LaravelMigrationPhase::Applying => {}
+                });
+            });
+
+        if start_preview {
+            self.start_laravel_migration_preview(root_ui.ctx().clone());
+        }
+        if apply {
+            self.apply_laravel_migration(root_ui.ctx().clone());
+        }
+        if close || !open {
+            self.laravel_migration = None;
+        }
     }
 
     fn has_active_processes(&self) -> bool {
@@ -957,7 +1929,18 @@ impl LocalCodePilot {
             return;
         }
 
-        for project in &self.projects {
+        let mut projects = self.projects.clone();
+        projects.sort_by_key(|project| {
+            if self.focused_project.as_ref() == Some(&project.path) {
+                0
+            } else if !project_process_ids(&self.processes, &project.path, true).is_empty() {
+                1
+            } else {
+                2
+            }
+        });
+
+        for project in &projects {
             let project_matches = project.name.to_lowercase().contains(&query)
                 || project
                     .path
@@ -965,7 +1948,7 @@ impl LocalCodePilot {
                     .to_lowercase()
                     .contains(&query)
                 || project.display_stack().to_lowercase().contains(&query);
-            let commands: Vec<_> = self
+            let mut commands: Vec<_> = self
                 .processes
                 .iter()
                 .filter(|process| process.project_path == project.path)
@@ -974,9 +1957,44 @@ impl LocalCodePilot {
                 })
                 .cloned()
                 .collect();
+            commands.sort_by_key(|command| {
+                if matches!(
+                    command.state,
+                    ProcessState::Running | ProcessState::Starting
+                ) {
+                    0
+                } else {
+                    1
+                }
+            });
             if commands.is_empty() {
                 continue;
             }
+            let project_command_count = self
+                .processes
+                .iter()
+                .filter(|process| process.project_path == project.path)
+                .count();
+            let active_command_count =
+                project_process_ids(&self.processes, &project.path, true).len();
+            let environment = self
+                .project_environments
+                .get(&project.path)
+                .cloned()
+                .unwrap_or_default();
+            let dependency_install_status = self
+                .dependency_installs
+                .get(&project.path)
+                .map(|session| session.status.clone());
+            let installing_dependencies = matches!(
+                &dependency_install_status,
+                Some(DependencyInstallStatus::Running)
+            );
+            let dependency_install_failed = matches!(
+                &dependency_install_status,
+                Some(DependencyInstallStatus::Failed { .. })
+            );
+            let has_dependency_logs = self.dependency_installs.contains_key(&project.path);
             Frame::new()
                 .fill(theme::SURFACE)
                 .stroke(Stroke::new(1.0_f32, theme::BORDER))
@@ -984,7 +2002,109 @@ impl LocalCodePilot {
                 .inner_margin(Margin::same(18))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(&project.name).strong().size(15.0));
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&project.name).strong().size(15.0));
+                            let (status, status_color) = if installing_dependencies {
+                                ("Instalando dependências", theme::PRIMARY)
+                            } else if dependency_install_failed {
+                                ("Falha na instalação", Color32::from_rgb(235, 87, 87))
+                            } else if active_command_count > 0 {
+                                ("Em execução", theme::SUCCESS)
+                            } else {
+                                environment.status()
+                            };
+                            ui.label(
+                                RichText::new(format!(
+                                    "{status} · {project_command_count} serviço(s)"
+                                ))
+                                .color(status_color)
+                                .size(10.0),
+                            );
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if active_command_count > 0 {
+                                if ui
+                                    .add(
+                                        egui::Button::new("Parar ambiente").fill(
+                                            Color32::from_rgb(235, 87, 87).gamma_multiply(0.18),
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(ProcessAction::StopProject(project.path.clone()));
+                                }
+                            } else if installing_dependencies {
+                                ui.spinner();
+                                ui.label("Instalando...");
+                            } else if environment.can_install_dependencies() {
+                                if ui
+                                    .add(
+                                        egui::Button::new(if dependency_install_failed {
+                                            "Tentar novamente"
+                                        } else {
+                                            "Instalar dependências"
+                                        })
+                                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(ProcessAction::InstallDependencies(
+                                        project.path.clone(),
+                                    ));
+                                }
+                            } else {
+                                let start = ui.add_enabled(
+                                    environment.is_ready(),
+                                    egui::Button::new(RichText::new(format!(
+                                        "{PLAY}  Iniciar ambiente"
+                                    )))
+                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                                );
+                                let start = if let Some(details) = environment.problem_details() {
+                                    start.on_hover_text(details)
+                                } else {
+                                    start
+                                };
+                                if start.clicked() {
+                                    action =
+                                        Some(ProcessAction::StartProject(project.path.clone()));
+                                }
+                            }
+                        });
+                    });
+                    if !installing_dependencies && let Some(details) = environment.problem_details()
+                    {
+                        ui.label(
+                            RichText::new(details)
+                                .color(Color32::from_rgb(255, 205, 75))
+                                .size(10.0),
+                        );
+                    }
+                    if let Some(constraint) = environment.legacy_laravel_constraint() {
+                        ui.label(
+                            RichText::new(format!(
+                                "Laravel {constraint} detectado · atualização opcional"
+                            ))
+                            .color(Color32::from_rgb(255, 205, 75))
+                            .size(10.0),
+                        );
+                        if ui.link("Planejar atualização do Laravel").clicked() {
+                            action =
+                                Some(ProcessAction::PrepareLaravelMigration(project.path.clone()));
+                        }
+                    }
+                    if has_dependency_logs
+                        && ui
+                            .link(if dependency_install_failed {
+                                format!("{TERMINAL}  Ver erro e sugestões")
+                            } else {
+                                format!("{TERMINAL}  Ver logs da instalação")
+                            })
+                            .clicked()
+                    {
+                        action = Some(ProcessAction::ViewDependencyLogs(project.path.clone()));
+                    }
                     ui.add_space(10.0);
                     for command in commands {
                         let server_url = if command.state == ProcessState::Running
@@ -1016,6 +2136,16 @@ impl LocalCodePilot {
                                         runtime_badge(ui, state_label, state_color);
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if self.running_processes.contains_key(&command.id)
+                                            && ui
+                                                .button(RichText::new(format!(
+                                                    "{TERMINAL}  Abrir terminal"
+                                                )))
+                                                .clicked()
+                                        {
+                                            action =
+                                                Some(ProcessAction::ViewLogs(command.id.clone()));
+                                        }
                                         match command.state {
                                             ProcessState::Running => {
                                                 if ui
@@ -1050,15 +2180,14 @@ impl LocalCodePilot {
                                                 );
                                             }
                                             ProcessState::Stopped | ProcessState::Failed => {
-                                                if ui
-                                                    .add(
-                                                        egui::Button::new(RichText::new(format!(
-                                                            "{PLAY}  Iniciar"
-                                                        )))
-                                                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                                                    )
-                                                    .clicked()
-                                                {
+                                                let start = ui.add_enabled(
+                                                    environment.is_ready(),
+                                                    egui::Button::new(RichText::new(format!(
+                                                        "{PLAY}  Iniciar"
+                                                    )))
+                                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                                                );
+                                                if start.clicked() {
                                                     action = Some(ProcessAction::Start(
                                                         command.id.clone(),
                                                     ));
@@ -1168,7 +2297,19 @@ impl LocalCodePilot {
             Some(ProcessAction::Start(id)) => self.start_process(&id),
             Some(ProcessAction::Stop(id)) => self.stop_process(&id),
             Some(ProcessAction::Restart(id)) => self.restart_process(&id),
+            Some(ProcessAction::StartProject(path)) => self.start_project(&path),
+            Some(ProcessAction::StopProject(path)) => self.stop_project(&path),
+            Some(ProcessAction::InstallDependencies(path)) => {
+                self.install_dependencies(&path, ui.ctx().clone());
+            }
+            Some(ProcessAction::ViewDependencyLogs(path)) => {
+                self.dependency_terminal = Some(path);
+            }
+            Some(ProcessAction::PrepareLaravelMigration(path)) => {
+                self.prepare_laravel_migration(&path);
+            }
             Some(ProcessAction::ClearLogs(id)) => self.clear_process_logs(&id),
+            Some(ProcessAction::ViewLogs(id)) => self.terminal_process = Some(id),
             Some(ProcessAction::OpenUrl(url)) => {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
                 self.notify(format!("Abrindo {url}"));
@@ -1213,6 +2354,8 @@ impl LocalCodePilot {
 impl eframe::App for LocalCodePilot {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_discovery();
+        self.poll_dependency_installs(ctx);
+        self.poll_laravel_migration(ctx);
         self.poll_processes(ctx);
     }
 
@@ -1220,6 +2363,9 @@ impl eframe::App for LocalCodePilot {
         self.sidebar(ui);
         self.topbar(ui);
         self.content(ui);
+        self.show_terminal(ui);
+        self.show_dependency_terminal(ui);
+        self.show_laravel_migration(ui);
         self.show_notification(ui);
     }
 }
@@ -1260,6 +2406,478 @@ fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
         &icon.rgba,
     );
     ctx.load_texture("localcodepilot-logo", image, egui::TextureOptions::LINEAR)
+}
+
+fn composer_security_advisory(details: &str) -> bool {
+    let details = details.to_ascii_lowercase();
+    details.contains("affected by security advisories")
+        || details.contains("block-insecure")
+        || (details.contains("security advisories") && details.contains("pksa-"))
+}
+
+fn create_laravel_migration(
+    project_path: &Path,
+    project_name: String,
+) -> Result<LaravelMigration, String> {
+    let composer_path = project_path.join("composer.json");
+    let contents = fs::read_to_string(&composer_path)
+        .map_err(|error| format!("Não foi possível ler {}: {error}", composer_path.display()))?;
+    let document: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|error| format!("O composer.json é inválido: {error}"))?;
+    let current_constraint = document
+        .get("require")
+        .and_then(|require| require.get("laravel/framework"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "laravel/framework não foi encontrado no composer.json".to_owned())?
+        .to_owned();
+    let (php_version, php_major, php_minor) = installed_php_version()?;
+    let (target_major, phase) = if php_major > 8 || (php_major == 8 && php_minor >= 3) {
+        (13, LaravelMigrationPhase::Confirm)
+    } else if php_major == 8 && php_minor >= 2 {
+        (12, LaravelMigrationPhase::Confirm)
+    } else {
+        (12, LaravelMigrationPhase::Unavailable)
+    };
+
+    Ok(LaravelMigration {
+        project_path: project_path.to_path_buf(),
+        project_name,
+        current_constraint,
+        target_constraint: format!("^{target_major}.0"),
+        php_version,
+        phase,
+        receiver: None,
+        logs: VecDeque::new(),
+        preview: None,
+        backup_path: None,
+        error: None,
+    })
+}
+
+fn installed_php_version() -> Result<(String, u64, u64), String> {
+    let output = Command::new("php")
+        .args([
+            "-r",
+            "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'.'.PHP_RELEASE_VERSION;",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("Não foi possível consultar a versão do PHP: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Não foi possível consultar a versão do PHP: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let mut parts = version.split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .ok_or_else(|| format!("Versão do PHP não reconhecida: {version}"))?;
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .ok_or_else(|| format!("Versão do PHP não reconhecida: {version}"))?;
+    Ok((version, major, minor))
+}
+
+fn prepare_laravel_migration_files(
+    composer_json: &str,
+    composer_lock: Option<Vec<u8>>,
+    target_constraint: &str,
+) -> Result<LaravelMigrationFiles, String> {
+    let mut document: serde_json::Value = serde_json::from_str(composer_json)
+        .map_err(|error| format!("O composer.json é inválido: {error}"))?;
+    let require = document
+        .get_mut("require")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "A seção require não foi encontrada no composer.json".to_owned())?;
+    let framework = require
+        .get_mut("laravel/framework")
+        .ok_or_else(|| "laravel/framework não foi encontrado no composer.json".to_owned())?;
+    *framework = serde_json::Value::String(target_constraint.to_owned());
+    let mut composer_json = serde_json::to_string_pretty(&document)
+        .map_err(|error| format!("Não foi possível preparar o composer.json: {error}"))?;
+    composer_json.push('\n');
+    Ok(LaravelMigrationFiles {
+        composer_json,
+        composer_lock,
+    })
+}
+
+fn preview_laravel_migration(
+    project_path: &Path,
+    target_constraint: &str,
+    sender: &mpsc::Sender<LaravelMigrationEvent>,
+) -> Result<LaravelMigrationFiles, String> {
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let preview_directory = std::env::temp_dir()
+        .join("LocalCodePilot")
+        .join(format!("laravel-preview-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&preview_directory)
+        .map_err(|error| format!("Não foi possível criar a cópia temporária: {error}"))?;
+
+    let result = (|| {
+        let composer_json = fs::read_to_string(project_path.join("composer.json"))
+            .map_err(|error| format!("Não foi possível ler composer.json: {error}"))?;
+        let composer_lock = fs::read(project_path.join("composer.lock")).ok();
+        let files =
+            prepare_laravel_migration_files(&composer_json, composer_lock, target_constraint)?;
+        fs::write(
+            preview_directory.join("composer.json"),
+            &files.composer_json,
+        )
+        .map_err(|error| format!("Não foi possível preparar composer.json: {error}"))?;
+        if let Some(lock) = &files.composer_lock {
+            fs::write(preview_directory.join("composer.lock"), lock)
+                .map_err(|error| format!("Não foi possível copiar composer.lock: {error}"))?;
+        }
+        let _ = sender.send(LaravelMigrationEvent::Log(format!(
+            "Simulando laravel/framework {target_constraint} em {}",
+            preview_directory.display()
+        )));
+        run_laravel_migration_command(
+            &preview_directory,
+            &[
+                "update",
+                "laravel/framework",
+                "--with-all-dependencies",
+                "--no-install",
+                "--no-plugins",
+                "--no-scripts",
+                "--no-interaction",
+            ],
+            sender,
+        )?;
+        let composer_json = fs::read_to_string(preview_directory.join("composer.json"))
+            .map_err(|error| format!("Não foi possível ler o resultado da simulação: {error}"))?;
+        let composer_lock = fs::read(preview_directory.join("composer.lock"))
+            .map_err(|error| format!("O Composer não gerou composer.lock: {error}"))?;
+        Ok(LaravelMigrationFiles {
+            composer_json,
+            composer_lock: Some(composer_lock),
+        })
+    })();
+
+    if preview_directory.starts_with(std::env::temp_dir()) {
+        let _ = fs::remove_dir_all(&preview_directory);
+    }
+    result
+}
+
+fn apply_laravel_migration_files(
+    project_path: &Path,
+    files: &LaravelMigrationFiles,
+    sender: &mpsc::Sender<LaravelMigrationEvent>,
+) -> Result<PathBuf, String> {
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+    let backup_path = std::env::temp_dir()
+        .join("LocalCodePilot")
+        .join("backups")
+        .join(format!("{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&backup_path)
+        .map_err(|error| format!("Não foi possível criar o backup: {error}"))?;
+    let composer_json_path = project_path.join("composer.json");
+    let composer_lock_path = project_path.join("composer.lock");
+    fs::copy(&composer_json_path, backup_path.join("composer.json"))
+        .map_err(|error| format!("Não foi possível salvar o backup de composer.json: {error}"))?;
+    let had_lock = composer_lock_path.is_file();
+    if had_lock {
+        fs::copy(&composer_lock_path, backup_path.join("composer.lock")).map_err(|error| {
+            format!("Não foi possível salvar o backup de composer.lock: {error}")
+        })?;
+    }
+
+    let apply_result = (|| {
+        fs::write(&composer_json_path, &files.composer_json)
+            .map_err(|error| format!("Não foi possível atualizar composer.json: {error}"))?;
+        if let Some(lock) = &files.composer_lock {
+            fs::write(&composer_lock_path, lock)
+                .map_err(|error| format!("Não foi possível atualizar composer.lock: {error}"))?;
+        }
+        let _ = sender.send(LaravelMigrationEvent::Log(
+            "Manifests aplicados. Instalando dependências sem executar scripts...".into(),
+        ));
+        run_laravel_migration_command(
+            project_path,
+            &["install", "--no-scripts", "--no-interaction"],
+            sender,
+        )
+    })();
+
+    if let Err(error) = apply_result {
+        let _ = fs::copy(backup_path.join("composer.json"), &composer_json_path);
+        if had_lock {
+            let _ = fs::copy(backup_path.join("composer.lock"), &composer_lock_path);
+        } else if composer_lock_path.is_file() {
+            let _ = fs::remove_file(&composer_lock_path);
+        }
+        return Err(format!(
+            "{error}. composer.json e composer.lock foram restaurados. Backup: {}",
+            backup_path.display()
+        ));
+    }
+
+    Ok(backup_path)
+}
+
+fn run_laravel_migration_command(
+    working_directory: &Path,
+    args: &[&str],
+    sender: &mpsc::Sender<LaravelMigrationEvent>,
+) -> Result<(), String> {
+    let _ = sender.send(LaravelMigrationEvent::Log(format!(
+        "$ composer {}",
+        args.join(" ")
+    )));
+    let process = ProjectProcess {
+        id: "laravel-migration".into(),
+        project_name: String::new(),
+        project_path: working_directory.to_path_buf(),
+        working_directory: working_directory.to_path_buf(),
+        name: "Migração do Laravel".into(),
+        program: "composer".into(),
+        args: args.iter().map(|argument| (*argument).to_owned()).collect(),
+        state: ProcessState::Starting,
+        process_id: None,
+        exit_code: None,
+    };
+    let mut child = process_command(&process)
+        .current_dir(working_directory)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Não foi possível executar o Composer: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .map(|stdout| spawn_laravel_migration_reader(stdout, sender.clone()));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|stderr| spawn_laravel_migration_reader(stderr, sender.clone()));
+    let status = child
+        .wait()
+        .map_err(|error| format!("Não foi possível aguardar o Composer: {error}"))?;
+    if let Some(reader) = stdout {
+        let _ = reader.join();
+    }
+    if let Some(reader) = stderr {
+        let _ = reader.join();
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Composer encerrou com código {}",
+            status
+                .code()
+                .map_or_else(|| "desconhecido".into(), |code| code.to_string())
+        ))
+    }
+}
+
+fn spawn_laravel_migration_reader(
+    reader: impl Read + Send + 'static,
+    sender: mpsc::Sender<LaravelMigrationEvent>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            let line = strip_terminal_sequences(&line);
+            if sender.send(LaravelMigrationEvent::Log(line)).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+fn run_dependency_installs(
+    steps: &[DependencyInstall],
+    sender: &mpsc::Sender<DependencyInstallEvent>,
+) -> Result<(), String> {
+    for step in steps {
+        let command_line = if step.args.is_empty() {
+            step.program.clone()
+        } else {
+            format!("{} {}", step.program, step.args.join(" "))
+        };
+        let _ = sender.send(DependencyInstallEvent::Log(format!(
+            "> {}",
+            step.working_directory.display()
+        )));
+        let _ = sender.send(DependencyInstallEvent::Log(format!("$ {command_line}")));
+        let _ = sender.send(DependencyInstallEvent::Log(format!(
+            "Instalando {}...",
+            step.label
+        )));
+        let process = ProjectProcess {
+            id: format!(
+                "setup::{}::{}",
+                step.working_directory.display(),
+                step.program
+            ),
+            project_name: String::new(),
+            project_path: step.working_directory.clone(),
+            working_directory: step.working_directory.clone(),
+            name: step.label.clone(),
+            program: step.program.clone(),
+            args: step.args.clone(),
+            state: ProcessState::Starting,
+            process_id: None,
+            exit_code: None,
+        };
+        let mut child = process_command(&process)
+            .current_dir(&step.working_directory)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("Não foi possível executar {command_line}: {error}"))?;
+        let stdout_reader = child
+            .stdout
+            .take()
+            .map(|stdout| spawn_dependency_output_reader(stdout, sender.clone()));
+        let stderr_reader = child
+            .stderr
+            .take()
+            .map(|stderr| spawn_dependency_output_reader(stderr, sender.clone()));
+        let status = child
+            .wait()
+            .map_err(|error| format!("Não foi possível aguardar {command_line}: {error}"))?;
+        if let Some(reader) = stdout_reader {
+            let _ = reader.join();
+        }
+        if let Some(reader) = stderr_reader {
+            let _ = reader.join();
+        }
+        if !status.success() {
+            let error = format!(
+                "{} falhou com código de saída {}",
+                step.label,
+                status
+                    .code()
+                    .map_or_else(|| "desconhecido".into(), |code| code.to_string())
+            );
+            let _ = sender.send(DependencyInstallEvent::Log(format!("[erro] {error}")));
+            return Err(error);
+        }
+        let _ = sender.send(DependencyInstallEvent::Log(format!(
+            "[concluído] {}",
+            step.label
+        )));
+    }
+    Ok(())
+}
+
+fn spawn_dependency_output_reader(
+    reader: impl Read + Send + 'static,
+    sender: mpsc::Sender<DependencyInstallEvent>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            let line = strip_terminal_sequences(&line);
+            if sender.send(DependencyInstallEvent::Log(line)).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+fn dependency_error_suggestion(logs: &str, error: &str) -> String {
+    let details = format!("{logs}\n{error}").to_ascii_lowercase();
+    if composer_security_advisory(&details) {
+        "O Composer bloqueou versões vulneráveis. 1. Recomendado: atualize laravel/framework para uma versão ainda suportada e compatível com seu PHP — Laravel 12 requer PHP 8.2 ou superior; Laravel 13 requer PHP 8.3 ou superior. 2. Revise também as outras dependências no composer.json antes de tentar novamente. 3. Se um advisory não afetar este projeto, ignore somente o código PKSA específico e documente o motivo. Evite desativar globalmente o bloqueio de segurança. Como não existe composer.lock, gere e versione o arquivo após uma instalação segura."
+            .into()
+    } else if [
+        "enotfound",
+        "eai_again",
+        "timed out",
+        "timeout",
+        "could not resolve",
+        "failed to download",
+        "network error",
+    ]
+    .iter()
+    .any(|pattern| details.contains(pattern))
+    {
+        "Verifique a conexão, o proxy e o endereço do registro de pacotes. Depois tente novamente."
+            .into()
+    } else if [
+        "eacces",
+        "eperm",
+        "permission denied",
+        "access is denied",
+        "acesso negado",
+    ]
+    .iter()
+    .any(|pattern| details.contains(pattern))
+    {
+        "Feche programas que estejam usando essa pasta e confira se sua conta possui permissão de escrita no projeto."
+            .into()
+    } else if ["enospc", "no space left", "espaço insuficiente"]
+        .iter()
+        .any(|pattern| details.contains(pattern))
+    {
+        "Libere espaço no disco usado pelo projeto e execute a instalação novamente.".into()
+    } else if ["eresolve", "peer dependency", "conflicting peer"]
+        .iter()
+        .any(|pattern| details.contains(pattern))
+    {
+        "Há versões de pacotes incompatíveis. Revise as dependências indicadas no primeiro erro e alinhe suas versões no arquivo do projeto."
+            .into()
+    } else if [
+        "unsupported engine",
+        "ebadengine",
+        "requires node",
+        "your php version",
+        "does not satisfy that requirement",
+    ]
+    .iter()
+    .any(|pattern| details.contains(pattern))
+    {
+        "A versão do runtime não atende ao projeto. Instale ou selecione a versão de Node.js ou PHP indicada nos logs."
+            .into()
+    } else if ["unauthorized", "authentication", "401", "403"]
+        .iter()
+        .any(|pattern| details.contains(pattern))
+    {
+        "O registro recusou o acesso. Autentique sua conta ou confira o token configurado para dependências privadas."
+            .into()
+    } else if ["integrity", "checksum", "lockfile", "frozen lockfile"]
+        .iter()
+        .any(|pattern| details.contains(pattern))
+    {
+        "O cache ou o lockfile pode estar inconsistente. Limpe o cache do gerenciador e regenere o lockfile somente após revisar as alterações."
+            .into()
+    } else if ["404", "not found", "could not find package"]
+        .iter()
+        .any(|pattern| details.contains(pattern))
+    {
+        "Confira o nome e a versão do pacote, além do registro configurado no projeto.".into()
+    } else if details.contains("package.json")
+        && ["parse", "json", "unexpected token"]
+            .iter()
+            .any(|pattern| details.contains(pattern))
+    {
+        "O package.json parece inválido. Corrija o JSON indicado nos logs e tente novamente.".into()
+    } else if details.contains("ext-")
+        && ["missing", "requires", "enable"]
+            .iter()
+            .any(|pattern| details.contains(pattern))
+    {
+        "Uma extensão do PHP está ausente. Habilite a extensão indicada nos logs na instalação do PHP."
+            .into()
+    } else {
+        "Leia a primeira mensagem de erro nos logs, corrija o arquivo ou requisito indicado e tente novamente."
+            .into()
+    }
 }
 
 fn process_command(process: &ProjectProcess) -> Command {
@@ -1335,6 +2953,7 @@ fn executable_candidate(path: &Path) -> bool {
 fn spawn_output_reader(reader: impl Read + Send + 'static, sender: mpsc::Sender<String>) {
     std::thread::spawn(move || {
         for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            let line = strip_terminal_sequences(&line);
             if sender.send(line).is_err() {
                 break;
             }
@@ -1359,6 +2978,32 @@ fn terminate_process(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn project_process_ids(
+    processes: &[ProjectProcess],
+    project_path: &Path,
+    active_only: bool,
+) -> Vec<String> {
+    processes
+        .iter()
+        .filter(|process| process.project_path == project_path)
+        .filter(|process| {
+            !active_only
+                || matches!(
+                    process.state,
+                    ProcessState::Running | ProcessState::Starting
+                )
+        })
+        .filter(|process| {
+            active_only
+                || !matches!(
+                    process.state,
+                    ProcessState::Running | ProcessState::Starting
+                )
+        })
+        .map(|process| process.id.clone())
+        .collect()
 }
 
 fn process_matches_search(
@@ -1423,7 +3068,7 @@ fn stat_card(
         .inner_margin(Margin::same(16))
         .show(ui, |ui| {
             ui.set_min_height(62.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 Frame::new()
                     .fill(color.gamma_multiply(0.12))
                     .corner_radius(9)
@@ -1446,8 +3091,159 @@ fn stat_card(
         });
 }
 
-fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) -> Option<PathBuf> {
-    let mut open_path = None;
+fn inspect_project_environment(
+    project: &Project,
+    processes: &[ProjectProcess],
+) -> ProjectEnvironment {
+    let project_processes: Vec<_> = processes
+        .iter()
+        .filter(|process| process.project_path == project.path)
+        .collect();
+    let mut missing_programs = Vec::new();
+    let mut missing_dependencies = Vec::new();
+    let mut install_steps = Vec::new();
+    let laravel_constraint = project_processes
+        .iter()
+        .map(|process| process.working_directory.as_path())
+        .chain(std::iter::once(project.path.as_path()))
+        .find_map(read_laravel_constraint);
+
+    for process in &project_processes {
+        if !executable_available(&process.program) && !missing_programs.contains(&process.program) {
+            missing_programs.push(process.program.clone());
+        }
+
+        let uses_node = matches!(process.program.as_str(), "npm" | "pnpm" | "yarn" | "bun");
+        let missing_node_dependencies = uses_node
+            && process.working_directory.join("package.json").is_file()
+            && !has_node_dependencies(&process.working_directory, &project.path);
+        if missing_node_dependencies {
+            if !missing_dependencies.iter().any(|item| item == "Node.js") {
+                missing_dependencies.push("Node.js".to_owned());
+            }
+            if !install_steps.iter().any(|step: &DependencyInstall| {
+                step.program == process.program
+                    && step.working_directory == process.working_directory
+            }) {
+                install_steps.push(DependencyInstall {
+                    label: format!("dependências Node.js com {}", process.program),
+                    program: process.program.clone(),
+                    args: vec!["install".into()],
+                    working_directory: process.working_directory.clone(),
+                });
+            }
+        }
+
+        let uses_composer = process.program == "composer"
+            || (process.program == "php"
+                && process.working_directory.join("composer.json").is_file());
+        let missing_composer_dependencies = uses_composer
+            && !has_dependency_directory(&process.working_directory, &project.path, "vendor");
+        if missing_composer_dependencies {
+            if !missing_dependencies.iter().any(|item| item == "Composer") {
+                missing_dependencies.push("Composer".to_owned());
+            }
+            if !executable_available("composer")
+                && !missing_programs.iter().any(|item| item == "composer")
+            {
+                missing_programs.push("composer".to_owned());
+            }
+            if !install_steps.iter().any(|step: &DependencyInstall| {
+                step.program == "composer" && step.working_directory == process.working_directory
+            }) {
+                install_steps.push(DependencyInstall {
+                    label: "dependências Composer".into(),
+                    program: "composer".into(),
+                    args: vec!["install".into()],
+                    working_directory: process.working_directory.clone(),
+                });
+            }
+        }
+    }
+
+    missing_programs.sort();
+    missing_dependencies.sort();
+    ProjectEnvironment {
+        command_count: project_processes.len(),
+        missing_programs,
+        missing_dependencies,
+        install_steps,
+        laravel_constraint,
+    }
+}
+
+fn read_laravel_constraint(directory: &Path) -> Option<String> {
+    let contents = fs::read_to_string(directory.join("composer.json")).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    document
+        .get("require")?
+        .get("laravel/framework")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn laravel_major(constraint: &str) -> Option<u64> {
+    constraint
+        .split(|character: char| !character.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse()
+        .ok()
+}
+
+fn has_node_dependencies(directory: &Path, project_root: &Path) -> bool {
+    has_dependency_directory(directory, project_root, "node_modules")
+        || has_dependency_file(directory, project_root, ".pnp.cjs")
+        || has_dependency_file(directory, project_root, ".pnp.js")
+        || has_dependency_file(directory, project_root, ".yarn/install-state.gz")
+}
+
+fn has_dependency_directory(directory: &Path, project_root: &Path, name: &str) -> bool {
+    has_project_ancestor_entry(directory, project_root, name, Path::is_dir)
+}
+
+fn has_dependency_file(directory: &Path, project_root: &Path, name: &str) -> bool {
+    has_project_ancestor_entry(directory, project_root, name, Path::is_file)
+}
+
+fn has_project_ancestor_entry(
+    directory: &Path,
+    project_root: &Path,
+    name: &str,
+    matches: impl Fn(&Path) -> bool,
+) -> bool {
+    let mut current = Some(directory);
+    while let Some(path) = current {
+        if !path.starts_with(project_root) {
+            break;
+        }
+        if matches(&path.join(name)) {
+            return true;
+        }
+        if path == project_root {
+            break;
+        }
+        current = path.parent();
+    }
+    false
+}
+
+fn project_card(
+    ui: &mut egui::Ui,
+    project: &Project,
+    environment: &ProjectEnvironment,
+    active_processes: usize,
+    dependency_install: Option<DependencyInstallStatus>,
+    application_url: Option<&str>,
+    width: f32,
+) -> Option<ProjectCardAction> {
+    let mut action = None;
+    let installing_dependencies =
+        matches!(&dependency_install, Some(DependencyInstallStatus::Running));
+    let dependency_install_failed = matches!(
+        &dependency_install,
+        Some(DependencyInstallStatus::Failed { .. })
+    );
+    let has_dependency_logs = dependency_install.is_some();
     Frame::new()
         .fill(theme::SURFACE)
         .stroke(Stroke::new(1.0_f32, theme::BORDER))
@@ -1455,7 +3251,7 @@ fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) -> Option<Path
         .inner_margin(Margin::same(18))
         .show(ui, |ui| {
             ui.set_width(width);
-            ui.set_min_height(72.0);
+            ui.set_min_height(126.0);
             ui.label(RichText::new(&project.name).strong().size(15.0))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_ui(|ui| {
@@ -1467,16 +3263,9 @@ fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) -> Option<Path
                             .monospace()
                             .size(10.0),
                     );
-                    ui.add_space(6.0);
-                    if ui
-                        .button(RichText::new(format!("{CODE_SIMPLE}  Abrir no VS Code")).strong())
-                        .clicked()
-                    {
-                        open_path = Some(project.path.clone());
-                    }
                 });
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if project.runtimes.is_empty() && project.technologies.is_empty() {
                     runtime_badge(ui, "Projeto local", theme::MUTED);
                 } else {
@@ -1493,8 +3282,176 @@ fn project_card(ui: &mut egui::Ui, project: &Project, width: f32) -> Option<Path
                     }
                 }
             });
+            ui.add_space(10.0);
+            let (status, status_color) = if installing_dependencies {
+                ("Instalando dependências", theme::PRIMARY)
+            } else if dependency_install_failed {
+                ("Falha na instalação", Color32::from_rgb(235, 87, 87))
+            } else if application_url.is_some() {
+                ("Disponível", theme::SUCCESS)
+            } else if active_processes > 0 {
+                ("Em execução", theme::SUCCESS)
+            } else {
+                environment.status()
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(CIRCLE).color(status_color).size(7.0));
+                ui.label(
+                    RichText::new(status)
+                        .color(status_color)
+                        .strong()
+                        .size(10.0),
+                );
+                if environment.command_count > 0 {
+                    ui.label(
+                        RichText::new(format!("· {} serviço(s)", environment.command_count))
+                            .color(theme::MUTED)
+                            .size(9.0),
+                    );
+                }
+            });
+            if !installing_dependencies && let Some(details) = environment.problem_details() {
+                ui.label(RichText::new(details).color(theme::MUTED).size(9.0));
+            }
+            if let Some(constraint) = environment.legacy_laravel_constraint() {
+                ui.label(
+                    RichText::new(format!(
+                        "Laravel {constraint} detectado · atualização opcional"
+                    ))
+                    .color(Color32::from_rgb(255, 205, 75))
+                    .size(9.0),
+                );
+            }
+            ui.add_space(10.0);
+            if let Some(url) = application_url
+                && ui
+                    .add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::Button::new(RichText::new(format!(
+                            "{ARROW_SQUARE_OUT}  Abrir aplicação"
+                        )))
+                        .fill(theme::SUCCESS.gamma_multiply(0.25)),
+                    )
+                    .clicked()
+            {
+                action = Some(ProjectCardAction::OpenUrl(url.to_owned()));
+            }
+            if active_processes > 0 {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::Button::new("Parar ambiente")
+                            .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.18)),
+                    )
+                    .clicked()
+                {
+                    action = Some(ProjectCardAction::Stop(project.path.clone()));
+                }
+            } else if installing_dependencies {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Instalando dependências...");
+                });
+            } else if environment.can_install_dependencies() {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::Button::new(if dependency_install_failed {
+                            "Tentar novamente"
+                        } else {
+                            "Instalar dependências"
+                        })
+                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                    )
+                    .clicked()
+                {
+                    action = Some(ProjectCardAction::InstallDependencies(project.path.clone()));
+                }
+            } else {
+                let start = ui.add_enabled(
+                    environment.is_ready(),
+                    egui::Button::new(RichText::new(format!("{PLAY}  Iniciar ambiente")))
+                        .min_size(egui::vec2(ui.available_width(), 30.0))
+                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                );
+                let start = if let Some(details) = environment.problem_details() {
+                    start.on_hover_text(details)
+                } else {
+                    start
+                };
+                if start.clicked() {
+                    action = Some(ProjectCardAction::Start(project.path.clone()));
+                }
+            }
+            if active_processes > 0
+                && ui
+                    .link(RichText::new(format!("{TERMINAL}  Ver logs")).size(10.0))
+                    .clicked()
+            {
+                action = Some(ProjectCardAction::ViewLogs(project.path.clone()));
+            }
+            if has_dependency_logs
+                && ui
+                    .link(
+                        RichText::new(if dependency_install_failed {
+                            format!("{TERMINAL}  Ver erro e sugestões")
+                        } else {
+                            format!("{TERMINAL}  Ver logs da instalação")
+                        })
+                        .size(10.0),
+                    )
+                    .clicked()
+            {
+                action = Some(ProjectCardAction::ViewDependencyLogs(project.path.clone()));
+            }
+            if environment.legacy_laravel_constraint().is_some()
+                && ui
+                    .link(RichText::new("Planejar atualização do Laravel").size(10.0))
+                    .clicked()
+            {
+                action = Some(ProjectCardAction::PrepareLaravelMigration(
+                    project.path.clone(),
+                ));
+            }
+            if ui
+                .link(RichText::new(format!("{CODE_SIMPLE}  Abrir no VS Code")).size(10.0))
+                .clicked()
+            {
+                action = Some(ProjectCardAction::Open(project.path.clone()));
+            }
         });
-    open_path
+    action
+}
+
+fn current_username() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "Usuário".to_owned())
+}
+
+fn initials_from_username(username: &str) -> String {
+    let username = username.trim();
+    let words: Vec<_> = username.split_whitespace().collect();
+    let initials: String = if words.len() >= 2 {
+        words
+            .iter()
+            .take(2)
+            .filter_map(|word| word.chars().next())
+            .flat_map(char::to_uppercase)
+            .collect()
+    } else {
+        username
+            .chars()
+            .take(2)
+            .flat_map(char::to_uppercase)
+            .collect()
+    };
+
+    if initials.is_empty() {
+        "?".to_owned()
+    } else {
+        initials
+    }
 }
 
 fn open_in_vscode(path: &Path) -> Result<(), String> {
@@ -1566,14 +3523,19 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{executable_available, process_exposes_application_url, process_matches_search};
+    use super::{
+        DependencyInstall, DependencyInstallEvent, ProjectEnvironment, dependency_error_suggestion,
+        executable_available, initials_from_username, inspect_project_environment, laravel_major,
+        prepare_laravel_migration_files, process_exposes_application_url, process_matches_search,
+        project_process_ids, run_dependency_installs,
+    };
     use localcodepilot_core::{
         processes::{ProcessState, ProjectProcess},
         projects::Project,
         runtimes::RuntimeKind,
         technologies::TechnologyKind,
     };
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf, sync::mpsc, time::SystemTime};
 
     #[test]
     fn finds_an_executable_by_its_full_path() {
@@ -1587,6 +3549,208 @@ mod tests {
         assert!(!executable_available(
             "localcodepilot-program-that-does-not-exist-7d2bcfd8"
         ));
+    }
+
+    #[test]
+    fn creates_initials_from_the_computer_username() {
+        assert_eq!(initials_from_username("Julio Cesar"), "JC");
+        assert_eq!(initials_from_username("marcos"), "MA");
+        assert_eq!(initials_from_username("  "), "?");
+    }
+
+    #[test]
+    fn reports_missing_runtime_and_dependencies_before_starting() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-readiness-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("package.json"), "{}").unwrap();
+        let project = Project::new(path.clone(), vec![RuntimeKind::Node]);
+        let process = ProjectProcess {
+            id: "frontend".into(),
+            project_name: project.name.clone(),
+            project_path: project.path.clone(),
+            working_directory: project.path.clone(),
+            name: "Frontend".into(),
+            program: "localcodepilot-missing-runtime-427".into(),
+            args: Vec::new(),
+            state: ProcessState::Stopped,
+            process_id: None,
+            exit_code: None,
+        };
+        let missing_runtime = inspect_project_environment(&project, &[process]);
+        assert_eq!(
+            missing_runtime.missing_programs,
+            ["localcodepilot-missing-runtime-427"]
+        );
+
+        let node_process = ProjectProcess {
+            id: "frontend".into(),
+            project_name: project.name.clone(),
+            project_path: project.path.clone(),
+            working_directory: project.path.clone(),
+            name: "Frontend".into(),
+            program: "npm".into(),
+            args: vec!["run".into(), "dev".into()],
+            state: ProcessState::Stopped,
+            process_id: None,
+            exit_code: None,
+        };
+        let missing_dependencies =
+            inspect_project_environment(&project, std::slice::from_ref(&node_process));
+        assert_eq!(missing_dependencies.missing_dependencies, ["Node.js"]);
+        assert_eq!(missing_dependencies.install_steps.len(), 1);
+        assert_eq!(missing_dependencies.install_steps[0].program, "npm");
+        assert_eq!(missing_dependencies.install_steps[0].args, ["install"]);
+
+        fs::create_dir(path.join("node_modules")).unwrap();
+        let installed = inspect_project_environment(&project, &[node_process]);
+        assert!(installed.missing_dependencies.is_empty());
+        assert!(installed.install_steps.is_empty());
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn runs_a_dependency_install_step_in_the_project_directory() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-install-{nonce}"));
+        fs::create_dir(&path).unwrap();
+
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe".to_owned(),
+            vec!["/D".into(), "/C".into(), "mkdir node_modules".into()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh".to_owned(),
+            vec!["-c".into(), "mkdir node_modules".into()],
+        );
+        let step = DependencyInstall {
+            label: "dependências de teste".into(),
+            program,
+            args,
+            working_directory: path.clone(),
+        };
+
+        let (sender, receiver) = mpsc::channel();
+        run_dependency_installs(&[step], &sender).unwrap();
+        drop(sender);
+        let logs = receiver
+            .into_iter()
+            .filter_map(|event| match event {
+                DependencyInstallEvent::Log(line) => Some(line),
+                DependencyInstallEvent::Finished(_) => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(path.join("node_modules").is_dir());
+        assert!(logs.iter().any(|line| line.starts_with('$')));
+        assert!(logs.iter().any(|line| line.starts_with("[concluído]")));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn suggests_corrections_from_dependency_install_errors() {
+        assert!(
+            dependency_error_suggestion(
+                "laravel/framework was not loaded because it is affected by security advisories (PKSA-test)",
+                "composer install failed",
+            )
+            .contains("Laravel 12 requer PHP 8.2")
+        );
+        assert!(
+            dependency_error_suggestion("npm ERR! code ERESOLVE", "installation failed")
+                .contains("versões de pacotes incompatíveis")
+        );
+        assert!(
+            dependency_error_suggestion("request failed: ENOTFOUND registry", "failed")
+                .contains("conexão")
+        );
+        assert!(
+            dependency_error_suggestion("Your PHP version does not satisfy that requirement", "")
+                .contains("versão do runtime")
+        );
+        assert!(
+            dependency_error_suggestion("EACCES: permission denied", "failed")
+                .contains("permissão de escrita")
+        );
+    }
+
+    #[test]
+    fn prepares_laravel_migration_without_changing_unrelated_dependencies() {
+        let source = r#"{
+    "name": "example/app",
+    "require": {
+        "php": "^8.3",
+        "laravel/framework": "^10.0",
+        "laravel/tinker": "^2.8"
+    }
+}"#;
+        let lock = vec![1, 2, 3];
+
+        let files = prepare_laravel_migration_files(source, Some(lock.clone()), "^13.0").unwrap();
+        let document: serde_json::Value = serde_json::from_str(&files.composer_json).unwrap();
+
+        assert_eq!(document["require"]["laravel/framework"], "^13.0");
+        assert_eq!(document["require"]["laravel/tinker"], "^2.8");
+        assert_eq!(files.composer_lock, Some(lock));
+    }
+
+    #[test]
+    fn recognizes_legacy_laravel_constraints_without_waiting_for_composer_to_fail() {
+        assert_eq!(laravel_major("^10.0"), Some(10));
+        assert_eq!(laravel_major(">=11.0 <12.0"), Some(11));
+        assert_eq!(laravel_major("dev-main"), None);
+
+        let legacy = ProjectEnvironment {
+            laravel_constraint: Some("^10.0".into()),
+            ..ProjectEnvironment::default()
+        };
+        let supported = ProjectEnvironment {
+            laravel_constraint: Some("^12.0".into()),
+            ..ProjectEnvironment::default()
+        };
+
+        assert_eq!(legacy.legacy_laravel_constraint(), Some("^10.0"));
+        assert_eq!(supported.legacy_laravel_constraint(), None);
+    }
+
+    #[test]
+    fn selects_all_stopped_or_active_processes_for_a_project() {
+        let project_path = PathBuf::from("app-gestao");
+        let other_path = PathBuf::from("outro-projeto");
+        let process = |id: &str, path: &PathBuf, state| ProjectProcess {
+            id: id.into(),
+            project_name: "Projeto".into(),
+            project_path: path.clone(),
+            working_directory: path.clone(),
+            name: id.into(),
+            program: "program".into(),
+            args: Vec::new(),
+            state,
+            process_id: None,
+            exit_code: None,
+        };
+        let processes = vec![
+            process("backend", &project_path, ProcessState::Stopped),
+            process("frontend", &project_path, ProcessState::Running),
+            process("outro", &other_path, ProcessState::Stopped),
+        ];
+
+        assert_eq!(
+            project_process_ids(&processes, &project_path, false),
+            ["backend"]
+        );
+        assert_eq!(
+            project_process_ids(&processes, &project_path, true),
+            ["frontend"]
+        );
     }
 
     #[test]

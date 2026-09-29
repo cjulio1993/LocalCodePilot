@@ -140,11 +140,12 @@ fn detect_processes_in_directory(
     if belongs_to_laravel {
         detect_laravel_frontend_process(project, directory, processes);
     } else {
+        let package_manager = detect_node_package_manager(directory);
         detect_json_scripts(
             project,
             directory,
             "package.json",
-            "npm",
+            package_manager,
             &["run"],
             processes,
         );
@@ -221,14 +222,51 @@ fn detect_laravel_frontend_process(
         || package_has_dependency(&document, "laravel-mix");
 
     if uses_laravel_frontend_tooling {
+        let package_manager = node_package_manager(directory, &document);
         push_process(
             processes,
             project,
             directory,
             "Frontend",
-            "npm",
+            package_manager,
             &["run", "dev"],
         );
+    }
+}
+
+fn detect_node_package_manager(directory: &Path) -> &'static str {
+    let document = fs::read_to_string(directory.join("package.json"))
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok());
+    document.as_ref().map_or_else(
+        || node_package_manager(directory, &serde_json::Value::Null),
+        |document| node_package_manager(directory, document),
+    )
+}
+
+fn node_package_manager(directory: &Path, document: &serde_json::Value) -> &'static str {
+    if let Some(manager) = document
+        .get("packageManager")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.split('@').next())
+    {
+        match manager.to_ascii_lowercase().as_str() {
+            "pnpm" => return "pnpm",
+            "yarn" => return "yarn",
+            "bun" => return "bun",
+            "npm" => return "npm",
+            _ => {}
+        }
+    }
+
+    if directory.join("bun.lock").is_file() || directory.join("bun.lockb").is_file() {
+        "bun"
+    } else if directory.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else if directory.join("yarn.lock").is_file() {
+        "yarn"
+    } else {
+        "npm"
     }
 }
 
@@ -698,6 +736,46 @@ mod tests {
 
         assert_eq!(commands, ["npm run dev", "composer run-script serve"]);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn chooses_the_node_package_manager_without_configuration() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-managers-{nonce}"));
+        fs::create_dir(&root).unwrap();
+
+        for (directory, marker, expected) in [
+            ("pnpm-project", "pnpm-lock.yaml", "pnpm"),
+            ("yarn-project", "yarn.lock", "yarn"),
+            ("bun-project", "bun.lock", "bun"),
+        ] {
+            let path = root.join(directory);
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+            fs::write(path.join(marker), "").unwrap();
+            let project = Project::new(path, vec![RuntimeKind::Node]);
+
+            assert_eq!(
+                detect_processes(&project)[0].command_line(),
+                format!("{expected} run dev")
+            );
+        }
+
+        let path = root.join("declared-project");
+        fs::create_dir(&path).unwrap();
+        fs::write(
+            path.join("package.json"),
+            r#"{"packageManager":"pnpm@10.0.0","scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+        fs::write(path.join("yarn.lock"), "").unwrap();
+        let project = Project::new(path, vec![RuntimeKind::Node]);
+        assert_eq!(detect_processes(&project)[0].command_line(), "pnpm run dev");
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

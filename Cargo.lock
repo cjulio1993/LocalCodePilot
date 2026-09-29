@@ -1647,7 +1647,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "localcodepilot-cli"
-version = "0.3.0"
+version = "0.3.0-alpha.1"
 dependencies = [
  "localcodepilot-core",
  "localcodepilot-platform",
@@ -1656,11 +1656,11 @@ dependencies = [
 
 [[package]]
 name = "localcodepilot-core"
-version = "0.3.0"
+version = "0.3.0-alpha.1"
 
 [[package]]
 name = "localcodepilot-desktop"
-version = "0.3.0"
+version = "0.3.0-alpha.1"
 dependencies = [
  "eframe",
  "egui-phosphor",
@@ -1669,11 +1669,12 @@ dependencies = [
  "localcodepilot-platform",
  "localcodepilot-runtime",
  "rfd",
+ "serde_json",
 ]
 
 [[package]]
 name = "localcodepilot-platform"
-version = "0.3.0"
+version = "0.3.0-alpha.1"
 dependencies = [
  "localcodepilot-core",
  "sysinfo",
@@ -1681,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "localcodepilot-runtime"
-version = "0.3.0"
+version = "0.3.0-alpha.1"
 dependencies = [
  "localcodepilot-core",
  "serde_json",
@@ -1690,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "localcodepilot-services"
-version = "0.3.0"
+version = "0.3.0-alpha.1"
 dependencies = [
  "localcodepilot-core",
 ]
@@ -2681,6 +2682,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",

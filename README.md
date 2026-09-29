@@ -8,7 +8,11 @@
 
 > A local platform to discover, run, and organize projects, processes, and tools in one place.
 
-**Status: em construção / work in progress.** O LocalCodePilot ainda está em desenvolvimento inicial. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
+**Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
+
+**Alpha para Windows:** a versão `0.3.0-alpha.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. Esta primeira alpha ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+
+O processo de assinatura Authenticode e os segredos opcionais do pipeline estão documentados em [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
 
 [Português](#português) · [English](#english)
 
@@ -59,19 +63,29 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 
 ### Experimental e em testes
 
+- Inicialização e interrupção do ambiente completo de cada projeto com um clique.
+- Verificação de runtimes e dependências antes de iniciar um ambiente.
+- Instalação das dependências ausentes com um clique, usando o gerenciador detectado.
+- Logs em tempo real da instalação, com diagnóstico e sugestão de correção quando ela falha.
+- Detecção proativa de versões legadas do Laravel e migração assistida com simulação isolada, confirmação e backup dos manifests.
+- Seleção automática entre npm, pnpm, Yarn e Bun por manifesto ou lockfile.
+- Ação para abrir a aplicação quando uma URL local é identificada nos logs.
+- Projetos e serviços ativos priorizados na tela de processos, com visualizador de logs em formato de terminal.
+- Reinício de processos, limpeza da saída e abertura de URLs locais identificadas nos logs.
 - Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Django e Python.
 - Inicialização e interrupção manual de processos pela interface.
 - Exibição de estado, PID e saída básica dos processos.
 - Execução de comandos na pasta correta de módulos em monorepos.
 - Encerramento dos processos gerenciados ao fechar o aplicativo.
 
-O gerenciamento de processos ainda está em fase inicial. Antes de usá-lo em projetos importantes, confira o comando e a pasta de execução apresentados na interface. Detecção de portas, configuração personalizada de comandos, logs persistentes e tratamento mais completo de árvores de processos ainda não estão finalizados.
+O gerenciamento de processos ainda está em fase inicial. Antes de usá-lo em projetos importantes, confira o comando e a pasta de execução apresentados na interface. Detecção de portas pelo sistema operacional, logs persistentes e tratamento de árvores de processos fora do Windows ainda não estão finalizados.
+
+Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica os comandos a partir dos arquivos do projeto e mostra se o ambiente está pronto, sem runtime ou sem dependências. Quando faltam dependências, **Instalar dependências** executa em segundo plano o gerenciador detectado. Após a instalação ser confirmada, o botão desaparece e o ambiente fica disponível para iniciar. Use **Iniciar ambiente** para subir todos os serviços detectados ou controle cada serviço separadamente. Quando os logs informam uma URL local, **Abrir aplicação** leva diretamente ao navegador. Nenhum comando precisa ser digitado ou configurado manualmente.
 
 ### Em desenvolvimento
 
 - Detecção de frameworks e metadados mais detalhados.
 - Detecção e gerenciamento de portas.
-- Configuração e edição manual dos comandos de cada projeto.
 - Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
 - Persistência do catálogo, processos e demais preferências.
 - Monitoramento contínuo de alterações no filesystem.
@@ -183,6 +197,10 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
+**Windows alpha:** version `0.3.0-alpha.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This first alpha is not digitally signed yet; verify the SHA-256 published with the download.
+
+The Authenticode signing process and optional pipeline secrets are documented in [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
+
 ### What is LocalCodePilot?
 
 LocalCodePilot aims to bring the machine's development projects, runtimes, processes, ports, and services together in one place. Instead of requiring every project to be registered manually, the application automatically searches for projects and identifies their technologies from the files found in each directory.
@@ -226,19 +244,29 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 
 ### Experimental and under testing
 
+- One-click startup and shutdown for each project's complete environment.
+- Runtime and dependency checks before an environment starts.
+- One-click installation of missing dependencies with the detected package manager.
+- Live installation logs with diagnostics and a suggested correction when installation fails.
+- Proactive legacy Laravel detection and assisted migration with an isolated preview, confirmation, and manifest backups.
+- Automatic selection among npm, pnpm, Yarn, and Bun from manifests and lockfiles.
+- An action to open the application when a local URL is found in its logs.
+- Active projects and services prioritized on the processes page, with a terminal-style log viewer.
+- Process restart, output clearing, and opening local URLs found in logs.
 - Command detection for Cargo, npm, Composer, PHP, Laravel, Django, and Python.
 - Manual process start and stop controls in the desktop interface.
 - Process state, PID, and basic output display.
 - Commands launched from the correct module directory in monorepos.
 - Managed-process termination when the application closes.
 
-Process management is still at an early stage. Before using it with important projects, verify the command and working directory shown in the interface. Port detection, custom command configuration, persistent logs, and more complete process-tree handling are not finished yet.
+Process management is still at an early stage. Before using it with important projects, verify the command and working directory shown in the interface. OS-level port detection, persistent logs, and process-tree handling outside Windows are not finished yet.
+
+On project cards and the **Processos** page, LocalCodePilot identifies commands from project files and reports whether the environment is ready, missing a runtime, or missing dependencies. When dependencies are missing, **Instalar dependências** runs the detected package manager in the background. Once the installation is confirmed, the button disappears and the environment becomes available to start. Use **Iniciar ambiente** to start every detected service, or control each service separately. When logs expose a local URL, **Abrir aplicação** opens it in the browser. No commands need to be typed or configured manually.
 
 ### Work in progress
 
 - Framework detection and richer project metadata.
 - Port detection and management.
-- Manual command configuration and editing per project.
 - Starting and controlling services such as MySQL, PostgreSQL, and Redis.
 - Catalog, process, and remaining preference persistence.
 - Continuous filesystem change monitoring.
