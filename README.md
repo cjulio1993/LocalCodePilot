@@ -57,6 +57,8 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Três projetos modificados mais recentemente na visão geral.
 - Abertura da pasta de um projeto no Visual Studio Code.
 - Informações básicas do sistema e uso de memória.
+- Iniciais do usuário do computador geradas automaticamente na interface.
+- Cartões de projeto responsivos ao espaço disponível na janela.
 - CLI com comandos `status`, `scan` e `inspect`.
 - Interface com ícones Phosphor.
 - Estrutura modular baseada em Cargo workspace.
@@ -90,7 +92,7 @@ Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica os 
 - Persistência do catálogo, processos e demais preferências.
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
-- Melhorias de acessibilidade, responsividade e experiência de uso.
+- Melhorias de acessibilidade e experiência de uso.
 
 ### Arquitetura
 
@@ -238,6 +240,8 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Three most recently modified projects on the overview page.
 - Opening project folders in Visual Studio Code.
 - Basic system and memory information.
+- Computer-user initials generated automatically in the interface.
+- Project cards that adapt to the available window space.
 - CLI commands for `status`, `scan`, and `inspect`.
 - Phosphor icons in the desktop interface.
 - Modular Cargo workspace architecture.
@@ -271,7 +275,7 @@ On project cards and the **Processos** page, LocalCodePilot identifies commands 
 - Catalog, process, and remaining preference persistence.
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
-- Accessibility, responsive layout, and user-experience improvements.
+- Accessibility and user-experience improvements.
 
 ### Architecture
 
