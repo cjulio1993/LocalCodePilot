@@ -97,6 +97,7 @@ pub fn terminate_process_tree(process_id: u32) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn process_name(process_id: u32) -> Option<String> {
     let mut system = System::new();
     let pid = Pid::from_u32(process_id);
