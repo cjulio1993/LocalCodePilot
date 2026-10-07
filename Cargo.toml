@@ -4,7 +4,7 @@ members = ["core", "platform", "runtime", "services", "cli", "desktop"]
 default-members = ["desktop"]
 
 [workspace.package]
-version = "0.3.0-alpha.1"
+version = "0.4.0-alpha.1"
 edition = "2024"
 license = "MIT"
 
@@ -19,7 +19,9 @@ sysinfo = "0.39.6"
 egui-phosphor = "0.14"
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
+semver = "1"
 toml = "1"
+ureq = { version = "3", features = ["json"] }
 
 [profile.release]
 lto = "thin"

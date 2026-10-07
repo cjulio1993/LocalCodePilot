@@ -10,7 +10,7 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.3.0-alpha.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. Esta primeira alpha ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
 O processo de assinatura Authenticode e os segredos opcionais do pipeline estão documentados em [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
 
@@ -80,6 +80,7 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Monitoramento da porta durante a execução, com timeout, detecção de queda e sugestões baseadas nos logs.
 - Persistência local de favoritos, projetos recentes, portas, URLs, resultados e dos 200 logs mais recentes por serviço.
 - Ação **Retomar ambiente** após reabrir o aplicativo, sem reiniciar processos automaticamente.
+- Verificação diária de novas releases, com suporte ao canal alpha e acesso ao download oficial.
 - Identificação do processo conflitante no Windows, com confirmação antes de encerrá-lo.
 - Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Django e Python.
 - Inicialização e interrupção manual de processos pela interface.
@@ -97,6 +98,7 @@ Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica os 
 - Verificações HTTP de saúde e tempo de resposta dos serviços.
 - Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
 - Persistência do histórico de instalação de dependências e migrações assistidas.
+- Atualização automática do executável após a adoção de assinatura digital e instalador seguro.
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade e experiência de uso.
@@ -206,7 +208,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.3.0-alpha.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This first alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
 The Authenticode signing process and optional pipeline secrets are documented in [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
 
@@ -270,6 +272,7 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Port monitoring during execution, with startup timeout, service-loss detection, and log-based suggestions.
 - Local persistence for favorites, recent projects, ports, URLs, results, and the latest 200 log lines per service.
 - A **Resume environment** action after reopening the app, without restarting processes automatically.
+- Daily release checks with alpha-channel support and access to the official download.
 - Conflicting-process identification on Windows, with confirmation before termination.
 - Command detection for Cargo, npm, Composer, PHP, Laravel, Django, and Python.
 - Manual process start and stop controls in the desktop interface.
@@ -287,6 +290,7 @@ On project cards and the **Processos** page, LocalCodePilot identifies commands 
 - HTTP health checks and service response-time monitoring.
 - Starting and controlling services such as MySQL, PostgreSQL, and Redis.
 - Persistence for dependency-install and assisted-migration history.
+- Automatic executable updates after code signing and a secure installer are available.
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility and user-experience improvements.

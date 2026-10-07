@@ -1,4 +1,7 @@
-use crate::{config, theme};
+use crate::{
+    config, theme,
+    updates::{self, UpdateInfo},
+};
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
     ARROW_SQUARE_OUT, BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, MEMORY,
@@ -278,6 +281,8 @@ pub struct LocalCodePilot {
     workspace_dirty: bool,
     last_workspace_save: Instant,
     workspace_save_error_reported: bool,
+    update_check: Option<Receiver<Result<Option<UpdateInfo>, String>>>,
+    available_update: Option<UpdateInfo>,
 }
 
 impl LocalCodePilot {
@@ -297,6 +302,15 @@ impl LocalCodePilot {
         let workspace_state = config::load_workspace_state();
         let page = Page::from_key(&workspace_state.last_page);
         let focused_project = workspace_state.focused_project.clone();
+        let now = unix_timestamp();
+        let available_update = workspace_state
+            .cached_update
+            .clone()
+            .filter(updates::cached_update_is_newer)
+            .filter(|_| workspace_state.update_remind_after <= now);
+        let update_check = (now.saturating_sub(workspace_state.last_update_check)
+            >= updates::CHECK_INTERVAL_SECONDS)
+            .then(|| updates::spawn_update_check(cc.egui_ctx.clone()));
         Self {
             page,
             projects: Vec::new(),
@@ -326,6 +340,8 @@ impl LocalCodePilot {
             workspace_dirty: false,
             last_workspace_save: Instant::now(),
             workspace_save_error_reported: false,
+            update_check,
+            available_update,
         }
     }
 
@@ -448,6 +464,90 @@ impl LocalCodePilot {
                 self.notify(format!("Não foi possível salvar o contexto: {error}"));
             }
             Err(_) => {}
+        }
+    }
+
+    fn poll_update_check(&mut self) {
+        let Some(receiver) = &self.update_check else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Ok(update)) => {
+                let now = unix_timestamp();
+                self.workspace_state.last_update_check = now;
+                self.workspace_state.cached_update = update.clone();
+                self.available_update = update
+                    .filter(updates::cached_update_is_newer)
+                    .filter(|_| self.workspace_state.update_remind_after <= now);
+                self.workspace_dirty = true;
+                self.update_check = None;
+            }
+            Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+                self.update_check = None;
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+
+    fn show_update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(update) = self.available_update.clone() else {
+            return;
+        };
+        let mut remind_later = false;
+        Frame::new()
+            .fill(theme::PRIMARY.gamma_multiply(0.12))
+            .stroke(Stroke::new(1.0, theme::PRIMARY.gamma_multiply(0.65)))
+            .corner_radius(10)
+            .inner_margin(Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "Nova versão disponível: {}",
+                                update.version
+                            ))
+                            .strong()
+                            .color(Color32::WHITE),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "Você está usando a versão {}. O download será aberto no site oficial.",
+                                updates::current_version()
+                            ))
+                            .color(theme::MUTED)
+                            .size(10.0),
+                        );
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Lembrar depois").clicked() {
+                            remind_later = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new("Baixar atualização")
+                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                            )
+                            .clicked()
+                        {
+                            ui.ctx()
+                                .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                        }
+                        if ui.link("Ver novidades").clicked() {
+                            ui.ctx()
+                                .open_url(egui::OpenUrl::new_tab(&update.release_url));
+                        }
+                    });
+                });
+            });
+        ui.add_space(14.0);
+        if remind_later {
+            self.workspace_state.update_remind_after =
+                unix_timestamp().saturating_add(updates::CHECK_INTERVAL_SECONDS);
+            self.available_update = None;
+            self.workspace_dirty = true;
+            self.notify("O lembrete de atualização voltará amanhã");
         }
     }
 
@@ -3105,6 +3205,7 @@ impl LocalCodePilot {
                     .inner_margin(Margin::same(36)),
             )
             .show(root_ui, |ui| {
+                self.show_update_banner(ui);
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Overview => self.overview(ui),
                     Page::Projects => self.projects_page(&ctx, ui),
@@ -3135,6 +3236,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_dependency_installs(ctx);
         self.poll_laravel_migration(ctx);
         self.poll_processes(ctx);
+        self.poll_update_check();
         self.persist_workspace_state(false);
     }
 

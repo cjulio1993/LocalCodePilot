@@ -1,8 +1,8 @@
 1 ICON "../assets/branding/localcodepilot.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,3,0,1
-PRODUCTVERSION 0,3,0,1
+FILEVERSION 0,4,0,1
+PRODUCTVERSION 0,4,0,1
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -15,12 +15,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "LocalCodePilot\0"
             VALUE "FileDescription", "LocalCodePilot Desktop\0"
-            VALUE "FileVersion", "0.3.0-alpha.1\0"
+            VALUE "FileVersion", "0.4.0-alpha.1\0"
             VALUE "InternalName", "LocalCodePilot.exe\0"
             VALUE "LegalCopyright", "Copyright (c) 2026 LocalCodePilot contributors\0"
             VALUE "OriginalFilename", "LocalCodePilot.exe\0"
             VALUE "ProductName", "LocalCodePilot\0"
-            VALUE "ProductVersion", "0.3.0-alpha.1\0"
+            VALUE "ProductVersion", "0.4.0-alpha.1\0"
         END
     END
     BLOCK "VarFileInfo"
