@@ -1669,6 +1669,7 @@ dependencies = [
  "localcodepilot-platform",
  "localcodepilot-runtime",
  "rfd",
+ "serde",
  "serde_json",
 ]
 

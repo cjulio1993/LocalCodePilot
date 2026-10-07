@@ -74,22 +74,29 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Ação para abrir a aplicação quando uma URL local é identificada nos logs.
 - Projetos e serviços ativos priorizados na tela de processos, com visualizador de logs em formato de terminal.
 - Reinício de processos, limpeza da saída e abertura de URLs locais identificadas nos logs.
+- Detecção da porta esperada e seleção automática da próxima porta livre para Laravel, Django, PHP e servidores Node.js compatíveis.
+- Exibição da porta ajustada na interface e nos logs do processo; comandos que não permitem uma troca segura continuam bloqueados.
+- Confirmação de que a porta ficou disponível antes de marcar o serviço como executando.
+- Monitoramento da porta durante a execução, com timeout, detecção de queda e sugestões baseadas nos logs.
+- Persistência local de favoritos, projetos recentes, portas, URLs, resultados e dos 200 logs mais recentes por serviço.
+- Ação **Retomar ambiente** após reabrir o aplicativo, sem reiniciar processos automaticamente.
+- Identificação do processo conflitante no Windows, com confirmação antes de encerrá-lo.
 - Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Django e Python.
 - Inicialização e interrupção manual de processos pela interface.
 - Exibição de estado, PID e saída básica dos processos.
 - Execução de comandos na pasta correta de módulos em monorepos.
 - Encerramento dos processos gerenciados ao fechar o aplicativo.
 
-O gerenciamento de processos ainda está em fase inicial. Antes de usá-lo em projetos importantes, confira o comando e a pasta de execução apresentados na interface. Detecção de portas pelo sistema operacional, logs persistentes e tratamento de árvores de processos fora do Windows ainda não estão finalizados.
+O gerenciamento de processos ainda está em fase inicial. Antes de usá-lo em projetos importantes, confira o comando e a pasta de execução apresentados na interface. O tratamento de árvores de processos fora do Windows ainda não está finalizado.
 
 Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica os comandos a partir dos arquivos do projeto e mostra se o ambiente está pronto, sem runtime ou sem dependências. Quando faltam dependências, **Instalar dependências** executa em segundo plano o gerenciador detectado. Após a instalação ser confirmada, o botão desaparece e o ambiente fica disponível para iniciar. Use **Iniciar ambiente** para subir todos os serviços detectados ou controle cada serviço separadamente. Quando os logs informam uma URL local, **Abrir aplicação** leva diretamente ao navegador. Nenhum comando precisa ser digitado ou configurado manualmente.
 
 ### Em desenvolvimento
 
 - Detecção de frameworks e metadados mais detalhados.
-- Detecção e gerenciamento de portas.
+- Verificações HTTP de saúde e tempo de resposta dos serviços.
 - Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
-- Persistência do catálogo, processos e demais preferências.
+- Persistência do histórico de instalação de dependências e migrações assistidas.
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade e experiência de uso.
@@ -257,22 +264,29 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - An action to open the application when a local URL is found in its logs.
 - Active projects and services prioritized on the processes page, with a terminal-style log viewer.
 - Process restart, output clearing, and opening local URLs found in logs.
+- Expected-port detection and automatic selection of the next free port for compatible Laravel, Django, PHP, and Node.js servers.
+- The adjusted port is shown in the interface and process logs; commands that cannot be safely changed remain blocked.
+- A service remains in the starting state until its port becomes available.
+- Port monitoring during execution, with startup timeout, service-loss detection, and log-based suggestions.
+- Local persistence for favorites, recent projects, ports, URLs, results, and the latest 200 log lines per service.
+- A **Resume environment** action after reopening the app, without restarting processes automatically.
+- Conflicting-process identification on Windows, with confirmation before termination.
 - Command detection for Cargo, npm, Composer, PHP, Laravel, Django, and Python.
 - Manual process start and stop controls in the desktop interface.
 - Process state, PID, and basic output display.
 - Commands launched from the correct module directory in monorepos.
 - Managed-process termination when the application closes.
 
-Process management is still at an early stage. Before using it with important projects, verify the command and working directory shown in the interface. OS-level port detection, persistent logs, and process-tree handling outside Windows are not finished yet.
+Process management is still at an early stage. Before using it with important projects, verify the command and working directory shown in the interface. Process-tree handling outside Windows is not finished yet.
 
 On project cards and the **Processos** page, LocalCodePilot identifies commands from project files and reports whether the environment is ready, missing a runtime, or missing dependencies. When dependencies are missing, **Instalar dependências** runs the detected package manager in the background. Once the installation is confirmed, the button disappears and the environment becomes available to start. Use **Iniciar ambiente** to start every detected service, or control each service separately. When logs expose a local URL, **Abrir aplicação** opens it in the browser. No commands need to be typed or configured manually.
 
 ### Work in progress
 
 - Framework detection and richer project metadata.
-- Port detection and management.
+- HTTP health checks and service response-time monitoring.
 - Starting and controlling services such as MySQL, PostgreSQL, and Redis.
-- Catalog, process, and remaining preference persistence.
+- Persistence for dependency-install and assisted-migration history.
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility and user-experience improvements.

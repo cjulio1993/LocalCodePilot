@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use sysinfo::System;
 
 pub mod filesystem;
+pub mod ports;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatingSystem {

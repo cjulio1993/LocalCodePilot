@@ -4,6 +4,24 @@ Todas as mudanças relevantes do LocalCodePilot serão registradas neste arquivo
 
 O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a partir das versões públicas.
 
+## [Não publicado]
+
+### Adicionado
+
+- Detecção da porta esperada para Laravel, Django, PHP e servidores Node.js comuns.
+- Verificação de conflitos de porta antes de iniciar um serviço ou ambiente.
+- Seleção automática da próxima porta livre para comandos compatíveis, com ajuste seguro dos argumentos de inicialização.
+- Exibição da porta escolhida na interface e registro da troca nos logs do processo.
+- Estado de inicialização mantido até a porta do serviço ficar disponível.
+- Monitoramento periódico da porta, com detecção de timeout, encerramento inesperado e perda do serviço.
+- Verificação de listeners IPv4 e IPv6 para evitar falsos alertas em servidores que usam `::1`, como o Vite no Windows.
+- Sugestões de correção nos cartões e no terminal a partir dos erros encontrados nos logs.
+- Persistência local da tela selecionada, projeto em foco, favoritos e histórico dos serviços.
+- Restauração das portas, URLs, resultados e dos 200 logs mais recentes de cada serviço.
+- Ordenação por uso recente e ação para retomar ambientes sem iniciá-los automaticamente.
+- Identificação do nome e PID do processo que ocupa uma porta no Windows.
+- Confirmação explícita para encerrar o processo conflitante e tentar novamente.
+
 ## [0.3.0-alpha.1] - 2026-09-28
 
 ### Adicionado
