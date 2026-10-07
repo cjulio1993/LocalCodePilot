@@ -113,10 +113,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" `
-            "dist\LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64.zip" `
-            "dist\SHA256SUMS.txt" `
-            --verify-tag `
-            --prerelease `
-            --title "LocalCodePilot ${{ steps.version.outputs.value }}" `
-            --notes-file "docs\releases\v${{ steps.version.outputs.value }}.md"
+          $tag = "${{ github.ref_name }}"
+          $version = "${{ steps.version.outputs.value }}"
+          $repository = "${{ github.repository }}"
+          $archive = "dist\LocalCodePilot-$version-windows-x64.zip"
+          $checksums = "dist\SHA256SUMS.txt"
+          $notes = "docs\releases\v$version.md"
+
+          if (gh release view $tag --repo $repository --json tagName 2>$null) {
+            gh release edit $tag `
+              --repo $repository `
+              --prerelease `
+              --title "LocalCodePilot $version" `
+              --notes-file $notes
+            gh release upload $tag $archive $checksums `
+              --repo $repository `
+              --clobber
+          } else {
+            gh release create $tag $archive $checksums `
+              --repo $repository `
+              --verify-tag `
+              --prerelease `
+              --title "LocalCodePilot $version" `
+              --notes-file $notes
+          }
