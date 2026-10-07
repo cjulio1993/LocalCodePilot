@@ -44,6 +44,28 @@ enum Page {
     Settings,
 }
 
+impl Page {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Projects => "projects",
+            Self::Processes => "processes",
+            Self::Plugins => "plugins",
+            Self::Settings => "settings",
+        }
+    }
+
+    fn from_key(key: &str) -> Self {
+        match key {
+            "projects" => Self::Projects,
+            "processes" => Self::Processes,
+            "plugins" => Self::Plugins,
+            "settings" => Self::Settings,
+            _ => Self::Overview,
+        }
+    }
+}
+
 struct RunningProcess {
     child: Child,
     output: Receiver<String>,
@@ -217,6 +239,17 @@ enum ProjectCardAction {
     InstallDependencies(PathBuf),
     ViewDependencyLogs(PathBuf),
     PrepareLaravelMigration(PathBuf),
+    ToggleFavorite(PathBuf),
+}
+
+struct ProjectCardView<'a> {
+    environment: &'a ProjectEnvironment,
+    active_processes: usize,
+    dependency_install: Option<DependencyInstallStatus>,
+    application_url: Option<&'a str>,
+    history: Option<&'a config::ProjectHistory>,
+    favorite: bool,
+    width: f32,
 }
 
 pub struct LocalCodePilot {
@@ -241,6 +274,10 @@ pub struct LocalCodePilot {
     notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
     discovery: Option<Receiver<Result<Vec<Project>, String>>>,
+    workspace_state: config::WorkspaceState,
+    workspace_dirty: bool,
+    last_workspace_save: Instant,
+    workspace_save_error_reported: bool,
 }
 
 impl LocalCodePilot {
@@ -257,8 +294,11 @@ impl LocalCodePilot {
         let logo_texture = load_logo_texture(&cc.egui_ctx);
         let username = current_username();
         let user_initials = initials_from_username(&username);
+        let workspace_state = config::load_workspace_state();
+        let page = Page::from_key(&workspace_state.last_page);
+        let focused_project = workspace_state.focused_project.clone();
         Self {
-            page: Page::Overview,
+            page,
             projects: Vec::new(),
             processes: Vec::new(),
             running_processes: HashMap::new(),
@@ -266,7 +306,7 @@ impl LocalCodePilot {
             port_conflicts: HashMap::new(),
             port_termination: None,
             project_environments: HashMap::new(),
-            focused_project: None,
+            focused_project,
             terminal_process: None,
             dependency_installs: HashMap::new(),
             dependency_terminal: None,
@@ -282,6 +322,10 @@ impl LocalCodePilot {
             }),
             scan_roots,
             discovery: Some(receiver),
+            workspace_state,
+            workspace_dirty: false,
+            last_workspace_save: Instant::now(),
+            workspace_save_error_reported: false,
         }
     }
 
@@ -290,6 +334,121 @@ impl LocalCodePilot {
             message: message.into(),
             created_at: Instant::now(),
         });
+    }
+
+    fn is_favorite(&self, path: &Path) -> bool {
+        self.workspace_state
+            .favorite_projects
+            .iter()
+            .any(|favorite| favorite == path)
+    }
+
+    fn toggle_favorite(&mut self, path: &Path) {
+        if let Some(index) = self
+            .workspace_state
+            .favorite_projects
+            .iter()
+            .position(|favorite| favorite == path)
+        {
+            self.workspace_state.favorite_projects.remove(index);
+            self.notify("Projeto removido dos favoritos");
+        } else {
+            self.workspace_state
+                .favorite_projects
+                .push(path.to_path_buf());
+            self.notify("Projeto adicionado aos favoritos");
+        }
+        self.workspace_dirty = true;
+    }
+
+    fn record_process_history(&mut self, id: &str) {
+        let Some(process) = self
+            .processes
+            .iter()
+            .find(|process| process.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let running = self.running_processes.get(id);
+        let logs = running
+            .map(|running| {
+                let skip = running.logs.len().saturating_sub(200);
+                running.logs.iter().skip(skip).cloned().collect()
+            })
+            .unwrap_or_else(|| {
+                self.workspace_state
+                    .service(id)
+                    .map(|service| service.logs.clone())
+                    .unwrap_or_default()
+            });
+        let existing = self.workspace_state.service(id).cloned();
+        let port = self
+            .assigned_ports
+            .get(id)
+            .copied()
+            .map(Port::value)
+            .or_else(|| existing.as_ref().and_then(|service| service.port))
+            .or_else(|| process.expected_port.map(Port::value));
+        let url = running
+            .and_then(|running| {
+                port.and_then(|port| {
+                    running
+                        .urls
+                        .iter()
+                        .rev()
+                        .find(|url| url.port().value() == port)
+                })
+                .or_else(|| running.urls.last())
+            })
+            .map(|url| url.address().to_owned())
+            .or_else(|| existing.and_then(|service| service.url));
+        let command = process.command_line();
+        let status = process_state_key(process.state).to_owned();
+        let project_path = process.project_path.clone();
+        self.workspace_state.record_service(
+            &project_path,
+            config::ServiceHistory {
+                id: process.id,
+                name: process.name,
+                command,
+                status,
+                port,
+                url,
+                updated_at: unix_timestamp(),
+                logs,
+            },
+        );
+        self.workspace_dirty = true;
+    }
+
+    fn persist_workspace_state(&mut self, force: bool) {
+        let page = self.page.key().to_owned();
+        if self.workspace_state.last_page != page {
+            self.workspace_state.last_page = page;
+            self.workspace_dirty = true;
+        }
+        if self.workspace_state.focused_project != self.focused_project {
+            self.workspace_state.focused_project = self.focused_project.clone();
+            self.workspace_dirty = true;
+        }
+        if !self.workspace_dirty
+            || (!force && self.last_workspace_save.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        match config::save_workspace_state(&self.workspace_state) {
+            Ok(()) => {
+                self.workspace_dirty = false;
+                self.workspace_save_error_reported = false;
+                self.last_workspace_save = Instant::now();
+            }
+            Err(error) if !self.workspace_save_error_reported => {
+                self.workspace_save_error_reported = true;
+                self.notify(format!("Não foi possível salvar o contexto: {error}"));
+            }
+            Err(_) => {}
+        }
     }
 
     fn show_notification(&mut self, root_ui: &mut egui::Ui) {
@@ -739,7 +898,14 @@ impl LocalCodePilot {
             .cloned()
             .collect();
 
-        projects.sort_by_key(|project| std::cmp::Reverse(project.modified_at));
+        projects.sort_by_key(|project| {
+            let last_activity = self
+                .workspace_state
+                .project(&project.path)
+                .map(|history| history.last_activity)
+                .unwrap_or_else(|| system_time_timestamp(project.modified_at));
+            std::cmp::Reverse((self.is_favorite(&project.path), last_activity))
+        });
         if let Some(max_projects) = max_projects {
             projects.truncate(max_projects);
         }
@@ -807,14 +973,20 @@ impl LocalCodePilot {
                         .filter_map(|running| running.urls.last())
                         .map(|url| url.address().to_owned())
                         .next();
+                    let project_history = self.workspace_state.project(&project.path).cloned();
+                    let favorite = self.is_favorite(&project.path);
                     match project_card(
                         column_ui,
                         project,
-                        &environment,
-                        active_processes,
-                        dependency_install,
-                        application_url.as_deref(),
-                        card_width,
+                        ProjectCardView {
+                            environment: &environment,
+                            active_processes,
+                            dependency_install,
+                            application_url: application_url.as_deref(),
+                            history: project_history.as_ref(),
+                            favorite,
+                            width: card_width,
+                        },
                     ) {
                         Some(ProjectCardAction::Open(path)) => {
                             self.notify(match open_in_vscode(&path) {
@@ -847,6 +1019,9 @@ impl LocalCodePilot {
                         }
                         Some(ProjectCardAction::PrepareLaravelMigration(path)) => {
                             self.prepare_laravel_migration(&path);
+                        }
+                        Some(ProjectCardAction::ToggleFavorite(path)) => {
+                            self.toggle_favorite(&path);
                         }
                         None => {}
                     }
@@ -1029,6 +1204,7 @@ impl LocalCodePilot {
                 self.processes[index].exit_code = None;
                 self.notify(port_conflict_message(&process.name, &conflict));
                 self.port_conflicts.insert(id.to_owned(), conflict);
+                self.record_process_history(id);
                 return;
             }
         }
@@ -1101,6 +1277,7 @@ impl LocalCodePilot {
                 } else {
                     self.notify(format!("{} iniciado (PID {process_id})", process.name));
                 }
+                self.record_process_history(id);
             }
             Err(error) => {
                 self.assigned_ports.remove(id);
@@ -1111,6 +1288,7 @@ impl LocalCodePilot {
                     "Não foi possível iniciar {}: {error}",
                     process.name
                 ));
+                self.record_process_history(id);
             }
         }
     }
@@ -1132,6 +1310,7 @@ impl LocalCodePilot {
             let process_name = process.name.clone();
             self.notify(format!("{process_name} interrompido"));
         }
+        self.record_process_history(id);
     }
 
     fn start_project(&mut self, project_path: &Path) {
@@ -1573,12 +1752,17 @@ impl LocalCodePilot {
     }
 
     fn clear_process_logs(&mut self, id: &str) {
-        let Some(running) = self.running_processes.get_mut(id) else {
+        if let Some(running) = self.running_processes.get_mut(id) {
+            running.logs.clear();
+            self.record_process_history(id);
+            self.notify("Saída do processo limpa");
+        } else if let Some(history) = self.workspace_state.service_mut(id) {
+            history.logs.clear();
+            self.workspace_dirty = true;
+            self.notify("Histórico de logs removido");
+        } else {
             self.notify("Esse processo ainda não possui saída para limpar");
-            return;
-        };
-        running.logs.clear();
-        self.notify("Saída do processo limpa");
+        }
     }
 
     fn show_terminal(&mut self, root_ui: &mut egui::Ui) {
@@ -1594,6 +1778,7 @@ impl LocalCodePilot {
             self.terminal_process = None;
             return;
         };
+        let process_history = self.workspace_state.service(&process_id).cloned();
         let (logs, finished) = self
             .running_processes
             .get(&process_id)
@@ -1603,11 +1788,24 @@ impl LocalCodePilot {
                     running.finished,
                 )
             })
+            .or_else(|| {
+                process_history
+                    .as_ref()
+                    .map(|history| (history.logs.clone(), true))
+            })
             .unwrap_or_default();
-        let assigned_port = self.assigned_ports.get(&process_id).copied();
-        let failure_suggestion = (process.state == ProcessState::Failed)
-            .then(|| process_error_suggestion(&logs))
-            .flatten();
+        let assigned_port = self.assigned_ports.get(&process_id).copied().or_else(|| {
+            process_history
+                .as_ref()
+                .and_then(|history| history.port)
+                .and_then(Port::new)
+        });
+        let failure_suggestion = (process.state == ProcessState::Failed
+            || process_history
+                .as_ref()
+                .is_some_and(|history| history.status == "failed"))
+        .then(|| process_error_suggestion(&logs))
+        .flatten();
         let mut open = true;
         let mut clear_logs = false;
         let mut stop_process = false;
@@ -1624,6 +1822,18 @@ impl LocalCodePilot {
                 ui.horizontal_wrapped(|ui| {
                     let (status, color) = process_state_display(process.state);
                     runtime_badge(ui, status, color);
+                    if process.state == ProcessState::Stopped
+                        && let Some(history) = &process_history
+                    {
+                        ui.label(
+                            RichText::new(format!(
+                                "Última execução: {} · {}",
+                                relative_time(history.updated_at),
+                                service_history_status(&history.status)
+                            ))
+                            .color(theme::MUTED),
+                        );
+                    }
                     if let Some(pid) = process.process_id {
                         ui.label(RichText::new(format!("PID {pid}")).color(theme::MUTED));
                     }
@@ -2114,10 +2324,14 @@ impl LocalCodePilot {
         let assigned_ports = self.assigned_ports.clone();
         let mut state_updates = Vec::new();
         let mut ready_updates = Vec::new();
+        let mut history_updates = Vec::new();
         let mut has_running_process = false;
         let now = Instant::now();
         for (id, running) in &mut self.running_processes {
             while let Ok(line) = running.output.try_recv() {
+                if !history_updates.contains(id) {
+                    history_updates.push(id.clone());
+                }
                 for url in extract_local_urls(&line) {
                     if !running.urls.contains(&url) {
                         running.urls.push(url);
@@ -2251,6 +2465,7 @@ impl LocalCodePilot {
             if let Some(message) = notification {
                 self.notify(message);
             }
+            self.record_process_history(&id);
         }
         for (id, state, exit_code, error) in state_updates {
             self.assigned_ports.remove(&id);
@@ -2267,6 +2482,10 @@ impl LocalCodePilot {
                 };
                 self.notify(message);
             }
+            self.record_process_history(&id);
+        }
+        for id in history_updates {
+            self.record_process_history(&id);
         }
         if has_running_process {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -2408,6 +2627,7 @@ impl LocalCodePilot {
                 Some(DependencyInstallStatus::Failed { .. })
             );
             let has_dependency_logs = self.dependency_installs.contains_key(&project.path);
+            let project_history = self.workspace_state.project(&project.path).cloned();
             Frame::new()
                 .fill(theme::SURFACE)
                 .stroke(Stroke::new(1.0_f32, theme::BORDER))
@@ -2470,7 +2690,12 @@ impl LocalCodePilot {
                                 let start = ui.add_enabled(
                                     environment.is_ready(),
                                     egui::Button::new(RichText::new(format!(
-                                        "{PLAY}  Iniciar ambiente"
+                                        "{PLAY}  {}",
+                                        if project_history.is_some() {
+                                            "Retomar ambiente"
+                                        } else {
+                                            "Iniciar ambiente"
+                                        }
                                     )))
                                     .fill(theme::PRIMARY.gamma_multiply(0.72)),
                                 );
@@ -2522,13 +2747,19 @@ impl LocalCodePilot {
                     for command in commands {
                         let port_conflict = self.port_conflicts.get(&command.id).cloned();
                         let assigned_port = self.assigned_ports.get(&command.id).copied();
+                        let process_history = self.workspace_state.service(&command.id).cloned();
                         let failure_suggestion = (command.state == ProcessState::Failed
                             && port_conflict.is_none())
                         .then(|| {
-                            self.running_processes.get(&command.id).and_then(|running| {
-                                let logs = running.logs.iter().cloned().collect::<Vec<_>>();
-                                process_error_suggestion(&logs)
-                            })
+                            self.running_processes
+                                .get(&command.id)
+                                .map(|running| running.logs.iter().cloned().collect::<Vec<_>>())
+                                .or_else(|| {
+                                    process_history
+                                        .as_ref()
+                                        .map(|history| history.logs.clone())
+                                })
+                                .and_then(|logs| process_error_suggestion(&logs))
                         })
                         .flatten();
                         let server_url = if command.state == ProcessState::Running
@@ -2571,10 +2802,18 @@ impl LocalCodePilot {
                                         runtime_badge(ui, state_label, state_color);
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if self.running_processes.contains_key(&command.id)
+                                        if (self.running_processes.contains_key(&command.id)
+                                            || process_history
+                                                .as_ref()
+                                                .is_some_and(|history| !history.logs.is_empty()))
                                             && ui
                                                 .button(RichText::new(format!(
-                                                    "{TERMINAL}  Abrir terminal"
+                                                    "{TERMINAL}  {}",
+                                                    if self.running_processes.contains_key(&command.id) {
+                                                        "Abrir terminal"
+                                                    } else {
+                                                        "Últimos logs"
+                                                    }
                                                 )))
                                                 .clicked()
                                         {
@@ -2734,6 +2973,27 @@ impl LocalCodePilot {
                                             );
                                         });
                                 }
+                                if !matches!(
+                                    command.state,
+                                    ProcessState::Running | ProcessState::Starting
+                                ) && let Some(history) = &process_history
+                                    && history.updated_at > 0
+                                {
+                                    ui.add_space(3.0);
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Última execução: {} · {}{}",
+                                            relative_time(history.updated_at),
+                                            service_history_status(&history.status),
+                                            history
+                                                .port
+                                                .map(|port| format!(" · porta {port}"))
+                                                .unwrap_or_default()
+                                        ))
+                                        .color(theme::MUTED)
+                                        .size(9.0),
+                                    );
+                                }
                                 ui.add_space(4.0);
                                 ui.label(
                                     RichText::new(command.command_line())
@@ -2875,6 +3135,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_dependency_installs(ctx);
         self.poll_laravel_migration(ctx);
         self.poll_processes(ctx);
+        self.persist_workspace_state(false);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2891,6 +3152,24 @@ impl eframe::App for LocalCodePilot {
 
 impl Drop for LocalCodePilot {
     fn drop(&mut self) {
+        let active_ids: Vec<_> = self
+            .processes
+            .iter()
+            .filter(|process| {
+                matches!(
+                    process.state,
+                    ProcessState::Starting | ProcessState::Running
+                )
+            })
+            .map(|process| process.id.clone())
+            .collect();
+        for id in &active_ids {
+            if let Some(process) = self.processes.iter_mut().find(|process| process.id == *id) {
+                process.state = ProcessState::Stopped;
+            }
+            self.record_process_history(id);
+        }
+        self.persist_workspace_state(true);
         for running in self.running_processes.values_mut() {
             if !running.finished {
                 terminate_process(&mut running.child);
@@ -3633,6 +3912,56 @@ fn port_conflict_message(process_name: &str, conflict: &PortConflict) -> String 
     )
 }
 
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn system_time_timestamp(time: Option<SystemTime>) -> u64 {
+    time.and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn relative_time(timestamp: u64) -> String {
+    let elapsed = unix_timestamp().saturating_sub(timestamp);
+    match elapsed {
+        0..=59 => "agora".into(),
+        60..=3_599 => format!("há {} min", elapsed / 60),
+        3_600..=86_399 => format!("há {} h", elapsed / 3_600),
+        _ => format!("há {} dia(s)", elapsed / 86_400),
+    }
+}
+
+fn process_state_key(state: ProcessState) -> &'static str {
+    match state {
+        ProcessState::Stopped => "stopped",
+        ProcessState::Starting => "starting",
+        ProcessState::Running => "running",
+        ProcessState::Failed => "failed",
+    }
+}
+
+fn service_history_status(status: &str) -> &'static str {
+    match status {
+        "starting" => "inicialização interrompida",
+        "running" => "executado com sucesso",
+        "failed" => "falhou",
+        _ => "finalizado",
+    }
+}
+
+fn project_history_status(history: &config::ProjectHistory) -> &'static str {
+    history
+        .services
+        .iter()
+        .max_by_key(|service| service.updated_at)
+        .map(|service| service_history_status(&service.status))
+        .unwrap_or("sem execução")
+}
+
 fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
     match state {
         ProcessState::Stopped => ("Parado", theme::MUTED),
@@ -3819,12 +4148,17 @@ fn has_project_ancestor_entry(
 fn project_card(
     ui: &mut egui::Ui,
     project: &Project,
-    environment: &ProjectEnvironment,
-    active_processes: usize,
-    dependency_install: Option<DependencyInstallStatus>,
-    application_url: Option<&str>,
-    width: f32,
+    view: ProjectCardView<'_>,
 ) -> Option<ProjectCardAction> {
+    let ProjectCardView {
+        environment,
+        active_processes,
+        dependency_install,
+        application_url,
+        history,
+        favorite,
+        width,
+    } = view;
     let mut action = None;
     let installing_dependencies =
         matches!(&dependency_install, Some(DependencyInstallStatus::Running));
@@ -3841,18 +4175,33 @@ fn project_card(
         .show(ui, |ui| {
             ui.set_width(width);
             ui.set_min_height(126.0);
-            ui.label(RichText::new(&project.name).strong().size(15.0))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_ui(|ui| {
-                    ui.set_max_width(420.0);
-                    ui.label(RichText::new("Local do projeto").strong().size(11.0));
-                    ui.label(
-                        RichText::new(project.path.to_string_lossy())
-                            .color(theme::MUTED)
-                            .monospace()
-                            .size(10.0),
-                    );
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&project.name).strong().size(15.0))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_ui(|ui| {
+                        ui.set_max_width(420.0);
+                        ui.label(RichText::new("Local do projeto").strong().size(11.0));
+                        ui.label(
+                            RichText::new(project.path.to_string_lossy())
+                                .color(theme::MUTED)
+                                .monospace()
+                                .size(10.0),
+                        );
+                    });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .button(if favorite { "★" } else { "☆" })
+                        .on_hover_text(if favorite {
+                            "Remover dos favoritos"
+                        } else {
+                            "Adicionar aos favoritos"
+                        })
+                        .clicked()
+                    {
+                        action = Some(ProjectCardAction::ToggleFavorite(project.path.clone()));
+                    }
                 });
+            });
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 if project.runtimes.is_empty() && project.technologies.is_empty() {
@@ -3901,6 +4250,20 @@ fn project_card(
             });
             if !installing_dependencies && let Some(details) = environment.problem_details() {
                 ui.label(RichText::new(details).color(theme::MUTED).size(9.0));
+            }
+            if active_processes == 0
+                && let Some(history) = history
+                && history.last_activity > 0
+            {
+                let last_status = project_history_status(history);
+                ui.label(
+                    RichText::new(format!(
+                        "Última sessão: {} · {last_status}",
+                        relative_time(history.last_activity)
+                    ))
+                    .color(theme::MUTED)
+                    .size(9.0),
+                );
             }
             if let Some(constraint) = environment.legacy_laravel_constraint() {
                 ui.label(
@@ -3959,9 +4322,16 @@ fn project_card(
             } else {
                 let start = ui.add_enabled(
                     environment.is_ready(),
-                    egui::Button::new(RichText::new(format!("{PLAY}  Iniciar ambiente")))
-                        .min_size(egui::vec2(ui.available_width(), 30.0))
-                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                    egui::Button::new(RichText::new(format!(
+                        "{PLAY}  {}",
+                        if history.is_some() {
+                            "Retomar ambiente"
+                        } else {
+                            "Iniciar ambiente"
+                        }
+                    )))
+                    .min_size(egui::vec2(ui.available_width(), 30.0))
+                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
                 );
                 let start = if let Some(details) = environment.problem_details() {
                     start.on_hover_text(details)

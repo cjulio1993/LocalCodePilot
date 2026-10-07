@@ -16,6 +16,7 @@ localcodepilot-core.workspace = true
 localcodepilot-platform.workspace = true
 localcodepilot-runtime.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 
 [build-dependencies]
 embed-resource = "3.0"

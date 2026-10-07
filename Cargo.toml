@@ -18,6 +18,7 @@ rfd = "0.17.2"
 sysinfo = "0.39.6"
 egui-phosphor = "0.14"
 serde_json = { version = "1", features = ["preserve_order"] }
+serde = { version = "1", features = ["derive"] }
 toml = "1"
 
 [profile.release]
