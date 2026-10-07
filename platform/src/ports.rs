@@ -1,5 +1,8 @@
 use localcodepilot_core::ports::Port;
-use std::net::TcpListener;
+use std::{
+    io::ErrorKind,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener},
+};
 #[cfg(target_os = "windows")]
 use std::{
     os::windows::process::CommandExt,
@@ -30,12 +33,30 @@ pub fn inspect_tcp_port(port: Port) -> PortAvailability {
         };
     }
 
-    match TcpListener::bind(("127.0.0.1", port.value())) {
+    let ipv4 = loopback_port_available(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let ipv6 = loopback_port_available(IpAddr::V6(Ipv6Addr::LOCALHOST), port);
+    if matches!(ipv4, Some(false)) || matches!(ipv6, Some(false)) {
+        PortAvailability::Occupied { owner: None }
+    } else {
+        PortAvailability::Available
+    }
+}
+
+fn loopback_port_available(address: IpAddr, port: Port) -> Option<bool> {
+    match TcpListener::bind((address, port.value())) {
         Ok(listener) => {
             drop(listener);
-            PortAvailability::Available
+            Some(true)
         }
-        Err(_) => PortAvailability::Occupied { owner: None },
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::AddrNotAvailable | ErrorKind::Unsupported
+            ) =>
+        {
+            None
+        }
+        Err(_) => Some(false),
     }
 }
 
@@ -158,6 +179,19 @@ mod tests {
     #[test]
     fn reports_a_bound_local_port_as_occupied() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        assert!(matches!(
+            inspect_tcp_port(Port::new(port).unwrap()),
+            PortAvailability::Occupied { .. }
+        ));
+    }
+
+    #[test]
+    fn reports_an_ipv6_loopback_listener_as_occupied() {
+        let Ok(listener) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) else {
+            return;
+        };
         let port = listener.local_addr().unwrap().port();
 
         assert!(matches!(

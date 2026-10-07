@@ -14,6 +14,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Exibição da porta escolhida na interface e registro da troca nos logs do processo.
 - Estado de inicialização mantido até a porta do serviço ficar disponível.
 - Monitoramento periódico da porta, com detecção de timeout, encerramento inesperado e perda do serviço.
+- Verificação de listeners IPv4 e IPv6 para evitar falsos alertas em servidores que usam `::1`, como o Vite no Windows.
 - Sugestões de correção nos cartões e no terminal a partir dos erros encontrados nos logs.
 - Identificação do nome e PID do processo que ocupa uma porta no Windows.
 - Confirmação explícita para encerrar o processo conflitante e tentar novamente.
