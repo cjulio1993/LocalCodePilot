@@ -1,6 +1,7 @@
 use localcodepilot_core::{
     discovery::RuntimeDetector,
-    processes::{ProcessState, ProjectProcess},
+    ports::Port,
+    processes::{PortOverride, ProcessState, ProjectProcess},
     projects::Project,
     runtimes::RuntimeKind,
     technologies::TechnologyKind,
@@ -214,22 +215,23 @@ fn detect_laravel_frontend_process(
     else {
         return;
     };
-    let command = command.to_ascii_lowercase();
-    let uses_laravel_frontend_tooling = command.contains("vite")
-        || command.contains("mix")
-        || command.contains("webpack")
+    let normalized_command = command.to_ascii_lowercase();
+    let uses_laravel_frontend_tooling = normalized_command.contains("vite")
+        || normalized_command.contains("mix")
+        || normalized_command.contains("webpack")
         || package_has_dependency(&document, "laravel-vite-plugin")
         || package_has_dependency(&document, "laravel-mix");
 
     if uses_laravel_frontend_tooling {
         let package_manager = node_package_manager(directory, &document);
-        push_process(
+        push_process_with_source(
             processes,
             project,
             directory,
             "Frontend",
             package_manager,
             &["run", "dev"],
+            Some(command),
         );
     }
 }
@@ -420,7 +422,16 @@ fn detect_json_scripts(
     for name in names {
         let mut args = prefix.to_vec();
         args.push(name);
-        push_process(processes, project, directory, name, program, &args);
+        let source_command = scripts.get(name).and_then(serde_json::Value::as_str);
+        push_process_with_source(
+            processes,
+            project,
+            directory,
+            name,
+            program,
+            &args,
+            source_command,
+        );
     }
 }
 
@@ -465,11 +476,33 @@ fn push_process(
     program: &str,
     args: &[&str],
 ) {
+    push_process_with_source(
+        processes,
+        project,
+        working_directory,
+        name,
+        program,
+        args,
+        None,
+    );
+}
+
+fn push_process_with_source(
+    processes: &mut Vec<ProjectProcess>,
+    project: &Project,
+    working_directory: &Path,
+    name: &str,
+    program: &str,
+    args: &[&str],
+    source_command: Option<&str>,
+) {
     let args: Vec<_> = args.iter().map(|value| (*value).to_owned()).collect();
     let command = std::iter::once(program)
         .chain(args.iter().map(String::as_str))
         .collect::<Vec<_>>()
         .join(" ");
+    let expected_port = infer_expected_port(program, &args, source_command);
+    let port_override = infer_port_override(program, &args, source_command, expected_port);
     processes.push(ProjectProcess {
         id: format!("{}::{command}", working_directory.display()),
         project_name: project.name.clone(),
@@ -481,7 +514,112 @@ fn push_process(
         state: ProcessState::Stopped,
         process_id: None,
         exit_code: None,
+        expected_port,
+        port_override,
     });
+}
+
+fn infer_port_override(
+    program: &str,
+    args: &[String],
+    source_command: Option<&str>,
+    expected_port: Option<Port>,
+) -> Option<PortOverride> {
+    expected_port?;
+    if program.eq_ignore_ascii_case("php")
+        && args.first().is_some_and(|argument| argument == "artisan")
+        && args.get(1).is_some_and(|argument| argument == "serve")
+    {
+        return Some(PortOverride::LongOption { separator: false });
+    }
+    if program.eq_ignore_ascii_case("python")
+        && args.first().is_some_and(|argument| argument == "manage.py")
+        && args.get(1).is_some_and(|argument| argument == "runserver")
+    {
+        return Some(PortOverride::Positional);
+    }
+    if program.eq_ignore_ascii_case("php")
+        && args.first().is_some_and(|argument| argument == "-S")
+        && args.get(1).is_some_and(|argument| argument.contains(':'))
+    {
+        return Some(PortOverride::PhpServerAddress { argument_index: 1 });
+    }
+    if source_command.is_some() && matches!(program.to_ascii_lowercase().as_str(), "npm" | "pnpm") {
+        return Some(PortOverride::LongOption { separator: true });
+    }
+    if source_command.is_some() && matches!(program.to_ascii_lowercase().as_str(), "yarn" | "bun") {
+        return Some(PortOverride::LongOption { separator: false });
+    }
+    None
+}
+
+fn infer_expected_port(
+    program: &str,
+    args: &[String],
+    source_command: Option<&str>,
+) -> Option<Port> {
+    let invocation = std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(port) = source_command
+        .and_then(explicit_port)
+        .or_else(|| explicit_port(&invocation))
+    {
+        return Port::new(port);
+    }
+
+    let detected_command = source_command.unwrap_or(&invocation).to_ascii_lowercase();
+    let uses_default_port_8000 = (program.eq_ignore_ascii_case("php")
+        && args.first().is_some_and(|argument| argument == "artisan")
+        && args.get(1).is_some_and(|argument| argument == "serve"))
+        || (program.eq_ignore_ascii_case("python")
+            && args.first().is_some_and(|argument| argument == "manage.py")
+            && args.get(1).is_some_and(|argument| argument == "runserver"));
+    let default_port = if uses_default_port_8000 {
+        Some(8000)
+    } else if detected_command.contains("vite") {
+        Some(5173)
+    } else if detected_command.contains("next dev")
+        || detected_command.contains("react-scripts start")
+        || detected_command.contains("nuxt")
+    {
+        Some(3000)
+    } else if detected_command.contains("astro dev") {
+        Some(4321)
+    } else if detected_command.contains("webpack serve") {
+        Some(8080)
+    } else {
+        None
+    };
+    default_port.and_then(Port::new)
+}
+
+fn explicit_port(command: &str) -> Option<u16> {
+    let tokens: Vec<_> = command
+        .split_whitespace()
+        .map(|token| token.trim_matches(['"', '\'', ',', ';']))
+        .collect();
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some(port) = token
+            .strip_prefix("--port=")
+            .or_else(|| token.strip_prefix("-p="))
+            .and_then(|value| value.parse().ok())
+        {
+            return Some(port);
+        }
+        if matches!(*token, "--port" | "-p")
+            && let Some(port) = tokens.get(index + 1).and_then(|value| value.parse().ok())
+        {
+            return Some(port);
+        }
+        if let Some((_, value)) = token.rsplit_once(':')
+            && let Ok(port) = value.trim_end_matches('/').parse()
+        {
+            return Some(port);
+        }
+    }
+    None
 }
 
 fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
@@ -776,6 +914,62 @@ mod tests {
         assert_eq!(detect_processes(&project)[0].command_line(), "pnpm run dev");
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn infers_default_and_explicit_development_ports() {
+        let node_args = vec!["run".into(), "dev".into()];
+        let laravel_args = vec!["artisan".into(), "serve".into()];
+        let django_args = vec!["manage.py".into(), "runserver".into()];
+
+        assert_eq!(
+            infer_expected_port("npm", &node_args, Some("vite"))
+                .unwrap()
+                .value(),
+            5173
+        );
+        assert_eq!(
+            infer_expected_port("npm", &node_args, Some("vite --port 4173"))
+                .unwrap()
+                .value(),
+            4173
+        );
+        assert_eq!(
+            infer_expected_port("npm", &node_args, Some("next dev -p=3100"))
+                .unwrap()
+                .value(),
+            3100
+        );
+        assert_eq!(
+            infer_expected_port("php", &laravel_args, None)
+                .unwrap()
+                .value(),
+            8000
+        );
+        assert_eq!(
+            infer_expected_port("python", &django_args, None)
+                .unwrap()
+                .value(),
+            8000
+        );
+        assert!(infer_expected_port("cargo", &["run".into()], None).is_none());
+
+        assert_eq!(
+            infer_port_override("npm", &node_args, Some("vite"), Port::new(5173),),
+            Some(PortOverride::LongOption { separator: true })
+        );
+        assert_eq!(
+            infer_port_override("php", &laravel_args, None, Port::new(8000)),
+            Some(PortOverride::LongOption { separator: false })
+        );
+        assert_eq!(
+            infer_port_override("python", &django_args, None, Port::new(8000)),
+            Some(PortOverride::Positional)
+        );
+        assert_eq!(
+            infer_port_override("composer", &[], Some("php artisan serve"), Port::new(8000)),
+            None
+        );
     }
 
     #[test]

@@ -6,13 +6,17 @@ use egui_phosphor::regular::{
 };
 use localcodepilot_core::{
     discovery::DiscoveryService,
-    ports::{LocalServerUrl, extract_local_urls, strip_terminal_sequences},
+    ports::{LocalServerUrl, Port, extract_local_urls, strip_terminal_sequences},
     processes::{ProcessState, ProjectProcess},
     projects::Project,
     runtimes::RuntimeKind,
     technologies::TechnologyKind,
 };
-use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemProjectSource};
+use localcodepilot_platform::{
+    NativePlatform, Platform,
+    filesystem::FilesystemProjectSource,
+    ports::{PortAvailability, PortOwner, inspect_tcp_port, terminate_process_tree},
+};
 use localcodepilot_runtime::{ManifestRuntimeDetector, detect_processes};
 use std::{
     collections::{HashMap, VecDeque},
@@ -26,6 +30,10 @@ use std::{
 
 const NOTIFICATION_DURATION: Duration = Duration::from_millis(4_200);
 const NOTIFICATION_FADE_START: Duration = Duration::from_millis(3_200);
+const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
+const PROCESS_START_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+const PROCESS_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+const PROCESS_PORT_LOSS_GRACE: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -42,6 +50,21 @@ struct RunningProcess {
     logs: VecDeque<String>,
     urls: Vec<LocalServerUrl>,
     finished: bool,
+    started_at: Instant,
+    last_health_check: Instant,
+    port_unavailable_since: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct PortConflict {
+    port: Port,
+    owner: Option<PortOwner>,
+}
+
+#[derive(Debug, Clone)]
+struct PortTerminationRequest {
+    process_id: String,
+    conflict: PortConflict,
 }
 
 struct Notification {
@@ -61,6 +84,7 @@ enum ProcessAction {
     ClearLogs(String),
     ViewLogs(String),
     OpenUrl(String),
+    ResolvePortConflict(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -200,6 +224,9 @@ pub struct LocalCodePilot {
     projects: Vec<Project>,
     processes: Vec<ProjectProcess>,
     running_processes: HashMap<String, RunningProcess>,
+    assigned_ports: HashMap<String, Port>,
+    port_conflicts: HashMap<String, PortConflict>,
+    port_termination: Option<PortTerminationRequest>,
     project_environments: HashMap<PathBuf, ProjectEnvironment>,
     focused_project: Option<PathBuf>,
     terminal_process: Option<String>,
@@ -235,6 +262,9 @@ impl LocalCodePilot {
             projects: Vec::new(),
             processes: Vec::new(),
             running_processes: HashMap::new(),
+            assigned_ports: HashMap::new(),
+            port_conflicts: HashMap::new(),
+            port_termination: None,
             project_environments: HashMap::new(),
             focused_project: None,
             terminal_process: None,
@@ -512,6 +542,8 @@ impl LocalCodePilot {
             Ok(Ok(projects)) => {
                 self.notify(format!("{} projeto(s) encontrado(s)", projects.len()));
                 self.processes = projects.iter().flat_map(detect_processes).collect();
+                self.assigned_ports.clear();
+                self.port_conflicts.clear();
                 self.project_environments = projects
                     .iter()
                     .map(|project| {
@@ -916,6 +948,22 @@ impl LocalCodePilot {
         self.project_grid(ui, None);
     }
 
+    fn port_is_available(&self, port: Port) -> bool {
+        !self
+            .assigned_ports
+            .values()
+            .any(|assigned| *assigned == port)
+            && matches!(inspect_tcp_port(port), PortAvailability::Available)
+    }
+
+    fn find_available_port_after(&self, preferred: Port) -> Option<Port> {
+        (1..=20).find_map(|offset| {
+            let value = preferred.value().checked_add(offset)?;
+            let candidate = Port::new(value)?;
+            self.port_is_available(candidate).then_some(candidate)
+        })
+    }
+
     fn start_process(&mut self, id: &str) {
         let Some(index) = self.processes.iter().position(|process| process.id == id) else {
             self.notify("O comando selecionado não está mais disponível");
@@ -958,9 +1006,38 @@ impl LocalCodePilot {
             ));
             return;
         }
+        let mut assigned_port = None;
+        let mut alternative_port = None;
+        if let Some(port) = process.expected_port {
+            if self.port_is_available(port) {
+                assigned_port = Some(port);
+                self.port_conflicts.remove(id);
+            } else if process.port_override.is_some()
+                && let Some(available_port) = self.find_available_port_after(port)
+            {
+                assigned_port = Some(available_port);
+                alternative_port = Some(available_port);
+                self.port_conflicts.remove(id);
+            } else {
+                let owner = match inspect_tcp_port(port) {
+                    PortAvailability::Occupied { owner } => owner,
+                    PortAvailability::Available => None,
+                };
+                let conflict = PortConflict { port, owner };
+                self.processes[index].state = ProcessState::Failed;
+                self.processes[index].process_id = None;
+                self.processes[index].exit_code = None;
+                self.notify(port_conflict_message(&process.name, &conflict));
+                self.port_conflicts.insert(id.to_owned(), conflict);
+                return;
+            }
+        }
         self.processes[index].state = ProcessState::Starting;
         self.processes[index].exit_code = None;
-        let mut command = process_command(&process);
+        if let Some(port) = assigned_port {
+            self.assigned_ports.insert(id.to_owned(), port);
+        }
+        let mut command = process_command_on_port(&process, alternative_port);
         command
             .current_dir(&process.working_directory)
             .stdout(Stdio::piped())
@@ -968,6 +1045,7 @@ impl LocalCodePilot {
 
         match command.spawn() {
             Ok(mut child) => {
+                self.port_conflicts.remove(id);
                 let process_id = child.id();
                 let (sender, output) = mpsc::channel();
                 if let Some(stdout) = child.stdout.take() {
@@ -976,22 +1054,56 @@ impl LocalCodePilot {
                 if let Some(stderr) = child.stderr.take() {
                     spawn_output_reader(stderr, sender);
                 }
+                let mut logs = VecDeque::new();
+                if let (Some(preferred), Some(selected)) = (process.expected_port, alternative_port)
+                {
+                    logs.push_back(format!(
+                        "[LocalCodePilot] Porta {} ocupada. O serviço será iniciado na porta {}.",
+                        preferred.value(),
+                        selected.value()
+                    ));
+                }
+                let now = Instant::now();
                 self.running_processes.insert(
                     id.to_owned(),
                     RunningProcess {
                         child,
                         output,
-                        logs: VecDeque::new(),
+                        logs,
                         urls: Vec::new(),
                         finished: false,
+                        started_at: now,
+                        last_health_check: now,
+                        port_unavailable_since: None,
                     },
                 );
-                self.processes[index].state = ProcessState::Running;
+                self.processes[index].state = if assigned_port.is_some() {
+                    ProcessState::Starting
+                } else {
+                    ProcessState::Running
+                };
                 self.processes[index].process_id = Some(process_id);
                 self.processes[index].exit_code = None;
-                self.notify(format!("{} iniciado (PID {process_id})", process.name));
+                if let (Some(preferred), Some(selected)) = (process.expected_port, alternative_port)
+                {
+                    self.notify(format!(
+                        "{} iniciando na porta {} porque a porta {} está ocupada",
+                        process.name,
+                        selected.value(),
+                        preferred.value()
+                    ));
+                } else if let Some(port) = assigned_port {
+                    self.notify(format!(
+                        "{} iniciando na porta {} (PID {process_id})",
+                        process.name,
+                        port.value()
+                    ));
+                } else {
+                    self.notify(format!("{} iniciado (PID {process_id})", process.name));
+                }
             }
             Err(error) => {
+                self.assigned_ports.remove(id);
                 self.processes[index].state = ProcessState::Failed;
                 self.processes[index].process_id = None;
                 self.processes[index].exit_code = None;
@@ -1012,6 +1124,7 @@ impl LocalCodePilot {
         }
         terminate_process(&mut running.child);
         running.finished = true;
+        self.assigned_ports.remove(id);
         if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
             process.state = ProcessState::Stopped;
             process.process_id = None;
@@ -1041,8 +1154,50 @@ impl LocalCodePilot {
             );
             return;
         }
-        self.focused_project = Some(project_path.to_path_buf());
         let process_ids = project_process_ids(&self.processes, project_path, false);
+        let pending_processes: Vec<_> = process_ids
+            .iter()
+            .filter_map(|id| self.processes.iter().find(|process| process.id == *id))
+            .cloned()
+            .collect();
+        let mut first_conflict = None;
+        for process in &pending_processes {
+            let Some(port) = process.expected_port else {
+                continue;
+            };
+            if !self.port_is_available(port) && process.port_override.is_none() {
+                let owner = match inspect_tcp_port(port) {
+                    PortAvailability::Occupied { owner } => owner,
+                    PortAvailability::Available => None,
+                };
+                let conflict = PortConflict { port, owner };
+                if let Some(process) = self
+                    .processes
+                    .iter_mut()
+                    .find(|candidate| candidate.id == process.id)
+                {
+                    process.state = ProcessState::Failed;
+                    process.process_id = None;
+                    process.exit_code = None;
+                }
+                self.port_conflicts
+                    .insert(process.id.clone(), conflict.clone());
+                first_conflict.get_or_insert_with(|| (process.name.clone(), conflict));
+            } else {
+                self.port_conflicts.remove(&process.id);
+            }
+        }
+        if let Some((process_name, conflict)) = first_conflict {
+            self.focused_project = Some(project_path.to_path_buf());
+            self.page = Page::Processes;
+            self.notify(format!(
+                "O ambiente não foi iniciado. {}",
+                port_conflict_message(&process_name, &conflict)
+            ));
+            return;
+        }
+
+        self.focused_project = Some(project_path.to_path_buf());
         for process_id in process_ids {
             self.start_process(&process_id);
         }
@@ -1299,6 +1454,124 @@ impl LocalCodePilot {
         self.start_process(id);
     }
 
+    fn request_port_owner_termination(&mut self, id: &str) {
+        let Some(conflict) = self.port_conflicts.get(id).cloned() else {
+            self.notify("A porta já está livre. Tente iniciar o serviço novamente.");
+            return;
+        };
+        if conflict.owner.is_none() {
+            self.notify(
+                "A porta está ocupada, mas o Windows não informou qual processo a utiliza.",
+            );
+            return;
+        }
+        self.port_termination = Some(PortTerminationRequest {
+            process_id: id.to_owned(),
+            conflict,
+        });
+    }
+
+    fn terminate_port_owner_and_retry(&mut self, request: &PortTerminationRequest) {
+        let Some(owner) = &request.conflict.owner else {
+            return;
+        };
+        match inspect_tcp_port(request.conflict.port) {
+            PortAvailability::Available => {
+                self.port_conflicts.remove(&request.process_id);
+                self.notify("A porta já foi liberada. Tentando iniciar o serviço...");
+                self.start_process(&request.process_id);
+            }
+            PortAvailability::Occupied {
+                owner: Some(current_owner),
+            } if current_owner.process_id != owner.process_id => {
+                let conflict = PortConflict {
+                    port: request.conflict.port,
+                    owner: Some(current_owner),
+                };
+                self.port_conflicts
+                    .insert(request.process_id.clone(), conflict.clone());
+                self.notify(port_conflict_message("O serviço", &conflict));
+            }
+            PortAvailability::Occupied { .. } => match terminate_process_tree(owner.process_id) {
+                Ok(()) => {
+                    self.port_conflicts.remove(&request.process_id);
+                    self.notify(format!(
+                        "PID {} encerrado. Tentando iniciar o serviço...",
+                        owner.process_id
+                    ));
+                    self.start_process(&request.process_id);
+                }
+                Err(error) => self.notify(error),
+            },
+        }
+    }
+
+    fn show_port_termination_confirmation(&mut self, root_ui: &mut egui::Ui) {
+        let Some(request) = self.port_termination.clone() else {
+            return;
+        };
+        let Some(owner) = request.conflict.owner.as_ref() else {
+            self.port_termination = None;
+            return;
+        };
+        let process_name = owner
+            .process_name
+            .as_deref()
+            .unwrap_or("processo desconhecido");
+        let mut open = true;
+        let mut cancel = false;
+        let mut confirm = false;
+
+        egui::Window::new("Liberar porta ocupada")
+            .id(egui::Id::new("port-termination-confirmation"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(root_ui, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "A porta {} está sendo usada por {process_name} (PID {}).",
+                        request.conflict.port.value(),
+                        owner.process_id
+                    ))
+                    .strong(),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Encerrar esse processo pode interromper outro projeto ou aplicativo. Depois disso, o LocalCodePilot tentará iniciar o serviço novamente.",
+                    )
+                    .color(theme::MUTED),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancelar").clicked() {
+                        cancel = true;
+                    }
+                    let can_terminate = owner.process_id > 4
+                        && owner.process_id != std::process::id();
+                    if ui
+                        .add_enabled(
+                            can_terminate,
+                            egui::Button::new("Encerrar e tentar novamente")
+                                .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.22)),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                });
+            });
+
+        if confirm {
+            self.port_termination = None;
+            self.terminate_port_owner_and_retry(&request);
+        } else if cancel || !open {
+            self.port_termination = None;
+        }
+    }
+
     fn clear_process_logs(&mut self, id: &str) {
         let Some(running) = self.running_processes.get_mut(id) else {
             self.notify("Esse processo ainda não possui saída para limpar");
@@ -1331,6 +1604,10 @@ impl LocalCodePilot {
                 )
             })
             .unwrap_or_default();
+        let assigned_port = self.assigned_ports.get(&process_id).copied();
+        let failure_suggestion = (process.state == ProcessState::Failed)
+            .then(|| process_error_suggestion(&logs))
+            .flatten();
         let mut open = true;
         let mut clear_logs = false;
         let mut stop_process = false;
@@ -1350,6 +1627,23 @@ impl LocalCodePilot {
                     if let Some(pid) = process.process_id {
                         ui.label(RichText::new(format!("PID {pid}")).color(theme::MUTED));
                     }
+                    if let Some(port) = assigned_port.or(process.expected_port) {
+                        let adjusted = process
+                            .expected_port
+                            .is_some_and(|expected| expected != port);
+                        ui.label(
+                            RichText::new(if adjusted {
+                                format!("Porta {} · ajustada automaticamente", port.value())
+                            } else {
+                                format!("Porta {}", port.value())
+                            })
+                            .color(if adjusted {
+                                theme::SUCCESS
+                            } else {
+                                theme::MUTED
+                            }),
+                        );
+                    }
                     ui.label(
                         RichText::new(process.command_line())
                             .color(theme::MUTED)
@@ -1362,6 +1656,23 @@ impl LocalCodePilot {
                         .monospace()
                         .size(10.0),
                 );
+                if let Some(suggestion) = &failure_suggestion {
+                    ui.add_space(8.0);
+                    Frame::new()
+                        .fill(Color32::from_rgb(255, 205, 75).gamma_multiply(0.08))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgb(255, 205, 75).gamma_multiply(0.35),
+                        ))
+                        .corner_radius(6)
+                        .inner_margin(Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(format!("Sugestão de correção: {suggestion}"))
+                                    .color(Color32::from_rgb(255, 215, 112)),
+                            );
+                        });
+                }
                 ui.add_space(8.0);
                 Frame::new()
                     .fill(Color32::from_rgb(7, 10, 15))
@@ -1795,8 +2106,16 @@ impl LocalCodePilot {
     }
 
     fn poll_processes(&mut self, ctx: &egui::Context) {
+        let process_states: HashMap<_, _> = self
+            .processes
+            .iter()
+            .map(|process| (process.id.clone(), process.state))
+            .collect();
+        let assigned_ports = self.assigned_ports.clone();
         let mut state_updates = Vec::new();
+        let mut ready_updates = Vec::new();
         let mut has_running_process = false;
+        let now = Instant::now();
         for (id, running) in &mut self.running_processes {
             while let Ok(line) = running.output.try_recv() {
                 for url in extract_local_urls(&line) {
@@ -1812,19 +2131,31 @@ impl LocalCodePilot {
             if running.finished {
                 continue;
             }
+            let state = process_states
+                .get(id)
+                .copied()
+                .unwrap_or(ProcessState::Stopped);
             match running.child.try_wait() {
                 Ok(Some(status)) => {
                     running.finished = true;
+                    let stopped_during_startup = state == ProcessState::Starting;
+                    let reason = if stopped_during_startup {
+                        "o processo encerrou antes de disponibilizar o serviço".to_owned()
+                    } else if let Some(code) = status.code() {
+                        format!("o processo encerrou inesperadamente com código {code}")
+                    } else {
+                        "o processo encerrou inesperadamente".to_owned()
+                    };
+                    running
+                        .logs
+                        .push_back(format!("[LocalCodePilot] Falha: {reason}."));
                     state_updates.push((
                         id.clone(),
-                        if status.success() {
-                            ProcessState::Stopped
-                        } else {
-                            ProcessState::Failed
-                        },
+                        ProcessState::Failed,
                         status.code(),
-                        None,
+                        Some(reason),
                     ));
+                    continue;
                 }
                 Ok(None) => has_running_process = true,
                 Err(error) => {
@@ -1835,18 +2166,100 @@ impl LocalCodePilot {
                         None,
                         Some(error.to_string()),
                     ));
+                    continue;
+                }
+            }
+
+            let Some(port) = assigned_ports.get(id).copied() else {
+                continue;
+            };
+            let check_interval = if state == ProcessState::Starting {
+                PROCESS_START_CHECK_INTERVAL
+            } else {
+                PROCESS_HEALTH_CHECK_INTERVAL
+            };
+            if now.duration_since(running.last_health_check) < check_interval {
+                continue;
+            }
+            running.last_health_check = now;
+            let port_is_listening =
+                matches!(inspect_tcp_port(port), PortAvailability::Occupied { .. });
+            let url_was_announced = running.urls.iter().any(|url| url.port() == port);
+
+            if state == ProcessState::Starting {
+                if port_is_listening || url_was_announced {
+                    running.port_unavailable_since = None;
+                    running.logs.push_back(format!(
+                        "[LocalCodePilot] Serviço disponível na porta {}.",
+                        port.value()
+                    ));
+                    ready_updates.push((id.clone(), port));
+                } else if now.duration_since(running.started_at) >= PROCESS_START_TIMEOUT {
+                    running.logs.push_back(format!(
+                        "[LocalCodePilot] Falha: a porta {} não ficou disponível em {} segundos.",
+                        port.value(),
+                        PROCESS_START_TIMEOUT.as_secs()
+                    ));
+                    terminate_process(&mut running.child);
+                    running.finished = true;
+                    state_updates.push((
+                        id.clone(),
+                        ProcessState::Failed,
+                        None,
+                        Some(format!(
+                            "a porta {} não respondeu dentro do tempo esperado",
+                            port.value()
+                        )),
+                    ));
+                }
+                continue;
+            }
+
+            if state == ProcessState::Running {
+                if port_is_listening {
+                    running.port_unavailable_since = None;
+                } else {
+                    let unavailable_since = running.port_unavailable_since.get_or_insert(now);
+                    if now.duration_since(*unavailable_since) >= PROCESS_PORT_LOSS_GRACE {
+                        running.logs.push_back(format!(
+                            "[LocalCodePilot] Falha: a porta {} deixou de responder por {} segundos.",
+                            port.value(),
+                            PROCESS_PORT_LOSS_GRACE.as_secs()
+                        ));
+                        terminate_process(&mut running.child);
+                        running.finished = true;
+                        state_updates.push((
+                            id.clone(),
+                            ProcessState::Failed,
+                            None,
+                            Some(format!("a porta {} deixou de responder", port.value())),
+                        ));
+                    }
                 }
             }
         }
+        for (id, port) in ready_updates {
+            let notification = self
+                .processes
+                .iter_mut()
+                .find(|process| process.id == id)
+                .filter(|process| process.state == ProcessState::Starting)
+                .map(|process| {
+                    process.state = ProcessState::Running;
+                    format!("{} disponível na porta {}", process.name, port.value())
+                });
+            if let Some(message) = notification {
+                self.notify(message);
+            }
+        }
         for (id, state, exit_code, error) in state_updates {
+            self.assigned_ports.remove(&id);
             if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
                 process.state = state;
                 process.process_id = None;
                 process.exit_code = exit_code;
                 let message = match (error, exit_code) {
-                    (Some(error), _) => {
-                        format!("Não foi possível consultar {}: {error}", process.name)
-                    }
+                    (Some(error), _) => format!("{}: {error}", process.name),
                     (None, Some(code)) => {
                         format!("{} finalizado com código {code}", process.name)
                     }
@@ -2107,22 +2520,44 @@ impl LocalCodePilot {
                     }
                     ui.add_space(10.0);
                     for command in commands {
+                        let port_conflict = self.port_conflicts.get(&command.id).cloned();
+                        let assigned_port = self.assigned_ports.get(&command.id).copied();
+                        let failure_suggestion = (command.state == ProcessState::Failed
+                            && port_conflict.is_none())
+                        .then(|| {
+                            self.running_processes.get(&command.id).and_then(|running| {
+                                let logs = running.logs.iter().cloned().collect::<Vec<_>>();
+                                process_error_suggestion(&logs)
+                            })
+                        })
+                        .flatten();
                         let server_url = if command.state == ProcessState::Running
                             && process_exposes_application_url(project, &command)
                         {
                             self.running_processes
                                 .get(&command.id)
-                                .and_then(|running| running.urls.last())
+                                .and_then(|running| {
+                                    assigned_port
+                                        .and_then(|port| {
+                                            running
+                                                .urls
+                                                .iter()
+                                                .rev()
+                                                .find(|url| url.port() == port)
+                                        })
+                                        .or_else(|| running.urls.last())
+                                })
                                 .cloned()
                         } else {
                             None
                         };
-                        let (state_label, state_color) =
-                            if command.state == ProcessState::Running && server_url.is_some() {
-                                ("Disponível", theme::SUCCESS)
-                            } else {
-                                process_state_display(command.state)
-                            };
+                        let (state_label, state_color) = if port_conflict.is_some() {
+                            ("Porta ocupada", Color32::from_rgb(235, 87, 87))
+                        } else if command.state == ProcessState::Running && server_url.is_some() {
+                            ("Disponível", theme::SUCCESS)
+                        } else {
+                            process_state_display(command.state)
+                        };
                         Frame::new()
                             .fill(theme::BACKGROUND)
                             .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.75)))
@@ -2183,7 +2618,12 @@ impl LocalCodePilot {
                                                 let start = ui.add_enabled(
                                                     environment.is_ready(),
                                                     egui::Button::new(RichText::new(format!(
-                                                        "{PLAY}  Iniciar"
+                                                        "{PLAY}  {}",
+                                                        if port_conflict.is_some() {
+                                                            "Tentar novamente"
+                                                        } else {
+                                                            "Iniciar"
+                                                        }
                                                     )))
                                                     .fill(theme::PRIMARY.gamma_multiply(0.72)),
                                                 );
@@ -2218,6 +2658,81 @@ impl LocalCodePilot {
                                         ));
                                     }
                                     ui.add_space(2.0);
+                                    if let (Some(preferred), Some(selected)) =
+                                        (command.expected_port, assigned_port)
+                                        && preferred != selected
+                                    {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Porta {} · ajustada automaticamente (preferida: {})",
+                                                selected.value(),
+                                                preferred.value()
+                                            ))
+                                            .color(theme::SUCCESS)
+                                            .size(9.0),
+                                        );
+                                    }
+                                } else if let Some(conflict) = &port_conflict {
+                                    ui.add_space(4.0);
+                                    Frame::new()
+                                        .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.08))
+                                        .stroke(Stroke::new(
+                                            1.0,
+                                            Color32::from_rgb(235, 87, 87).gamma_multiply(0.4),
+                                        ))
+                                        .corner_radius(6)
+                                        .inner_margin(Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(
+                                                    RichText::new(port_conflict_details(conflict))
+                                                        .color(Color32::from_rgb(245, 144, 144))
+                                                        .size(10.0),
+                                                );
+                                                if conflict.owner.is_some()
+                                                    && ui
+                                                        .add(
+                                                            egui::Button::new("Encerrar processo")
+                                                                .small(),
+                                                        )
+                                                        .clicked()
+                                                {
+                                                    action =
+                                                        Some(ProcessAction::ResolvePortConflict(
+                                                            command.id.clone(),
+                                                        ));
+                                                }
+                                            });
+                                        });
+                                    ui.add_space(2.0);
+                                } else if let Some(port) = command.expected_port {
+                                    ui.add_space(3.0);
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Porta prevista: {} · verificada antes de iniciar",
+                                            port.value()
+                                        ))
+                                        .color(theme::MUTED)
+                                        .size(9.0),
+                                    );
+                                }
+                                if let Some(suggestion) = &failure_suggestion {
+                                    ui.add_space(4.0);
+                                    Frame::new()
+                                        .fill(Color32::from_rgb(255, 205, 75).gamma_multiply(0.07))
+                                        .stroke(Stroke::new(
+                                            1.0,
+                                            Color32::from_rgb(255, 205, 75).gamma_multiply(0.3),
+                                        ))
+                                        .corner_radius(6)
+                                        .inner_margin(Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                RichText::new(format!("Sugestão: {suggestion}"))
+                                                    .color(Color32::from_rgb(255, 215, 112))
+                                                    .size(10.0),
+                                            );
+                                        });
                                 }
                                 ui.add_space(4.0);
                                 ui.label(
@@ -2314,6 +2829,9 @@ impl LocalCodePilot {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
                 self.notify(format!("Abrindo {url}"));
             }
+            Some(ProcessAction::ResolvePortConflict(id)) => {
+                self.request_port_owner_termination(&id);
+            }
             None => {}
         }
     }
@@ -2366,6 +2884,7 @@ impl eframe::App for LocalCodePilot {
         self.show_terminal(ui);
         self.show_dependency_terminal(ui);
         self.show_laravel_migration(ui);
+        self.show_port_termination_confirmation(ui);
         self.show_notification(ui);
     }
 }
@@ -2649,6 +3168,8 @@ fn run_laravel_migration_command(
         state: ProcessState::Starting,
         process_id: None,
         exit_code: None,
+        expected_port: None,
+        port_override: None,
     };
     let mut child = process_command(&process)
         .current_dir(working_directory)
@@ -2733,6 +3254,8 @@ fn run_dependency_installs(
             state: ProcessState::Starting,
             process_id: None,
             exit_code: None,
+            expected_port: None,
+            port_override: None,
         };
         let mut child = process_command(&process)
             .current_dir(&step.working_directory)
@@ -2880,20 +3403,61 @@ fn dependency_error_suggestion(logs: &str, error: &str) -> String {
     }
 }
 
+fn process_error_suggestion(logs: &[String]) -> Option<String> {
+    if logs.is_empty() {
+        return None;
+    }
+    let details = logs.join("\n").to_ascii_lowercase();
+    let suggestion = if details.contains("não ficou disponível")
+        || details.contains("did not become available")
+    {
+        "Confira nos logs se o servidor aceitou a porta informada e se terminou de carregar. Depois, tente iniciar novamente."
+    } else if details.contains("deixou de responder") {
+        "O processo continuou aberto, mas parou de escutar a porta. Verifique o erro imediatamente anterior nos logs e reinicie o serviço."
+    } else if details.contains("eaddrinuse")
+        || details.contains("address already in use")
+        || details.contains("endereço já está em uso")
+    {
+        "Outra aplicação ocupou a porta durante a inicialização. Tente novamente para o LocalCodePilot selecionar uma nova porta."
+    } else if details.contains("cannot find module")
+        || details.contains("module not found")
+        || details.contains("failed to resolve import")
+        || details.contains("could not resolve")
+    {
+        "Há uma dependência ou importação ausente. Instale as dependências do projeto e confira o nome do módulo indicado nos logs."
+    } else if details.contains("command not found")
+        || details.contains("não é reconhecido como um comando")
+        || details.contains("is not recognized as an internal or external command")
+    {
+        "Um programa usado pelo script não foi encontrado. Instale-o ou adicione-o ao PATH e tente novamente."
+    } else if details.contains("permission denied") || details.contains("eacces") {
+        "O sistema negou acesso a um arquivo ou porta. Confira o caminho indicado e as permissões da pasta do projeto."
+    } else if details.contains("syntaxerror") || details.contains("syntax error") {
+        "Existe um erro de sintaxe. Abra o primeiro arquivo e linha indicados nos logs, corrija-os e tente novamente."
+    } else {
+        "Abra o terminal do processo e revise a primeira mensagem de erro antes do encerramento. Depois de corrigir a causa, use Tentar novamente."
+    };
+    Some(suggestion.into())
+}
+
 fn process_command(process: &ProjectProcess) -> Command {
+    process_command_on_port(process, None)
+}
+
+fn process_command_on_port(process: &ProjectProcess, port: Option<Port>) -> Command {
+    let args = port
+        .and_then(|port| process.args_with_port(port))
+        .unwrap_or_else(|| process.args.clone());
     #[cfg(target_os = "windows")]
     {
         let mut command = Command::new("cmd.exe");
-        command
-            .args(["/D", "/C"])
-            .arg(&process.program)
-            .args(&process.args);
+        command.args(["/D", "/C"]).arg(&process.program).args(&args);
         command
     }
     #[cfg(not(target_os = "windows"))]
     {
         let mut command = Command::new(&process.program);
-        command.args(&process.args);
+        command.args(&args);
         command
     }
 }
@@ -3016,6 +3580,9 @@ fn process_matches_search(
         || process.name.to_lowercase().contains(query)
         || process.command_line().to_lowercase().contains(query)
         || process
+            .expected_port
+            .is_some_and(|port| port.value().to_string().contains(query))
+        || process
             .project_path
             .to_string_lossy()
             .to_lowercase()
@@ -3042,6 +3609,28 @@ fn process_exposes_application_url(project: &Project, process: &ProjectProcess) 
             .args
             .get(1)
             .is_some_and(|argument| argument == "serve")
+}
+
+fn port_conflict_details(conflict: &PortConflict) -> String {
+    match &conflict.owner {
+        Some(owner) => format!(
+            "Porta {} ocupada por {} · PID {}",
+            conflict.port.value(),
+            owner
+                .process_name
+                .as_deref()
+                .unwrap_or("processo desconhecido"),
+            owner.process_id
+        ),
+        None => format!("Porta {} ocupada por outro processo", conflict.port.value()),
+    }
+}
+
+fn port_conflict_message(process_name: &str, conflict: &PortConflict) -> String {
+    format!(
+        "Não foi possível iniciar {process_name}: {}.",
+        port_conflict_details(conflict).to_lowercase()
+    )
 }
 
 fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
@@ -3526,10 +4115,11 @@ mod tests {
     use super::{
         DependencyInstall, DependencyInstallEvent, ProjectEnvironment, dependency_error_suggestion,
         executable_available, initials_from_username, inspect_project_environment, laravel_major,
-        prepare_laravel_migration_files, process_exposes_application_url, process_matches_search,
-        project_process_ids, run_dependency_installs,
+        prepare_laravel_migration_files, process_error_suggestion, process_exposes_application_url,
+        process_matches_search, project_process_ids, run_dependency_installs,
     };
     use localcodepilot_core::{
+        ports::Port,
         processes::{ProcessState, ProjectProcess},
         projects::Project,
         runtimes::RuntimeKind,
@@ -3559,6 +4149,23 @@ mod tests {
     }
 
     #[test]
+    fn suggests_corrections_from_process_logs() {
+        assert!(
+            process_error_suggestion(&["Error: Cannot find module 'vite'".into()])
+                .unwrap()
+                .contains("dependência")
+        );
+        assert!(
+            process_error_suggestion(&[
+                "[LocalCodePilot] Falha: a porta 5173 deixou de responder por 6 segundos.".into()
+            ])
+            .unwrap()
+            .contains("parou de escutar")
+        );
+        assert!(process_error_suggestion(&[]).is_none());
+    }
+
+    #[test]
     fn reports_missing_runtime_and_dependencies_before_starting() {
         let nonce = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -3579,6 +4186,8 @@ mod tests {
             state: ProcessState::Stopped,
             process_id: None,
             exit_code: None,
+            expected_port: None,
+            port_override: None,
         };
         let missing_runtime = inspect_project_environment(&project, &[process]);
         assert_eq!(
@@ -3597,6 +4206,8 @@ mod tests {
             state: ProcessState::Stopped,
             process_id: None,
             exit_code: None,
+            expected_port: Some(Port::new(5173).unwrap()),
+            port_override: None,
         };
         let missing_dependencies =
             inspect_project_environment(&project, std::slice::from_ref(&node_process));
@@ -3736,6 +4347,8 @@ mod tests {
             state,
             process_id: None,
             exit_code: None,
+            expected_port: None,
+            port_override: None,
         };
         let processes = vec![
             process("backend", &project_path, ProcessState::Stopped),
@@ -3768,6 +4381,8 @@ mod tests {
             state: ProcessState::Stopped,
             process_id: None,
             exit_code: None,
+            expected_port: Some(Port::new(5173).unwrap()),
+            port_override: None,
         };
 
         assert!(process_matches_search(&process, Some(&project), "laravel"));
@@ -3795,6 +4410,8 @@ mod tests {
             state: ProcessState::Running,
             process_id: Some(123),
             exit_code: None,
+            expected_port: Some(Port::new(5173).unwrap()),
+            port_override: None,
         };
 
         assert!(!process_exposes_application_url(&project, &process));
