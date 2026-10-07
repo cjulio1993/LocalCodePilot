@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.1] - 2026-10-06
+
 ### Adicionado
 
 - Detecção da porta esperada para Laravel, Django, PHP e servidores Node.js comuns.
@@ -19,6 +21,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Persistência local da tela selecionada, projeto em foco, favoritos e histórico dos serviços.
 - Restauração das portas, URLs, resultados e dos 200 logs mais recentes de cada serviço.
 - Ordenação por uso recente e ação para retomar ambientes sem iniciá-los automaticamente.
+- Verificação diária de novas versões em segundo plano, incluindo releases alpha.
+- Aviso de atualização com acesso às novidades, ao pacote oficial e opção de lembrar depois.
 - Identificação do nome e PID do processo que ocupa uma porta no Windows.
 - Confirmação explícita para encerrar o processo conflitante e tentar novamente.
 
@@ -45,4 +49,6 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Automação de release com pacote ZIP e arquivo de verificação SHA-256.
 - Etapa opcional de assinatura Authenticode por Microsoft Artifact Signing.
 
+[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.1...HEAD
+[0.4.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
 [0.3.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/releases/tag/v0.3.0-alpha.1

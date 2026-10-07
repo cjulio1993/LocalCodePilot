@@ -1,3 +1,4 @@
+use crate::updates::UpdateInfo;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -8,6 +9,7 @@ use std::{
 const APPLICATION_DIRECTORY: &str = "LocalCodePilot";
 const SCAN_ROOTS_FILE: &str = "scan-roots.txt";
 const WORKSPACE_STATE_FILE: &str = "workspace-state.json";
+const WORKSPACE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -17,16 +19,22 @@ pub struct WorkspaceState {
     pub focused_project: Option<PathBuf>,
     pub favorite_projects: Vec<PathBuf>,
     pub projects: Vec<ProjectHistory>,
+    pub last_update_check: u64,
+    pub update_remind_after: u64,
+    pub cached_update: Option<UpdateInfo>,
 }
 
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: WORKSPACE_SCHEMA_VERSION,
             last_page: "overview".into(),
             focused_project: None,
             favorite_projects: Vec::new(),
             projects: Vec::new(),
+            last_update_check: 0,
+            update_remind_after: 0,
+            cached_update: None,
         }
     }
 }
@@ -117,10 +125,12 @@ pub fn save_scan_roots(roots: &[PathBuf]) -> io::Result<()> {
 }
 
 pub fn load_workspace_state() -> WorkspaceState {
-    workspace_state_file_path()
+    let mut state = workspace_state_file_path()
         .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|contents| serde_json::from_str(&contents).ok())
-        .unwrap_or_default()
+        .and_then(|contents| serde_json::from_str::<WorkspaceState>(&contents).ok())
+        .unwrap_or_default();
+    state.schema_version = WORKSPACE_SCHEMA_VERSION;
+    state
 }
 
 pub fn save_workspace_state(state: &WorkspaceState) -> io::Result<()> {
