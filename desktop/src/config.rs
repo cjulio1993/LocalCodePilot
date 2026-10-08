@@ -9,7 +9,7 @@ use std::{
 const APPLICATION_DIRECTORY: &str = "LocalCodePilot";
 const SCAN_ROOTS_FILE: &str = "scan-roots.txt";
 const WORKSPACE_STATE_FILE: &str = "workspace-state.json";
-const WORKSPACE_SCHEMA_VERSION: u32 = 2;
+const WORKSPACE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -19,6 +19,7 @@ pub struct WorkspaceState {
     pub focused_project: Option<PathBuf>,
     pub favorite_projects: Vec<PathBuf>,
     pub projects: Vec<ProjectHistory>,
+    pub preparations: Vec<PreparationHistory>,
     pub last_update_check: u64,
     pub update_remind_after: u64,
     pub cached_update: Option<UpdateInfo>,
@@ -32,6 +33,7 @@ impl Default for WorkspaceState {
             focused_project: None,
             favorite_projects: Vec::new(),
             projects: Vec::new(),
+            preparations: Vec::new(),
             last_update_check: 0,
             update_remind_after: 0,
             cached_update: None,
@@ -57,6 +59,16 @@ pub struct ServiceHistory {
     pub port: Option<u16>,
     pub url: Option<String>,
     pub updated_at: u64,
+    pub logs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PreparationHistory {
+    pub project_path: PathBuf,
+    pub status: String,
+    pub updated_at: u64,
+    pub steps: Vec<String>,
     pub logs: Vec<String>,
 }
 
@@ -103,6 +115,26 @@ impl WorkspaceState {
         } else {
             project.services.push(service);
         }
+    }
+
+    pub fn record_preparation(&mut self, mut preparation: PreparationHistory) {
+        const MAX_HISTORY: usize = 40;
+        const MAX_LOG_LINES: usize = 500;
+        if preparation.logs.len() > MAX_LOG_LINES {
+            preparation.logs = preparation
+                .logs
+                .split_off(preparation.logs.len() - MAX_LOG_LINES);
+        }
+        if let Some(existing) = self.preparations.iter_mut().find(|entry| {
+            entry.project_path == preparation.project_path && entry.status == "em andamento"
+        }) {
+            *existing = preparation;
+        } else {
+            self.preparations.push(preparation);
+        }
+        self.preparations
+            .sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
+        self.preparations.truncate(MAX_HISTORY);
     }
 }
 

@@ -11,6 +11,9 @@ const PROJECT_MARKERS: &[&str] = &[
     "composer.json",
     "pyproject.toml",
     "requirements.txt",
+    "go.mod",
+    "pubspec.yaml",
+    "index.html",
     "index.php",
     "wp-config.php",
 ];
@@ -135,7 +138,7 @@ fn contains_loose_source_project(path: &PathBuf) -> bool {
     let Ok(entries) = fs::read_dir(path) else {
         return false;
     };
-    let mut counts = [0_u8; 4];
+    let mut counts = [0_u8; 7];
     for entry in entries.flatten() {
         if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
             continue;
@@ -149,6 +152,10 @@ fn contains_loose_source_project(path: &PathBuf) -> bool {
             Some(RuntimeKind::Node) => 1,
             Some(RuntimeKind::Php) => 2,
             Some(RuntimeKind::Python) => 3,
+            Some(RuntimeKind::Java) => 4,
+            Some(RuntimeKind::Go) => 5,
+            Some(RuntimeKind::Dart) => 6,
+            Some(RuntimeKind::Flutter) => continue,
             None => continue,
         };
         counts[index] = counts[index].saturating_add(1);

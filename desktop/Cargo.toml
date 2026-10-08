@@ -19,6 +19,7 @@ serde_json.workspace = true
 serde.workspace = true
 semver.workspace = true
 ureq.workspace = true
+sha2.workspace = true
 
 [build-dependencies]
 embed-resource = "3.0"

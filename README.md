@@ -48,7 +48,8 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Aplicação desktop nativa em Rust.
 - Dashboard com projetos descobertos automaticamente.
 - Varredura de diretórios executada fora da thread da interface.
-- Detecção inicial de Rust, Node.js, PHP e Python.
+- Detecção de Rust, Node.js, PHP, Python e Java.
+- Reconhecimento experimental de Go, Dart, Flutter e sites estáticos.
 - Reconhecimento de projetos locais sem Git ou manifesto por extensões de código.
 - Identificação da raiz de repositórios e suporte inicial a monorepos.
 - Busca de projetos no catálogo.
@@ -63,13 +64,54 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Interface com ícones Phosphor.
 - Estrutura modular baseada em Cargo workspace.
 
+### Matriz de suporte atual
+
+Reconhecer um projeto não significa que todo o fluxo de preparação, execução e abertura já esteja concluído. A matriz abaixo descreve o estado real da versão alpha:
+
+| Ecossistema | Reconhecimento | Preparação assistida no Windows | Execução e abertura |
+| --- | --- | --- | --- |
+| Rust / Cargo | Sim | Não | Experimental |
+| Node.js / JavaScript | Sim | Experimental | Experimental |
+| PHP / Laravel | Sim | Experimental | Experimental com `php -S` ou Artisan, conforme o projeto |
+| Python / Django | Sim | Experimental | Experimental |
+| Java / Spring Boot | Sim | Experimental | Experimental |
+| Go | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
+| Dart | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
+| Flutter | Experimental | Não | Ainda não suportada de ponta a ponta |
+| Site estático / JavaScript sem framework | Experimental | Requer um servidor local disponível | Experimental |
+
+Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já podem ser reconhecidos. Isso ainda não deve ser interpretado como suporte funcional para iniciar e abrir esses aplicativos.
+
+### Classificação e execução
+
+- Manifests e arquivos característicos do framework têm prioridade sobre extensões de arquivos isoladas.
+- Um projeto PHP com HTML ou arquivos públicos continua sendo classificado como PHP e deve usar um servidor PHP, não o servidor de site estático.
+- Um site estático só é criado a partir da raiz que contém o documento de entrada e quando não existe um backend ou framework com maior prioridade.
+- Pastas internas como `public`, `web`, `dist` e `build` não devem virar projetos independentes quando pertencem a outra aplicação.
+- Serviços web exibem uma URL quando ela é confirmada; aplicações de terminal devem permanecer acompanhadas pelos logs.
+- Portas de sites estáticos são derivadas do caminho do projeto para reduzir conflitos e impedir que a URL de outro projeto seja reutilizada.
+- Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
+
+### Preparação assistida do ambiente (experimental)
+
+- O diagnóstico separa runtime ausente, versão incompatível, gerenciador de pacotes ausente, dependências do projeto e extensões PHP requeridas.
+- Antes de executar uma instalação, a interface apresenta um plano com comando, origem do pacote, versão pretendida, necessidade de administrador e possíveis alterações no `PATH`.
+- A execução só começa depois da confirmação do usuário e mantém logs e resultado para consulta.
+- No Windows, existem provedores iniciais para instalar Node.js, Python, PHP e Java com `winget`. Os provedores de Go e Dart ainda não foram validados de ponta a ponta.
+- O fluxo de PHP pode preparar o Composer por meio do instalador oficial verificado e diagnosticar extensões requeridas pelo projeto.
+- O fluxo de Python pode criar um ambiente virtual local antes de instalar as dependências.
+- npm, pnpm, Yarn, Bun, Composer e ferramentas de dependência Python são escolhidos de acordo com manifests, lockfiles e disponibilidade local.
+- A compatibilidade de versão segue a restrição declarada pelo projeto; uma versão numericamente maior não é aceita automaticamente quando o intervalo não permite isso.
+- Por exemplo, Python 3.13.5 é anterior ao requisito 3.14. Já PHP 8.5 só atende a um projeto PHP 8.4 quando a restrição do projeto também aceita a série 8.5.
+- Depois da instalação, o ambiente é verificado novamente em vez de ser considerado pronto apenas porque o comando terminou.
+
 ### Experimental e em testes
 
 - Inicialização e interrupção do ambiente completo de cada projeto com um clique.
 - Verificação de runtimes e dependências antes de iniciar um ambiente.
 - Instalação das dependências ausentes com um clique, usando o gerenciador detectado.
 - Logs em tempo real da instalação, com diagnóstico e sugestão de correção quando ela falha.
-- Detecção proativa de versões legadas do Laravel e migração assistida com simulação isolada, confirmação e backup dos manifests.
+- Migração assistida de versões legadas do Laravel como fluxo de recuperação, com simulação isolada, confirmação e backup dos manifests.
 - Seleção automática entre npm, pnpm, Yarn e Bun por manifesto ou lockfile.
 - Ação para abrir a aplicação quando uma URL local é identificada nos logs.
 - Projetos e serviços ativos priorizados na tela de processos, com visualizador de logs em formato de terminal.
@@ -82,7 +124,7 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Ação **Retomar ambiente** após reabrir o aplicativo, sem reiniciar processos automaticamente.
 - Verificação diária de novas releases, com suporte ao canal alpha e acesso ao download oficial.
 - Identificação do processo conflitante no Windows, com confirmação antes de encerrá-lo.
-- Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Django e Python.
+- Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Django, Python e Java, além do reconhecimento inicial de Go, Dart e Flutter.
 - Inicialização e interrupção manual de processos pela interface.
 - Exibição de estado, PID e saída básica dos processos.
 - Execução de comandos na pasta correta de módulos em monorepos.
@@ -90,18 +132,31 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 
 O gerenciamento de processos ainda está em fase inicial. Antes de usá-lo em projetos importantes, confira o comando e a pasta de execução apresentados na interface. O tratamento de árvores de processos fora do Windows ainda não está finalizado.
 
-Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica os comandos a partir dos arquivos do projeto e mostra se o ambiente está pronto, sem runtime ou sem dependências. Quando faltam dependências, **Instalar dependências** executa em segundo plano o gerenciador detectado. Após a instalação ser confirmada, o botão desaparece e o ambiente fica disponível para iniciar. Use **Iniciar ambiente** para subir todos os serviços detectados ou controle cada serviço separadamente. Quando os logs informam uma URL local, **Abrir aplicação** leva diretamente ao navegador. Nenhum comando precisa ser digitado ou configurado manualmente.
+Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica comandos a partir dos arquivos do projeto e mostra se o ambiente está pronto, sem runtime ou sem dependências. Nos ecossistemas já integrados, **Instalar dependências** executa em segundo plano o gerenciador detectado. Antes da confirmação, o usuário pode conferir o comando, a origem do pacote, a versão, a necessidade de administrador e possíveis mudanças no `PATH`. **Iniciar ambiente** sobe os serviços classificados como executáveis, e **Abrir aplicação** só deve ser oferecido quando existir uma URL local válida. Como esta área ainda é experimental, confira sempre o comando e a pasta de execução mostrados na interface.
+
+### Limitações conhecidas
+
+- Go, Dart e Flutter são reconhecidos, mas ainda não possuem fluxo confiável de execução e abertura de ponta a ponta.
+- A associação automática entre frontend, API, worker e outros microsserviços de um mesmo produto ainda não foi implementada.
+- A abertura automática no navegador depende de uma URL confirmada e ainda precisa de mais testes de regressão.
+- A classificação de PHP, JavaScript e sites estáticos está sendo ampliada com casos reais; projetos ambíguos devem ter o comando conferido antes da execução.
+- Instalação de runtime, alterações no `PATH` e comandos que exigem administrador dependem de confirmação explícita do usuário.
 
 ### Em desenvolvimento
 
 - Detecção de frameworks e metadados mais detalhados.
+- Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
+- Suporte de execução e abertura de ponta a ponta para Go, Dart e Flutter.
+- Mais fixtures e testes de regressão para a classificação de PHP, JavaScript e sites estáticos.
 - Verificações HTTP de saúde e tempo de resposta dos serviços.
 - Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
-- Persistência do histórico de instalação de dependências e migrações assistidas.
+- Aperfeiçoamento do histórico de instalações e migrações assistidas.
 - Atualização automática do executável após a adoção de assinatura digital e instalador seguro.
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade e experiência de uso.
+- Integração opcional com Docker e Podman sem substituir instalações locais.
+- Instalador e validação completa no macOS após a estabilização do fluxo local e da integração com contêineres.
 
 ### Arquitetura
 
@@ -240,7 +295,8 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Native Rust desktop application.
 - Dashboard populated through automatic project discovery.
 - Directory scanning outside the UI thread.
-- Initial detection for Rust, Node.js, PHP, and Python.
+- Detection for Rust, Node.js, PHP, Python, and Java.
+- Experimental recognition of Go, Dart, Flutter, and static sites.
 - Local-project detection without Git or manifests based on source-file extensions.
 - Repository-root identification and initial monorepo support.
 - Project catalog search.
@@ -255,13 +311,54 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Phosphor icons in the desktop interface.
 - Modular Cargo workspace architecture.
 
+### Current support matrix
+
+Recognizing a project does not mean that its preparation, execution, and browser-opening workflow is complete. This matrix describes the actual alpha status:
+
+| Ecosystem | Recognition | Assisted Windows setup | Execution and opening |
+| --- | --- | --- | --- |
+| Rust / Cargo | Yes | No | Experimental |
+| Node.js / JavaScript | Yes | Experimental | Experimental |
+| PHP / Laravel | Yes | Experimental | Experimental with `php -S` or Artisan, depending on the project |
+| Python / Django | Yes | Experimental | Experimental |
+| Java / Spring Boot | Yes | Experimental | Experimental |
+| Go | Experimental | Initial implementation, not validated | Not yet supported end to end |
+| Dart | Experimental | Initial implementation, not validated | Not yet supported end to end |
+| Flutter | Experimental | No | Not yet supported end to end |
+| Static site / frameworkless JavaScript | Experimental | Requires an available local server | Experimental |
+
+Go, Dart, and Flutter appear in diagnostics because their files and manifests can already be recognized. This must not be interpreted as functional support for starting and opening those applications.
+
+### Classification and execution
+
+- Framework manifests and characteristic files take precedence over isolated file extensions.
+- A PHP project containing HTML or public files remains a PHP project and should use a PHP server, not the static-site server.
+- A static site is created only from the root containing its entry document and when no higher-priority backend or framework is present.
+- Internal directories such as `public`, `web`, `dist`, and `build` should not become independent projects when they belong to another application.
+- Web services expose a URL after it is confirmed; terminal applications should remain observable through their logs.
+- Static-site ports are derived from the project path to reduce conflicts and prevent another project's URL from being reused.
+- Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
+
+### Assisted environment setup (experimental)
+
+- Diagnostics distinguish a missing runtime, an incompatible version, a missing package manager, project dependencies, and required PHP extensions.
+- Before an installation runs, the interface presents a plan containing the command, package source, target version, administrator requirement, and possible `PATH` changes.
+- Execution starts only after user confirmation, and its logs and result remain available for inspection.
+- On Windows, initial providers can install Node.js, Python, PHP, and Java through `winget`. The Go and Dart providers have not been validated end to end.
+- The PHP flow can prepare Composer through its verified official installer and diagnose extensions required by the project.
+- The Python flow can create a local virtual environment before installing dependencies.
+- npm, pnpm, Yarn, Bun, Composer, and Python dependency tools are selected from manifests, lockfiles, and local availability.
+- Version compatibility follows the constraint declared by the project; a numerically newer version is not automatically accepted when the allowed range excludes it.
+- For example, Python 3.13.5 is older than a 3.14 requirement. PHP 8.5 only satisfies a PHP 8.4 project when that project's constraint also allows the 8.5 series.
+- After installation, the environment is checked again instead of being considered ready merely because the command exited.
+
 ### Experimental and under testing
 
 - One-click startup and shutdown for each project's complete environment.
 - Runtime and dependency checks before an environment starts.
 - One-click installation of missing dependencies with the detected package manager.
 - Live installation logs with diagnostics and a suggested correction when installation fails.
-- Proactive legacy Laravel detection and assisted migration with an isolated preview, confirmation, and manifest backups.
+- Assisted migration for legacy Laravel versions as a recovery flow, with an isolated preview, confirmation, and manifest backups.
 - Automatic selection among npm, pnpm, Yarn, and Bun from manifests and lockfiles.
 - An action to open the application when a local URL is found in its logs.
 - Active projects and services prioritized on the processes page, with a terminal-style log viewer.
@@ -274,7 +371,7 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - A **Resume environment** action after reopening the app, without restarting processes automatically.
 - Daily release checks with alpha-channel support and access to the official download.
 - Conflicting-process identification on Windows, with confirmation before termination.
-- Command detection for Cargo, npm, Composer, PHP, Laravel, Django, and Python.
+- Command detection for Cargo, npm, Composer, PHP, Laravel, Django, Python, and Java, plus initial Go, Dart, and Flutter recognition.
 - Manual process start and stop controls in the desktop interface.
 - Process state, PID, and basic output display.
 - Commands launched from the correct module directory in monorepos.
@@ -282,18 +379,31 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 
 Process management is still at an early stage. Before using it with important projects, verify the command and working directory shown in the interface. Process-tree handling outside Windows is not finished yet.
 
-On project cards and the **Processos** page, LocalCodePilot identifies commands from project files and reports whether the environment is ready, missing a runtime, or missing dependencies. When dependencies are missing, **Instalar dependências** runs the detected package manager in the background. Once the installation is confirmed, the button disappears and the environment becomes available to start. Use **Iniciar ambiente** to start every detected service, or control each service separately. When logs expose a local URL, **Abrir aplicação** opens it in the browser. No commands need to be typed or configured manually.
+On project cards and the **Processos** page, LocalCodePilot identifies commands from project files and reports whether the environment is ready, missing a runtime, or missing dependencies. For integrated ecosystems, **Instalar dependências** runs the detected package manager in the background. Before confirmation, users should be able to inspect the command, package source, version, administrator requirement, and possible `PATH` changes. **Iniciar ambiente** starts services classified as executable, and **Abrir aplicação** should only be offered when a valid local URL exists. Because this area is still experimental, always verify the displayed command and working directory.
+
+### Known limitations
+
+- Go, Dart, and Flutter are recognized but do not yet have a reliable end-to-end execution and opening workflow.
+- Automatic association among a product's frontend, API, workers, and other microservices is not implemented yet.
+- Automatic browser opening depends on a confirmed URL and needs broader regression testing.
+- PHP, JavaScript, and static-site classification is being expanded with real projects; verify the command before running ambiguous projects.
+- Runtime installation, `PATH` changes, and administrator-level commands require explicit user confirmation.
 
 ### Work in progress
 
 - Framework detection and richer project metadata.
+- A composed-environment model for grouping related frontends, APIs, workers, and microservices.
+- End-to-end execution and opening support for Go, Dart, and Flutter.
+- More fixtures and regression tests for PHP, JavaScript, and static-site classification.
 - HTTP health checks and service response-time monitoring.
 - Starting and controlling services such as MySQL, PostgreSQL, and Redis.
-- Persistence for dependency-install and assisted-migration history.
+- Improvements to installation and assisted-migration history.
 - Automatic executable updates after code signing and a secure installer are available.
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility and user-experience improvements.
+- Optional Docker and Podman integration without replacing local installations.
+- A macOS installer and complete validation after the local workflow and container integration are stabilized.
 
 ### Architecture
 
