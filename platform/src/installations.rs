@@ -1,6 +1,7 @@
 use localcodepilot_core::environments::{InstallationStep, InstallationStepKind};
+#[cfg(target_os = "windows")]
+use std::collections::HashSet;
 use std::{
-    collections::HashSet,
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
@@ -455,6 +456,7 @@ fn version_components(value: &str) -> Vec<u64> {
         .collect()
 }
 
+#[cfg(target_os = "windows")]
 fn merge_paths(first: Option<OsString>, second: Option<OsString>) -> Result<OsString, String> {
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
@@ -487,12 +489,12 @@ fn executable_candidate(path: &Path) -> bool {
     }
 }
 
-fn configure_background_command(command: &mut Command) {
+fn configure_background_command(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        _command.creation_flags(CREATE_NO_WINDOW);
     }
 }
 
