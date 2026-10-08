@@ -4687,7 +4687,7 @@ fn install_composer(
         .body_mut()
         .read_to_vec()
         .map_err(|error| format!("Não foi possível ler o instalador do Composer: {error}"))?;
-    let actual = format!("{:x}", Sha384::digest(&installer));
+    let actual = lowercase_hex(&Sha384::digest(&installer));
     if !actual.eq_ignore_ascii_case(expected.trim()) {
         return Err("A assinatura SHA-384 do instalador do Composer não confere".into());
     }
@@ -4738,6 +4738,16 @@ fn install_composer(
     )
     .map_err(|error| format!("Não foi possível criar o comando Composer: {error}"))?;
     Ok(())
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(DIGITS[usize::from(byte >> 4)] as char);
+        encoded.push(DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
 }
 
 fn supported_php_extension(extension: &str) -> bool {
@@ -5250,19 +5260,25 @@ fn process_matches_search(
 }
 
 fn process_exposes_application_url(project: &Project, process: &ProjectProcess) -> bool {
-    if !project.technologies.contains(&TechnologyKind::Laravel) {
-        return true;
+    if project.technologies.contains(&TechnologyKind::Laravel) {
+        return process.program.eq_ignore_ascii_case("php")
+            && process
+                .args
+                .first()
+                .is_some_and(|argument| argument == "artisan")
+            && process
+                .args
+                .get(1)
+                .is_some_and(|argument| argument == "serve");
     }
-
-    process.program.eq_ignore_ascii_case("php")
-        && process
-            .args
-            .first()
-            .is_some_and(|argument| argument == "artisan")
-        && process
-            .args
-            .get(1)
-            .is_some_and(|argument| argument == "serve")
+    if project.technologies.contains(&TechnologyKind::Lumen) {
+        return process.program.eq_ignore_ascii_case("php")
+            && process
+                .args
+                .first()
+                .is_some_and(|argument| argument == "-S");
+    }
+    true
 }
 
 fn port_conflict_details(conflict: &PortConflict) -> String {
@@ -6092,6 +6108,7 @@ fn runtime_color(runtime: RuntimeKind) -> Color32 {
 fn technology_color(technology: TechnologyKind) -> Color32 {
     match technology {
         TechnologyKind::Laravel => Color32::from_rgb(255, 70, 70),
+        TechnologyKind::Lumen => Color32::from_rgb(239, 110, 80),
         TechnologyKind::Vue => Color32::from_rgb(66, 184, 131),
         TechnologyKind::React => Color32::from_rgb(97, 218, 251),
         TechnologyKind::TypeScript => Color32::from_rgb(49, 120, 198),
@@ -6106,9 +6123,9 @@ mod tests {
     use super::{
         DependencyInstall, DependencyInstallEvent, ProjectEnvironment, dependency_error_suggestion,
         executable_available, initials_from_username, inspect_project_environment, laravel_major,
-        prepare_laravel_migration_files, process_error_suggestion, process_exposes_application_url,
-        process_matches_search, project_process_ids, resolve_environment_plan,
-        run_dependency_installs, runtime_requirement_status,
+        lowercase_hex, prepare_laravel_migration_files, process_error_suggestion,
+        process_exposes_application_url, process_matches_search, project_process_ids,
+        resolve_environment_plan, run_dependency_installs, runtime_requirement_status,
     };
     use localcodepilot_core::{
         environments::{
@@ -6123,6 +6140,11 @@ mod tests {
     };
     use localcodepilot_platform::installations::ProgramInventory;
     use std::{ffi::OsStr, fs, path::PathBuf, sync::mpsc, time::SystemTime};
+
+    #[test]
+    fn encodes_checksum_bytes_as_lowercase_hex() {
+        assert_eq!(lowercase_hex(&[0x00, 0x09, 0xaf, 0xff]), "0009afff");
+    }
 
     #[test]
     fn builds_a_dependency_only_plan_when_node_is_compatible() {
@@ -6548,7 +6570,7 @@ mod tests {
     }
 
     #[test]
-    fn exposes_only_the_laravel_server_url_in_laravel_projects() {
+    fn exposes_only_the_backend_url_for_laravel_and_lumen() {
         let project = Project::new(PathBuf::from("app-gestao"), vec![RuntimeKind::Php])
             .with_technologies(vec![TechnologyKind::Laravel, TechnologyKind::Vue]);
         let mut process = ProjectProcess {
@@ -6571,5 +6593,19 @@ mod tests {
         process.program = "php".into();
         process.args = vec!["artisan".into(), "serve".into()];
         assert!(process_exposes_application_url(&project, &process));
+
+        let lumen = Project::new(PathBuf::from("lumen-api"), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::Lumen]);
+        process.args = vec![
+            "-S".into(),
+            "localhost:8000".into(),
+            "-t".into(),
+            "public".into(),
+        ];
+        assert!(process_exposes_application_url(&lumen, &process));
+
+        process.program = "npm".into();
+        process.args = vec!["run".into(), "dev".into()];
+        assert!(!process_exposes_application_url(&lumen, &process));
     }
 }
