@@ -4687,7 +4687,7 @@ fn install_composer(
         .body_mut()
         .read_to_vec()
         .map_err(|error| format!("Não foi possível ler o instalador do Composer: {error}"))?;
-    let actual = format!("{:x}", Sha384::digest(&installer));
+    let actual = lowercase_hex(&Sha384::digest(&installer));
     if !actual.eq_ignore_ascii_case(expected.trim()) {
         return Err("A assinatura SHA-384 do instalador do Composer não confere".into());
     }
@@ -4738,6 +4738,16 @@ fn install_composer(
     )
     .map_err(|error| format!("Não foi possível criar o comando Composer: {error}"))?;
     Ok(())
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(DIGITS[usize::from(byte >> 4)] as char);
+        encoded.push(DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
 }
 
 fn supported_php_extension(extension: &str) -> bool {
@@ -6113,9 +6123,9 @@ mod tests {
     use super::{
         DependencyInstall, DependencyInstallEvent, ProjectEnvironment, dependency_error_suggestion,
         executable_available, initials_from_username, inspect_project_environment, laravel_major,
-        prepare_laravel_migration_files, process_error_suggestion, process_exposes_application_url,
-        process_matches_search, project_process_ids, resolve_environment_plan,
-        run_dependency_installs, runtime_requirement_status,
+        lowercase_hex, prepare_laravel_migration_files, process_error_suggestion,
+        process_exposes_application_url, process_matches_search, project_process_ids,
+        resolve_environment_plan, run_dependency_installs, runtime_requirement_status,
     };
     use localcodepilot_core::{
         environments::{
@@ -6130,6 +6140,11 @@ mod tests {
     };
     use localcodepilot_platform::installations::ProgramInventory;
     use std::{ffi::OsStr, fs, path::PathBuf, sync::mpsc, time::SystemTime};
+
+    #[test]
+    fn encodes_checksum_bytes_as_lowercase_hex() {
+        assert_eq!(lowercase_hex(&[0x00, 0x09, 0xaf, 0xff]), "0009afff");
+    }
 
     #[test]
     fn builds_a_dependency_only_plan_when_node_is_compatible() {
