@@ -306,17 +306,20 @@ impl ProjectEnvironment {
     }
 
     fn can_prepare_environment(&self) -> bool {
-        cfg!(target_os = "windows")
-            && (self.runtime_requirements.iter().any(|requirement| {
-                matches!(
-                    requirement.status,
-                    RequirementStatus::Missing | RequirementStatus::Incompatible { .. }
-                )
-            }) || self
-                .missing_programs
-                .iter()
-                .any(|program| matches!(program.as_str(), "composer" | "pnpm" | "yarn" | "bun"))
-                || !self.missing_php_extensions.is_empty())
+        cfg!(target_os = "windows") && self.needs_environment_preparation()
+    }
+
+    fn needs_environment_preparation(&self) -> bool {
+        self.runtime_requirements.iter().any(|requirement| {
+            matches!(
+                requirement.status,
+                RequirementStatus::Missing | RequirementStatus::Incompatible { .. }
+            )
+        }) || self
+            .missing_programs
+            .iter()
+            .any(|program| matches!(program.as_str(), "composer" | "pnpm" | "yarn" | "bun"))
+            || !self.missing_php_extensions.is_empty()
     }
 
     fn legacy_laravel_constraint(&self) -> Option<&str> {
@@ -6264,7 +6267,11 @@ mod tests {
 
         let environment = inspect_project_environment(&project, &[process], Some(OsStr::new("")));
 
-        assert!(environment.can_prepare_environment());
+        assert!(environment.needs_environment_preparation());
+        assert_eq!(
+            environment.can_prepare_environment(),
+            cfg!(target_os = "windows")
+        );
         assert!(matches!(
             environment.runtime_requirements[0].status,
             RequirementStatus::Missing
