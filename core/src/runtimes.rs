@@ -6,6 +6,10 @@ pub enum RuntimeKind {
     Node,
     Php,
     Python,
+    Java,
+    Go,
+    Dart,
+    Flutter,
 }
 
 impl RuntimeKind {
@@ -15,6 +19,9 @@ impl RuntimeKind {
             "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" => Some(Self::Node),
             "php" | "phtml" => Some(Self::Php),
             "py" | "pyw" => Some(Self::Python),
+            "java" => Some(Self::Java),
+            "go" => Some(Self::Go),
+            "dart" => Some(Self::Dart),
             _ => None,
         }
     }
@@ -27,6 +34,10 @@ impl fmt::Display for RuntimeKind {
             Self::Node => "Node",
             Self::Php => "PHP",
             Self::Python => "Python",
+            Self::Java => "Java",
+            Self::Go => "Go",
+            Self::Dart => "Dart",
+            Self::Flutter => "Flutter",
         })
     }
 }

@@ -13,6 +13,7 @@ pub enum ProcessState {
 pub enum PortOverride {
     LongOption { separator: bool },
     Positional,
+    ArgumentValue { argument_index: usize },
     PhpServerAddress { argument_index: usize },
 }
 
@@ -60,6 +61,9 @@ impl ProjectProcess {
                 args.push(port.value().to_string());
             }
             PortOverride::Positional => args.push(port.value().to_string()),
+            PortOverride::ArgumentValue { argument_index } => {
+                *args.get_mut(argument_index)? = port.value().to_string();
+            }
             PortOverride::PhpServerAddress { argument_index } => {
                 let address = args.get_mut(argument_index)?;
                 let host = address
@@ -118,6 +122,17 @@ mod tests {
         assert_eq!(
             php.args_with_port(Port::new(8001).unwrap()).unwrap(),
             ["-S", "localhost:8001"]
+        );
+
+        let static_site = process(
+            &["-m", "http.server", "4173", "--bind", "127.0.0.1"],
+            PortOverride::ArgumentValue { argument_index: 2 },
+        );
+        assert_eq!(
+            static_site
+                .args_with_port(Port::new(4174).unwrap())
+                .unwrap(),
+            ["-m", "http.server", "4174", "--bind", "127.0.0.1"]
         );
     }
 }

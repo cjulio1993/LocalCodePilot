@@ -17,6 +17,7 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "venv",
     "_macosx",
     "__macosx",
+    "ephemeral",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,11 +53,19 @@ impl Project {
     }
 
     pub fn shows_runtime(&self, runtime: RuntimeKind) -> bool {
-        runtime != RuntimeKind::Node
-            || !self
+        match runtime {
+            RuntimeKind::Node | RuntimeKind::Python
+                if self.technologies.contains(&TechnologyKind::StaticSite) =>
+            {
+                false
+            }
+            RuntimeKind::Node => !self
                 .technologies
                 .iter()
-                .any(|technology| technology.uses_node_tooling())
+                .any(|technology| technology.uses_node_tooling()),
+            RuntimeKind::Flutter => !self.technologies.contains(&TechnologyKind::Flutter),
+            _ => true,
+        }
     }
 
     pub fn display_stack(&self) -> String {
