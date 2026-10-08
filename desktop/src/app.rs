@@ -5250,19 +5250,25 @@ fn process_matches_search(
 }
 
 fn process_exposes_application_url(project: &Project, process: &ProjectProcess) -> bool {
-    if !project.technologies.contains(&TechnologyKind::Laravel) {
-        return true;
+    if project.technologies.contains(&TechnologyKind::Laravel) {
+        return process.program.eq_ignore_ascii_case("php")
+            && process
+                .args
+                .first()
+                .is_some_and(|argument| argument == "artisan")
+            && process
+                .args
+                .get(1)
+                .is_some_and(|argument| argument == "serve");
     }
-
-    process.program.eq_ignore_ascii_case("php")
-        && process
-            .args
-            .first()
-            .is_some_and(|argument| argument == "artisan")
-        && process
-            .args
-            .get(1)
-            .is_some_and(|argument| argument == "serve")
+    if project.technologies.contains(&TechnologyKind::Lumen) {
+        return process.program.eq_ignore_ascii_case("php")
+            && process
+                .args
+                .first()
+                .is_some_and(|argument| argument == "-S");
+    }
+    true
 }
 
 fn port_conflict_details(conflict: &PortConflict) -> String {
@@ -6092,6 +6098,7 @@ fn runtime_color(runtime: RuntimeKind) -> Color32 {
 fn technology_color(technology: TechnologyKind) -> Color32 {
     match technology {
         TechnologyKind::Laravel => Color32::from_rgb(255, 70, 70),
+        TechnologyKind::Lumen => Color32::from_rgb(239, 110, 80),
         TechnologyKind::Vue => Color32::from_rgb(66, 184, 131),
         TechnologyKind::React => Color32::from_rgb(97, 218, 251),
         TechnologyKind::TypeScript => Color32::from_rgb(49, 120, 198),
@@ -6548,7 +6555,7 @@ mod tests {
     }
 
     #[test]
-    fn exposes_only_the_laravel_server_url_in_laravel_projects() {
+    fn exposes_only_the_backend_url_for_laravel_and_lumen() {
         let project = Project::new(PathBuf::from("app-gestao"), vec![RuntimeKind::Php])
             .with_technologies(vec![TechnologyKind::Laravel, TechnologyKind::Vue]);
         let mut process = ProjectProcess {
@@ -6571,5 +6578,19 @@ mod tests {
         process.program = "php".into();
         process.args = vec!["artisan".into(), "serve".into()];
         assert!(process_exposes_application_url(&project, &process));
+
+        let lumen = Project::new(PathBuf::from("lumen-api"), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::Lumen]);
+        process.args = vec![
+            "-S".into(),
+            "localhost:8000".into(),
+            "-t".into(),
+            "public".into(),
+        ];
+        assert!(process_exposes_application_url(&lumen, &process));
+
+        process.program = "npm".into();
+        process.args = vec!["run".into(), "dev".into()];
+        assert!(!process_exposes_application_url(&lumen, &process));
     }
 }

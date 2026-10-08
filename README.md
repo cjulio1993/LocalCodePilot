@@ -72,7 +72,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | --- | --- | --- | --- |
 | Rust / Cargo | Sim | Não | Experimental |
 | Node.js / JavaScript | Sim | Experimental | Experimental |
-| PHP / Laravel | Sim | Experimental | Experimental com `php -S` ou Artisan, conforme o projeto |
+| PHP / Laravel / Lumen | Sim | Experimental | Experimental com `php -S` ou Artisan, conforme o framework |
 | Python / Django | Sim | Experimental | Experimental |
 | Java / Spring Boot | Sim | Experimental | Experimental |
 | Go | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
@@ -86,6 +86,7 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 
 - Manifests e arquivos característicos do framework têm prioridade sobre extensões de arquivos isoladas.
 - Um projeto PHP com HTML ou arquivos públicos continua sendo classificado como PHP e deve usar um servidor PHP, não o servidor de site estático.
+- `laravel/framework` identifica Laravel e usa `php artisan serve`; `laravel/lumen-framework` identifica Lumen e usa `php -S localhost:8000 -t public`, pois o Lumen não oferece `artisan serve`.
 - Um site estático só é criado a partir da raiz que contém o documento de entrada e quando não existe um backend ou framework com maior prioridade.
 - Pastas internas como `public`, `web`, `dist` e `build` não devem virar projetos independentes quando pertencem a outra aplicação.
 - Serviços web exibem uma URL quando ela é confirmada; aplicações de terminal devem permanecer acompanhadas pelos logs.
@@ -124,7 +125,7 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 - Ação **Retomar ambiente** após reabrir o aplicativo, sem reiniciar processos automaticamente.
 - Verificação diária de novas releases, com suporte ao canal alpha e acesso ao download oficial.
 - Identificação do processo conflitante no Windows, com confirmação antes de encerrá-lo.
-- Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Django, Python e Java, além do reconhecimento inicial de Go, Dart e Flutter.
+- Detecção de comandos do Cargo, npm, Composer, PHP, Laravel, Lumen, Django, Python e Java, além do reconhecimento inicial de Go, Dart e Flutter.
 - Inicialização e interrupção manual de processos pela interface.
 - Exibição de estado, PID e saída básica dos processos.
 - Execução de comandos na pasta correta de módulos em monorepos.
@@ -319,7 +320,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | --- | --- | --- | --- |
 | Rust / Cargo | Yes | No | Experimental |
 | Node.js / JavaScript | Yes | Experimental | Experimental |
-| PHP / Laravel | Yes | Experimental | Experimental with `php -S` or Artisan, depending on the project |
+| PHP / Laravel / Lumen | Yes | Experimental | Experimental with `php -S` or Artisan, depending on the framework |
 | Python / Django | Yes | Experimental | Experimental |
 | Java / Spring Boot | Yes | Experimental | Experimental |
 | Go | Experimental | Initial implementation, not validated | Not yet supported end to end |
@@ -333,6 +334,7 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 
 - Framework manifests and characteristic files take precedence over isolated file extensions.
 - A PHP project containing HTML or public files remains a PHP project and should use a PHP server, not the static-site server.
+- `laravel/framework` identifies Laravel and uses `php artisan serve`; `laravel/lumen-framework` identifies Lumen and uses `php -S localhost:8000 -t public`, because Lumen does not provide `artisan serve`.
 - A static site is created only from the root containing its entry document and when no higher-priority backend or framework is present.
 - Internal directories such as `public`, `web`, `dist`, and `build` should not become independent projects when they belong to another application.
 - Web services expose a URL after it is confirmed; terminal applications should remain observable through their logs.
@@ -371,7 +373,7 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 - A **Resume environment** action after reopening the app, without restarting processes automatically.
 - Daily release checks with alpha-channel support and access to the official download.
 - Conflicting-process identification on Windows, with confirmation before termination.
-- Command detection for Cargo, npm, Composer, PHP, Laravel, Django, Python, and Java, plus initial Go, Dart, and Flutter recognition.
+- Command detection for Cargo, npm, Composer, PHP, Laravel, Lumen, Django, Python, and Java, plus initial Go, Dart, and Flutter recognition.
 - Manual process start and stop controls in the desktop interface.
 - Process state, PID, and basic output display.
 - Commands launched from the correct module directory in monorepos.

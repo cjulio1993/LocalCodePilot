@@ -696,11 +696,13 @@ fn detect_processes_in_directory(
     directory: &Path,
     processes: &mut Vec<ProjectProcess>,
 ) {
-    let belongs_to_laravel = has_marker_in_ancestors(directory, &project.path, "artisan");
+    let artisan_root = marker_ancestor(directory, &project.path, "artisan");
+    let belongs_to_artisan_app = artisan_root.is_some();
+    let php_framework = artisan_root.and_then(detect_php_framework);
     detect_cargo_process(project, directory, processes);
     detect_go_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
-    if belongs_to_laravel {
+    if belongs_to_artisan_app {
         detect_laravel_frontend_process(project, directory, processes);
     } else {
         let package_manager = detect_node_package_manager(directory);
@@ -713,7 +715,7 @@ fn detect_processes_in_directory(
             processes,
         );
     }
-    if !belongs_to_laravel {
+    if !belongs_to_artisan_app {
         detect_json_scripts(
             project,
             directory,
@@ -724,15 +726,26 @@ fn detect_processes_in_directory(
         );
     }
     if directory.join("artisan").is_file() {
-        push_process(
-            processes,
-            project,
-            directory,
-            "Servidor Laravel",
-            "php",
-            &["artisan", "serve"],
-        );
-    } else if !belongs_to_laravel
+        if php_framework == Some(TechnologyKind::Lumen) {
+            push_process(
+                processes,
+                project,
+                directory,
+                "Servidor Lumen",
+                "php",
+                &["-S", "localhost:8000", "-t", "public"],
+            );
+        } else {
+            push_process(
+                processes,
+                project,
+                directory,
+                "Servidor Laravel",
+                "php",
+                &["artisan", "serve"],
+            );
+        }
+    } else if !belongs_to_artisan_app
         && (directory.join("index.php").is_file()
             || directory.join("wp-config.php").is_file()
             || (directory == project.path
@@ -1232,20 +1245,24 @@ fn is_continuous_script(name: &str, command: &serde_json::Value) -> bool {
 }
 
 fn has_marker_in_ancestors(directory: &Path, project_root: &Path, marker: &str) -> bool {
+    marker_ancestor(directory, project_root, marker).is_some()
+}
+
+fn marker_ancestor<'a>(directory: &'a Path, project_root: &Path, marker: &str) -> Option<&'a Path> {
     let mut current = Some(directory);
     while let Some(path) = current {
         if !path.starts_with(project_root) {
             break;
         }
         if path.join(marker).is_file() {
-            return true;
+            return Some(path);
         }
         if path == project_root {
             break;
         }
         current = path.parent();
     }
-    false
+    None
 }
 
 fn push_process(
@@ -1463,8 +1480,8 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
 }
 
 fn detect_technologies_in_directory(path: &Path, found: &mut Vec<TechnologyKind>) {
-    if path.join("artisan").is_file() {
-        push_unique(found, TechnologyKind::Laravel);
+    if let Some(framework) = detect_php_framework(path) {
+        push_unique(found, framework);
     }
     if fs::read_to_string(path.join("pubspec.yaml"))
         .ok()
@@ -1529,6 +1546,29 @@ fn detect_technologies_in_directory(path: &Path, found: &mut Vec<TechnologyKind>
     }
 }
 
+fn detect_php_framework(path: &Path) -> Option<TechnologyKind> {
+    let contents = fs::read_to_string(path.join("composer.json")).ok();
+    let document = contents
+        .as_deref()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(contents).ok());
+    let requirements = document
+        .as_ref()
+        .and_then(|document| document.get("require"))
+        .and_then(serde_json::Value::as_object);
+
+    if requirements.is_some_and(|requirements| requirements.contains_key("laravel/lumen-framework"))
+    {
+        Some(TechnologyKind::Lumen)
+    } else if requirements
+        .is_some_and(|requirements| requirements.contains_key("laravel/framework"))
+        || path.join("artisan").is_file()
+    {
+        Some(TechnologyKind::Laravel)
+    } else {
+        None
+    }
+}
+
 fn push_unique(found: &mut Vec<TechnologyKind>, technology: TechnologyKind) {
     if !found.contains(&technology) {
         found.push(technology);
@@ -1538,12 +1578,13 @@ fn push_unique(found: &mut Vec<TechnologyKind>, technology: TechnologyKind) {
 fn technology_priority(technology: TechnologyKind) -> usize {
     match technology {
         TechnologyKind::Laravel => 0,
-        TechnologyKind::Flutter => 1,
-        TechnologyKind::StaticSite => 2,
-        TechnologyKind::Vue => 3,
-        TechnologyKind::React => 4,
-        TechnologyKind::TypeScript => 5,
-        TechnologyKind::JavaScript => 6,
+        TechnologyKind::Lumen => 1,
+        TechnologyKind::Flutter => 2,
+        TechnologyKind::StaticSite => 3,
+        TechnologyKind::Vue => 4,
+        TechnologyKind::React => 5,
+        TechnologyKind::TypeScript => 6,
+        TechnologyKind::JavaScript => 7,
     }
 }
 
@@ -1717,6 +1758,42 @@ mod tests {
                 TechnologyKind::Vue,
                 TechnologyKind::TypeScript
             ]
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn detects_lumen_and_uses_the_php_builtin_server() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-lumen-{nonce}"));
+        fs::create_dir_all(path.join("public")).unwrap();
+        fs::write(path.join("artisan"), "").unwrap();
+        fs::write(
+            path.join("composer.json"),
+            r#"{"require":{"php":"^8.2","laravel/lumen-framework":"^10.0"}}"#,
+        )
+        .unwrap();
+        fs::write(path.join("public/index.php"), "<?php").unwrap();
+
+        let project = Project::new(path.clone(), detect(&path));
+        let technologies = detect_technologies(&path);
+        let commands = detect_processes(&project);
+
+        assert_eq!(technologies, [TechnologyKind::Lumen]);
+        assert!(!technologies.contains(&TechnologyKind::Laravel));
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "Servidor Lumen");
+        assert_eq!(
+            commands[0].command_line(),
+            "php -S localhost:8000 -t public"
+        );
+        assert_eq!(commands[0].expected_port, Port::new(8000));
+        assert_eq!(
+            commands[0].port_override,
+            Some(PortOverride::PhpServerAddress { argument_index: 1 })
         );
         fs::remove_dir_all(path).unwrap();
     }
