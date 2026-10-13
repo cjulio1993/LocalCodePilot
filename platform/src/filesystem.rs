@@ -11,6 +11,11 @@ const PROJECT_MARKERS: &[&str] = &[
     "composer.json",
     "pyproject.toml",
     "requirements.txt",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "gradlew",
+    "gradlew.bat",
     "go.mod",
     "pubspec.yaml",
     "index.html",
@@ -116,6 +121,7 @@ impl ProjectSource for FilesystemProjectSource {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 if name.starts_with('.')
+                    || entry.path().join(".localcodepilot-ignore").is_file()
                     || IGNORED_DIRECTORIES
                         .iter()
                         .any(|ignored| name.eq_ignore_ascii_case(ignored))
@@ -183,6 +189,32 @@ fn home_directory() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::time::SystemTime;
+    #[test]
+    fn discovers_java_projects_by_their_manifest_or_wrapper() {
+        let root =
+            std::env::temp_dir().join(format!("localcodepilot-java-scan-{}", std::process::id()));
+        let markers = [
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "gradlew",
+            "gradlew.bat",
+        ];
+        for (index, marker) in markers.iter().enumerate() {
+            let project = root.join(format!("java-{index}"));
+            fs::create_dir_all(&project).unwrap();
+            fs::write(project.join(marker), "").unwrap();
+            fs::write(project.join("Main.java"), "class Main {}").unwrap();
+        }
+        let paths = FilesystemProjectSource::new(vec![root.clone()])
+            .candidate_paths()
+            .unwrap();
+        assert_eq!(paths.len(), markers.len());
+        for index in 0..markers.len() {
+            assert!(paths.contains(&root.join(format!("java-{index}"))));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn skips_dependency_directories() {
