@@ -12,6 +12,8 @@
 
 **Alpha para Windows:** a versão `0.4.0-alpha.5` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
+**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A alpha 6 só será publicada depois que a instalação e a primeira abertura forem validadas num Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
+
 [Português](#português) · [English](#english)
 
 ---
@@ -77,7 +79,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Dart | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
 | Flutter | Experimental | Não | Ainda não suportada de ponta a ponta |
 | Site estático / JavaScript sem framework | Experimental | Requer um servidor local disponível | Experimental |
-| Containers / Docker / Podman | Experimental | Não | Não: somente identificação, diagnóstico e prévia de comandos |
+| Containers / Docker / Podman | Experimental | Não instala o motor | Implementação Compose em validação com Docker/Podman reais |
 
 Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já podem ser reconhecidos. Isso ainda não deve ser interpretado como suporte funcional para iniciar e abrir esses aplicativos.
 
@@ -92,21 +94,17 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 - Portas de sites estáticos são derivadas do caminho do projeto para reduzir conflitos e impedir que a URL de outro projeto seja reutilizada.
 - Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
 
-### Containers: diagnóstico e prévia (experimental)
+### Containers: execução controlada (em validação)
 
-**Limite atual: o LocalCodePilot apenas identifica e diagnostica projetos com containers. Ele ainda não executa containers.** A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Os comandos apresentados são somente uma prévia; não há instalação de motores, download de imagens, `up`, `stop`, logs ou acompanhamento de containers nesta etapa. Variáveis, overrides e referências externas ainda não são resolvidos. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) para os limites e a CLI `containers <pasta>`.
+A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Quando o motor selecionado está disponível, o app pode validar a configuração, executar `up --detach`, `stop`, `ps --all`, consultar as 200 linhas mais recentes dos logs e construir um Dockerfile isolado. Cada ação mostra o comando e a pasta antes da confirmação, executa sem abrir console externo, mantém a saída numa área rolável e permite cancelamento; o limite por execução é de 30 minutos.
 
-### Atualização pelo aplicativo (experimental)
-
-Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
-
-Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. Builds de desenvolvimento, outros sistemas operacionais e pastas protegidas continuam oferecendo o ZIP oficial como alternativa. Quem usa a alpha 4 ou uma versão anterior precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
+O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. `up` e `build` podem baixar ou construir imagens depois da confirmação. Arquivos Compose de override reconhecidos são enviados ao provedor na ordem exibida; a prévia local ainda não resolve variáveis, perfis, `include`, `extends` ou referências externas, portanto a validação efetiva fica a cargo do Compose. Um Dockerfile isolado oferece somente construção de imagem, pois o app não inventa nome, portas ou comando de execução. Esta implementação ainda precisa ser validada de ponta a ponta com Docker e Podman reais antes da alpha 6. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) e a CLI de diagnóstico `containers <pasta>`.
 
 ### Atualização pelo aplicativo (experimental)
 
 Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
 
-Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. Builds de desenvolvimento, outros sistemas operacionais e pastas protegidas continuam oferecendo o ZIP oficial como alternativa. Quem usa a alpha 4 ou uma versão anterior precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
+Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. No macOS, **Baixar atualização** abre o DMG universal correspondente; a troca do aplicativo permanece manual. Builds de desenvolvimento, Linux e pastas protegidas abrem a página oficial da release como alternativa. Quem usa a alpha 4 ou uma versão anterior no Windows precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
 
 ### Preparação assistida do ambiente (experimental)
 
@@ -150,6 +148,8 @@ O gerenciamento de processos ainda está em fase inicial. Antes de usá-lo em pr
 
 Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica comandos a partir dos arquivos do projeto e mostra se o ambiente está pronto, sem runtime ou sem dependências. Nos ecossistemas já integrados, **Instalar dependências** executa em segundo plano o gerenciador detectado. Antes da confirmação, o usuário pode conferir o comando, a origem do pacote, a versão, a necessidade de administrador e possíveis mudanças no `PATH`. **Iniciar ambiente** sobe os serviços classificados como executáveis, e **Abrir aplicação** só deve ser oferecido quando existir uma URL local válida. Como esta área ainda é experimental, confira sempre o comando e a pasta de execução mostrados na interface.
 
+Serviços com uma URL HTTP local são verificados em segundo plano a cada dez segundos, com limite de três segundos por consulta. A tela **Processos** mostra o código HTTP e o tempo de resposta; respostas `2xx` e `3xx` aparecem como saudáveis, respostas `4xx` e `5xx` pedem atenção e falhas de conexão aparecem como **HTTP sem resposta**. Redirecionamentos não são seguidos e uma falha HTTP não encerra o processo: a disponibilidade da porta continua sendo usada para controlar o ciclo de vida do serviço.
+
 ### Limitações conhecidas
 
 - Go, Dart e Flutter são reconhecidos, mas ainda não possuem fluxo confiável de execução e abertura de ponta a ponta.
@@ -160,19 +160,20 @@ Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica com
 
 ### Em desenvolvimento
 
+A versão `0.4.0-alpha.6` permanecerá sem publicação até que estes três critérios estejam concluídos e validados: health checks HTTP em projetos reais, execução integrada de Docker/Podman e instalação do aplicativo no macOS.
+
 - Detecção de frameworks e metadados mais detalhados.
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
 - Suporte de execução e abertura de ponta a ponta para Go, Dart e Flutter.
 - Mais fixtures e testes de regressão para a classificação de PHP, JavaScript e sites estáticos.
-- Verificações HTTP de saúde e tempo de resposta dos serviços.
 - Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
 - Aperfeiçoamento do histórico de instalações e migrações assistidas.
 - Assinatura digital e instalador seguro para reforçar a atualização integrada.
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade e experiência de uso.
-- Integração opcional com Docker e Podman sem substituir instalações locais.
-- Instalador e validação completa no macOS após a estabilização do fluxo local e da integração com contêineres.
+- Validação de ponta a ponta da execução integrada com Docker e Podman reais.
+- Validação manual do DMG universal, da instalação e da primeira abertura em Macs Intel e Apple Silicon.
 
 ### Regra de documentação
 
@@ -275,6 +276,8 @@ cargo build --release --workspace
 
 No Windows, os executáveis são gerados em `target\release\`.
 
+No macOS, o workflow de validação compila um binário universal e executa `scripts/package-macos.sh` para criar e verificar o DMG. Esse artefato é somente para validação até a conclusão do teste num Mac real.
+
 ### Contribuição
 
 O projeto ainda está definindo suas APIs e seus fluxos principais. Antes de implementar uma funcionalidade grande, abra uma issue ou descreva claramente a proposta para que ela possa ser alinhada à separação entre domínio, plataforma e interfaces.
@@ -286,6 +289,8 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 ## English
 
 **Windows alpha:** version `0.4.0-alpha.5` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+
+**macOS under validation:** the repository now produces a universal Intel and Apple Silicon application in a DMG, but this package is not part of a public release yet. Alpha 6 will only be published after installation and first launch are validated on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 ### What is LocalCodePilot?
 
@@ -346,7 +351,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Dart | Experimental | Initial implementation, not validated | Not yet supported end to end |
 | Flutter | Experimental | No | Not yet supported end to end |
 | Static site / frameworkless JavaScript | Experimental | Requires an available local server | Experimental |
-| Containers / Docker / Podman | Experimental | No | No: identification, diagnostics, and command previews only |
+| Containers / Docker / Podman | Experimental | Does not install the engine | Compose implementation awaiting validation with real Docker/Podman engines |
 
 Go, Dart, and Flutter appear in diagnostics because their files and manifests can already be recognized. This must not be interpreted as functional support for starting and opening those applications.
 
@@ -361,21 +366,17 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 - Static-site ports are derived from the project path to reduce conflicts and prevent another project's URL from being reused.
 - Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
 
-### Containers: diagnosis and preview (experimental)
+### Containers: controlled execution (under validation)
 
-**Current limit: LocalCodePilot only identifies and diagnoses container projects. It does not run containers yet.** The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded, or container `up`, `stop`, logs, or monitoring operations executed. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
+The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services, and checks Docker/Podman and Compose availability in the background. When the selected engine is ready, the app can validate the configuration, run `up --detach`, `stop`, `ps --all`, retrieve the latest 200 log lines, and build a standalone Dockerfile. Every action shows its command and working directory for confirmation, runs without an external console, keeps output in a scrollable area, and supports cancellation; each execution has a 30-minute limit.
 
-### In-app updates (experimental)
-
-When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
-
-This flow works for the official `LocalCodePilot.exe` when its directory is writable. Development builds, other operating systems, and protected directories keep the official ZIP as a fallback. Users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
+LocalCodePilot does not install Docker/Podman or start the engine VM. Confirmed `up` and `build` actions may download or build images. Recognized Compose override files are passed to the provider in the displayed order; the local preview still does not resolve variables, profiles, `include`, `extends`, or external references, so effective validation is delegated to Compose. A standalone Dockerfile only offers image building because the app does not invent an image name, ports, or a run command. This implementation still needs end-to-end validation with real Docker and Podman engines before alpha 6. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the diagnostic `containers <directory>` CLI command.
 
 ### In-app updates (experimental)
 
 When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
 
-This flow works for the official `LocalCodePilot.exe` when its directory is writable. Development builds, other operating systems, and protected directories keep the official ZIP as a fallback. Users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
+This flow works for the official `LocalCodePilot.exe` when its directory is writable. On macOS, **Download update** opens the matching universal DMG and application replacement remains manual. Development builds, Linux, and protected directories open the official release page as a fallback. Windows users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
 
 ### Assisted environment setup (experimental)
 
@@ -419,6 +420,8 @@ Process management is still at an early stage. Before using it with important pr
 
 On project cards and the **Processos** page, LocalCodePilot identifies commands from project files and reports whether the environment is ready, missing a runtime, or missing dependencies. For integrated ecosystems, **Instalar dependências** runs the detected package manager in the background. Before confirmation, users should be able to inspect the command, package source, version, administrator requirement, and possible `PATH` changes. **Iniciar ambiente** starts services classified as executable, and **Abrir aplicação** should only be offered when a valid local URL exists. Because this area is still experimental, always verify the displayed command and working directory.
 
+Services with a local HTTP URL are checked in the background every ten seconds, with a three-second timeout per request. The **Processos** page shows the HTTP status code and response time; `2xx` and `3xx` responses are healthy, `4xx` and `5xx` responses require attention, and connection failures appear as **HTTP sem resposta**. Redirects are not followed, and an HTTP failure does not stop the process: port availability remains the service lifecycle signal.
+
 ### Known limitations
 
 - Go, Dart, and Flutter are recognized but do not yet have a reliable end-to-end execution and opening workflow.
@@ -429,19 +432,20 @@ On project cards and the **Processos** page, LocalCodePilot identifies commands 
 
 ### Work in progress
 
+Version `0.4.0-alpha.6` will remain unpublished until all three gates are complete and validated: HTTP health checks on real projects, integrated Docker/Podman execution, and application installation on macOS.
+
 - Framework detection and richer project metadata.
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.
 - End-to-end execution and opening support for Go, Dart, and Flutter.
 - More fixtures and regression tests for PHP, JavaScript, and static-site classification.
-- HTTP health checks and service response-time monitoring.
 - Starting and controlling services such as MySQL, PostgreSQL, and Redis.
 - Improvements to installation and assisted-migration history.
 - Code signing and a secure installer to strengthen the integrated update flow.
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility and user-experience improvements.
-- Optional Docker and Podman integration without replacing local installations.
-- A macOS installer and complete validation after the local workflow and container integration are stabilized.
+- End-to-end validation of integrated execution with real Docker and Podman engines.
+- Manual validation of the universal DMG, installation, and first launch on Intel and Apple Silicon Macs.
 
 ### Documentation rule
 
@@ -543,6 +547,8 @@ cargo build --release --workspace
 ```
 
 On Windows, binaries are generated under `target\release\`.
+
+On macOS, the validation workflow builds a universal binary and runs `scripts/package-macos.sh` to create and verify the DMG. This artifact remains validation-only until it has been tested on a real Mac.
 
 ### Contributing
 

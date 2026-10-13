@@ -38,6 +38,16 @@ pub fn detect_container_projects(root: &Path) -> Vec<ContainerProject> {
                     .iter()
                     .map(|file| directory.join(file))
                     .find(|file| file.is_file()),
+                compose_overrides: [
+                    "compose.override.yaml",
+                    "compose.override.yml",
+                    "docker-compose.override.yaml",
+                    "docker-compose.override.yml",
+                ]
+                .iter()
+                .map(|file| directory.join(file))
+                .filter(|file| file.is_file())
+                .collect(),
                 directory: directory.clone(),
                 services: vec![],
                 warnings: vec![],
@@ -61,16 +71,8 @@ pub fn detect_container_projects(root: &Path) -> Vec<ContainerProject> {
                         "Há mais de um manifesto Compose; a prévia usa o arquivo indicado.".into(),
                     );
                 }
-                if [
-                    "compose.override.yaml",
-                    "compose.override.yml",
-                    "docker-compose.override.yaml",
-                    "docker-compose.override.yml",
-                ]
-                .iter()
-                .any(|name| directory.join(name).is_file())
-                {
-                    project.warnings.push("Arquivo de override encontrado. Esta prévia e os comandos com --file usam apenas o manifesto indicado; overrides não foram mesclados.".into());
+                if !project.compose_overrides.is_empty() {
+                    project.warnings.push("Arquivo de override encontrado. A prévia mostra somente o manifesto principal; a validação e a execução enviam os arquivos ao Compose na ordem exibida.".into());
                 }
                 project.warnings.push("Prévia das declarações do arquivo: variáveis, perfis e referências externas não foram resolvidos. Valide a configuração efetiva com Compose antes de iniciar.".into());
             }
