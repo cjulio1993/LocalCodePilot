@@ -546,7 +546,7 @@ fn executable_candidate(path: &Path) -> bool {
     }
 }
 
-fn configure_background_command(_command: &mut Command) {
+pub fn configure_background_command(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

@@ -4,7 +4,7 @@ members = ["core", "platform", "runtime", "services", "cli", "desktop"]
 default-members = ["desktop"]
 
 [workspace.package]
-version = "0.4.0-alpha.1"
+version = "0.4.0-alpha.3"
 edition = "2024"
 license = "MIT"
 
@@ -23,6 +23,7 @@ semver = "1"
 toml = "1"
 ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"
+serde_yaml_ng = "0.10.0"
 
 [profile.release]
 lto = "thin"

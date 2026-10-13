@@ -1,3 +1,6 @@
+#[path = "container_ui.rs"]
+mod container_ui;
+
 use crate::{
     config, theme,
     updates::{self, UpdateInfo},
@@ -23,8 +26,8 @@ use localcodepilot_platform::{
     NativePlatform, Platform,
     filesystem::FilesystemProjectSource,
     installations::{
-        ProgramInventory, WindowsWingetProvider, find_executable, inspect_program,
-        managed_bin_directory, refreshed_environment_path,
+        ProgramInventory, WindowsWingetProvider, configure_background_command, find_executable,
+        inspect_program, managed_bin_directory, refreshed_environment_path,
     },
     ports::{PortAvailability, PortOwner, inspect_tcp_port, terminate_process_tree},
 };
@@ -63,6 +66,7 @@ enum Page {
     Overview,
     Projects,
     Processes,
+    Containers,
     Plugins,
     Settings,
 }
@@ -73,6 +77,7 @@ impl Page {
             Self::Overview => "overview",
             Self::Projects => "projects",
             Self::Processes => "processes",
+            Self::Containers => "containers",
             Self::Plugins => "plugins",
             Self::Settings => "settings",
         }
@@ -82,6 +87,7 @@ impl Page {
         match key {
             "projects" => Self::Projects,
             "processes" => Self::Processes,
+            "containers" => Self::Containers,
             "plugins" => Self::Plugins,
             "settings" => Self::Settings,
             _ => Self::Overview,
@@ -330,6 +336,7 @@ impl ProjectEnvironment {
 }
 
 enum ProjectCardAction {
+    ViewContainers,
     Open(PathBuf),
     OpenUrl(String),
     Start(PathBuf),
@@ -384,6 +391,9 @@ pub struct LocalCodePilot {
     workspace_save_error_reported: bool,
     update_check: Option<Receiver<Result<Option<UpdateInfo>, String>>>,
     available_update: Option<UpdateInfo>,
+    manual_update_check: bool,
+    update_check_result: Option<Result<String, String>>,
+    container_state: container_ui::ContainerState,
 }
 
 impl LocalCodePilot {
@@ -455,6 +465,9 @@ impl LocalCodePilot {
             workspace_save_error_reported: false,
             update_check,
             available_update,
+            manual_update_check: false,
+            update_check_result: None,
+            container_state: container_ui::ContainerState::default(),
         }
     }
 
@@ -589,13 +602,29 @@ impl LocalCodePilot {
                 let now = unix_timestamp();
                 self.workspace_state.last_update_check = now;
                 self.workspace_state.cached_update = update.clone();
-                self.available_update = update
-                    .filter(updates::cached_update_is_newer)
-                    .filter(|_| self.workspace_state.update_remind_after <= now);
+                self.update_check_result = Some(Ok(update.as_ref().map_or_else(
+                    || "Você está usando a versão mais recente disponível para este canal.".into(),
+                    |update| format!("Atualização disponível: {}", update.version),
+                )));
+                self.available_update =
+                    update.filter(updates::cached_update_is_newer).filter(|_| {
+                        self.manual_update_check || self.workspace_state.update_remind_after <= now
+                    });
+                self.manual_update_check = false;
                 self.workspace_dirty = true;
                 self.update_check = None;
             }
-            Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+            Ok(Err(error)) => {
+                self.update_check_result = Some(Err(format!(
+                    "Não foi possível verificar atualizações: {error}"
+                )));
+                self.manual_update_check = false;
+                self.update_check = None;
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.update_check_result =
+                    Some(Err("A consulta foi interrompida. Tente novamente.".into()));
+                self.manual_update_check = false;
                 self.update_check = None;
             }
             Err(TryRecvError::Empty) => {}
@@ -761,6 +790,7 @@ impl LocalCodePilot {
                     Some(self.projects.len()),
                 );
                 self.nav_button(ui, Page::Processes, TERMINAL, "Processos", None);
+                self.nav_button(ui, Page::Containers, LAYOUT, "Containers", None);
                 ui.add_space(18.0);
                 ui.label(
                     RichText::new("SISTEMA")
@@ -881,7 +911,7 @@ impl LocalCodePilot {
                         let search_hint = match self.page {
                             Page::Overview | Page::Projects => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
-                            Page::Plugins | Page::Settings => None,
+                            Page::Plugins | Page::Settings | Page::Containers => None,
                         };
                         if let Some(search_hint) = search_hint {
                             ui.add_sized(
@@ -901,12 +931,13 @@ impl LocalCodePilot {
             Page::Overview => "Visão geral",
             Page::Projects => "Projetos",
             Page::Processes => "Processos",
+            Page::Containers => "Containers",
             Page::Plugins => "Plugins",
             Page::Settings => "Configurações",
         }
     }
 
-    fn poll_discovery(&mut self) {
+    fn poll_discovery(&mut self, ctx: &egui::Context) {
         let Some(receiver) = &self.discovery else {
             return;
         };
@@ -931,6 +962,7 @@ impl LocalCodePilot {
                     .collect();
                 self.projects = projects;
                 self.discovery = None;
+                self.refresh_containers(ctx.clone());
             }
             Ok(Err(error)) => {
                 self.notify(format!("Não foi possível concluir a varredura: {error}"));
@@ -1219,6 +1251,7 @@ impl LocalCodePilot {
                             width: card_width,
                         },
                     ) {
+                        Some(ProjectCardAction::ViewContainers) => self.page = Page::Containers,
                         Some(ProjectCardAction::Open(path)) => {
                             self.notify(match open_in_vscode(&path) {
                                 Ok(()) => format!("Abrindo {} no VS Code...", project.name),
@@ -3598,7 +3631,43 @@ impl LocalCodePilot {
         }
     }
 
-    fn settings_page(&self, ui: &mut egui::Ui) {
+    fn settings_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Atualizações");
+        ui.add_space(12.0);
+        Frame::new()
+            .fill(theme::SURFACE)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(10)
+            .inner_margin(Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("LocalCodePilot {}", updates::current_version())).strong());
+                    if ui.add_enabled(self.update_check.is_none(), egui::Button::new("Verificar se há atualizações")).clicked() {
+                        self.manual_update_check = true;
+                        self.workspace_state.update_remind_after = 0;
+                        self.workspace_dirty = true;
+                        self.update_check_result = None;
+                        self.update_check = Some(updates::spawn_update_check(ui.ctx().clone()));
+                    }
+                });
+                ui.add_space(6.0);
+                if self.update_check.is_some() {
+                    ui.horizontal(|ui| { ui.spinner(); ui.label("Verificando atualizações..."); });
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                } else if let Some(result) = &self.update_check_result {
+                    let (message, color) = match result {
+                        Ok(message) => (message, theme::SUCCESS),
+                        Err(message) => (message, Color32::from_rgb(255, 112, 112)),
+                    };
+                    ui.label(RichText::new(message).color(color).size(11.0));
+                }
+                if self.workspace_state.last_update_check > 0 {
+                    ui.label(RichText::new(format!("Última consulta concluída: {}", relative_time(self.workspace_state.last_update_check))).color(theme::MUTED).size(10.0));
+                }
+                ui.label(RichText::new("A consulta automática acontece uma vez por dia ao abrir o app. Você pode verificar agora a qualquer momento.").color(theme::MUTED).size(10.0));
+            });
+        ui.add_space(24.0);
         ui.heading("Runtimes");
         ui.label(
             RichText::new("Inventário usado pelos projetos deste workspace").color(theme::MUTED),
@@ -3751,6 +3820,7 @@ impl LocalCodePilot {
                     Page::Projects => self.projects_page(&ctx, ui),
                     Page::Processes => self.processes_page(ui),
                     Page::Settings => self.settings_page(ui),
+                    Page::Containers => self.containers_page(ui),
                     Page::Plugins => {
                         ui.heading(self.page_title());
                         ui.add_space(8.0);
@@ -3769,12 +3839,13 @@ impl LocalCodePilot {
 
 impl eframe::App for LocalCodePilot {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_discovery();
+        self.poll_discovery(ctx);
         self.poll_environment_plan();
         self.poll_dependency_installs(ctx);
         self.poll_laravel_migration(ctx);
         self.poll_processes(ctx);
         self.poll_update_check();
+        self.poll_containers();
         self.persist_workspace_state(false);
     }
 
@@ -3894,7 +3965,9 @@ fn create_laravel_migration(
 }
 
 fn installed_php_version() -> Result<(String, u64, u64), String> {
-    let output = Command::new("php")
+    let mut command = Command::new("php");
+    configure_background_command(&mut command);
+    let output = command
         .args([
             "-r",
             "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'.'.PHP_RELEASE_VERSION;",
@@ -4969,6 +5042,7 @@ fn installation_command(
     if let Some(path) = environment_path {
         command.env("PATH", path);
     }
+    configure_background_command(&mut command);
     Ok(command)
 }
 
@@ -5156,6 +5230,7 @@ fn process_command_on_port(
     {
         let mut command = Command::new("cmd.exe");
         command.args(["/D", "/C"]).arg(&process.program).args(&args);
+        configure_background_command(&mut command);
         if let Some(path) = environment_path {
             command.env("PATH", path);
         }
@@ -5239,7 +5314,9 @@ fn terminate_process(child: &mut Child) {
     #[cfg(target_os = "windows")]
     {
         let process_id = child.id().to_string();
-        if Command::new("taskkill")
+        let mut command = Command::new("taskkill");
+        configure_background_command(&mut command);
+        if command
             .args(["/PID", &process_id, "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -5918,6 +5995,11 @@ fn project_card(
                     }
                 }
             });
+            if project.technologies.contains(&TechnologyKind::Containers)
+                && ui.button("Ver ambiente de containers").clicked()
+            {
+                action = Some(ProjectCardAction::ViewContainers);
+            }
             ui.add_space(10.0);
             let (status, status_color) = if resolving_plan {
                 ("Preparando plano", theme::PRIMARY)
@@ -5929,6 +6011,10 @@ fn project_card(
                 ("Disponível", theme::SUCCESS)
             } else if active_processes > 0 {
                 ("Em execução", theme::SUCCESS)
+            } else if environment.command_count == 0
+                && project.technologies.contains(&TechnologyKind::Containers)
+            {
+                ("Ambiente de containers detectado", theme::PRIMARY)
             } else {
                 environment.status()
             };
@@ -6148,13 +6234,11 @@ fn open_in_vscode(path: &Path) -> Result<(), String> {
         }
     }
 
-    Command::new(if cfg!(windows) { "code.cmd" } else { "code" })
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| {
-            "VS Code não encontrado. Instale-o ou adicione o comando 'code' ao PATH.".into()
-        })
+    let mut command = Command::new(if cfg!(windows) { "code.cmd" } else { "code" });
+    configure_background_command(&mut command);
+    command.arg(path).spawn().map(|_| ()).map_err(|_| {
+        "VS Code não encontrado. Instale-o ou adicione o comando 'code' ao PATH.".into()
+    })
 }
 
 fn runtime_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
@@ -6191,6 +6275,7 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
         TechnologyKind::JavaScript => Color32::from_rgb(240, 219, 79),
         TechnologyKind::Flutter => Color32::from_rgb(84, 197, 248),
         TechnologyKind::StaticSite => Color32::from_rgb(70, 180, 140),
+        TechnologyKind::Containers => Color32::from_rgb(90, 160, 240),
     }
 }
 

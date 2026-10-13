@@ -10,7 +10,7 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.4.0-alpha.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.3` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
 O processo de assinatura Authenticode e os segredos opcionais do pipeline estão documentados em [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
 
@@ -93,6 +93,10 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 - Portas de sites estáticos são derivadas do caminho do projeto para reduzir conflitos e impedir que a URL de outro projeto seja reutilizada.
 - Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
 
+### Containers: diagnóstico e prévia (experimental)
+
+A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Os comandos apresentados são somente uma prévia; não há instalação de motores, download de imagens nem execução de containers nesta etapa. Variáveis, overrides e referências externas ainda não são resolvidos. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) para os limites e a CLI `containers <pasta>`.
+
 ### Preparação assistida do ambiente (experimental)
 
 - O diagnóstico separa runtime ausente, versão incompatível, gerenciador de pacotes ausente, dependências do projeto e extensões PHP requeridas.
@@ -158,6 +162,10 @@ Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica com
 - Melhorias de acessibilidade e experiência de uso.
 - Integração opcional com Docker e Podman sem substituir instalações locais.
 - Instalador e validação completa no macOS após a estabilização do fluxo local e da integração com contêineres.
+
+### Regra de documentação
+
+Toda correção, alteração de comportamento ou funcionalidade incluída no LocalCodePilot deve atualizar este README no mesmo commit, mantendo o estado atual do produto claro para quem baixa ou contribui com o projeto. O histórico detalhado de cada versão também deve ser registrado no [CHANGELOG.md](CHANGELOG.md); documentações técnicas mais extensas podem ficar em `docs/`, sempre com um link neste README.
 
 ### Arquitetura
 
@@ -264,7 +272,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.4.0-alpha.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.3` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
 The Authenticode signing process and optional pipeline secrets are documented in [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
 
@@ -341,6 +349,10 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 - Static-site ports are derived from the project path to reduce conflicts and prevent another project's URL from being reused.
 - Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
 
+### Containers: diagnosis and preview (experimental)
+
+The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded or containers started. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
+
 ### Assisted environment setup (experimental)
 
 - Diagnostics distinguish a missing runtime, an incompatible version, a missing package manager, project dependencies, and required PHP extensions.
@@ -406,6 +418,10 @@ On project cards and the **Processos** page, LocalCodePilot identifies commands 
 - Accessibility and user-experience improvements.
 - Optional Docker and Podman integration without replacing local installations.
 - A macOS installer and complete validation after the local workflow and container integration are stabilized.
+
+### Documentation rule
+
+Every fix, behavior change, or feature added to LocalCodePilot must update this README in the same commit, keeping the current product state clear for users and contributors. The detailed history of each version must also be recorded in [CHANGELOG.md](CHANGELOG.md); longer technical documentation may live under `docs/`, with a link from this README.
 
 ### Architecture
 

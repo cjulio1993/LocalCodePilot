@@ -1483,6 +1483,9 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
 }
 
 fn detect_technologies_in_directory(path: &Path, found: &mut Vec<TechnologyKind>) {
+    if containers::has_container_markers(path) {
+        push_unique(found, TechnologyKind::Containers);
+    }
     if let Some(framework) = detect_php_framework(path) {
         push_unique(found, framework);
     }
@@ -1588,6 +1591,7 @@ fn technology_priority(technology: TechnologyKind) -> usize {
         TechnologyKind::React => 5,
         TechnologyKind::TypeScript => 6,
         TechnologyKind::JavaScript => 7,
+        TechnologyKind::Containers => 8,
     }
 }
 
@@ -2355,3 +2359,4 @@ version = "0.1.0"
         fs::remove_dir_all(root).unwrap();
     }
 }
+pub mod containers;

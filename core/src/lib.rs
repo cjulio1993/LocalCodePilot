@@ -1,3 +1,4 @@
+pub mod containers;
 pub mod discovery;
 pub mod environments;
 pub mod ports;

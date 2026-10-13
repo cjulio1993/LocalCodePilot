@@ -10,6 +10,7 @@ pub enum TechnologyKind {
     JavaScript,
     Flutter,
     StaticSite,
+    Containers,
 }
 
 impl TechnologyKind {
@@ -32,6 +33,7 @@ impl fmt::Display for TechnologyKind {
             Self::JavaScript => "JavaScript",
             Self::Flutter => "Flutter",
             Self::StaticSite => "Site estático",
+            Self::Containers => "Containers",
         })
     }
 }
