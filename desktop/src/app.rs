@@ -23,8 +23,8 @@ use localcodepilot_platform::{
     NativePlatform, Platform,
     filesystem::FilesystemProjectSource,
     installations::{
-        ProgramInventory, WindowsWingetProvider, find_executable, inspect_program,
-        managed_bin_directory, refreshed_environment_path,
+        ProgramInventory, WindowsWingetProvider, configure_background_command, find_executable,
+        inspect_program, managed_bin_directory, refreshed_environment_path,
     },
     ports::{PortAvailability, PortOwner, inspect_tcp_port, terminate_process_tree},
 };
@@ -384,6 +384,8 @@ pub struct LocalCodePilot {
     workspace_save_error_reported: bool,
     update_check: Option<Receiver<Result<Option<UpdateInfo>, String>>>,
     available_update: Option<UpdateInfo>,
+    manual_update_check: bool,
+    update_check_result: Option<Result<String, String>>,
 }
 
 impl LocalCodePilot {
@@ -455,6 +457,8 @@ impl LocalCodePilot {
             workspace_save_error_reported: false,
             update_check,
             available_update,
+            manual_update_check: false,
+            update_check_result: None,
         }
     }
 
@@ -589,13 +593,29 @@ impl LocalCodePilot {
                 let now = unix_timestamp();
                 self.workspace_state.last_update_check = now;
                 self.workspace_state.cached_update = update.clone();
-                self.available_update = update
-                    .filter(updates::cached_update_is_newer)
-                    .filter(|_| self.workspace_state.update_remind_after <= now);
+                self.update_check_result = Some(Ok(update.as_ref().map_or_else(
+                    || "Você está usando a versão mais recente disponível para este canal.".into(),
+                    |update| format!("Atualização disponível: {}", update.version),
+                )));
+                self.available_update =
+                    update.filter(updates::cached_update_is_newer).filter(|_| {
+                        self.manual_update_check || self.workspace_state.update_remind_after <= now
+                    });
+                self.manual_update_check = false;
                 self.workspace_dirty = true;
                 self.update_check = None;
             }
-            Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+            Ok(Err(error)) => {
+                self.update_check_result = Some(Err(format!(
+                    "Não foi possível verificar atualizações: {error}"
+                )));
+                self.manual_update_check = false;
+                self.update_check = None;
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.update_check_result =
+                    Some(Err("A consulta foi interrompida. Tente novamente.".into()));
+                self.manual_update_check = false;
                 self.update_check = None;
             }
             Err(TryRecvError::Empty) => {}
@@ -3598,7 +3618,43 @@ impl LocalCodePilot {
         }
     }
 
-    fn settings_page(&self, ui: &mut egui::Ui) {
+    fn settings_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Atualizações");
+        ui.add_space(12.0);
+        Frame::new()
+            .fill(theme::SURFACE)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(10)
+            .inner_margin(Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("LocalCodePilot {}", updates::current_version())).strong());
+                    if ui.add_enabled(self.update_check.is_none(), egui::Button::new("Verificar se há atualizações")).clicked() {
+                        self.manual_update_check = true;
+                        self.workspace_state.update_remind_after = 0;
+                        self.workspace_dirty = true;
+                        self.update_check_result = None;
+                        self.update_check = Some(updates::spawn_update_check(ui.ctx().clone()));
+                    }
+                });
+                ui.add_space(6.0);
+                if self.update_check.is_some() {
+                    ui.horizontal(|ui| { ui.spinner(); ui.label("Verificando atualizações..."); });
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                } else if let Some(result) = &self.update_check_result {
+                    let (message, color) = match result {
+                        Ok(message) => (message, theme::SUCCESS),
+                        Err(message) => (message, Color32::from_rgb(255, 112, 112)),
+                    };
+                    ui.label(RichText::new(message).color(color).size(11.0));
+                }
+                if self.workspace_state.last_update_check > 0 {
+                    ui.label(RichText::new(format!("Última consulta concluída: {}", relative_time(self.workspace_state.last_update_check))).color(theme::MUTED).size(10.0));
+                }
+                ui.label(RichText::new("A consulta automática acontece uma vez por dia ao abrir o app. Você pode verificar agora a qualquer momento.").color(theme::MUTED).size(10.0));
+            });
+        ui.add_space(24.0);
         ui.heading("Runtimes");
         ui.label(
             RichText::new("Inventário usado pelos projetos deste workspace").color(theme::MUTED),
@@ -3894,7 +3950,9 @@ fn create_laravel_migration(
 }
 
 fn installed_php_version() -> Result<(String, u64, u64), String> {
-    let output = Command::new("php")
+    let mut command = Command::new("php");
+    configure_background_command(&mut command);
+    let output = command
         .args([
             "-r",
             "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'.'.PHP_RELEASE_VERSION;",
@@ -4969,6 +5027,7 @@ fn installation_command(
     if let Some(path) = environment_path {
         command.env("PATH", path);
     }
+    configure_background_command(&mut command);
     Ok(command)
 }
 
@@ -5156,6 +5215,7 @@ fn process_command_on_port(
     {
         let mut command = Command::new("cmd.exe");
         command.args(["/D", "/C"]).arg(&process.program).args(&args);
+        configure_background_command(&mut command);
         if let Some(path) = environment_path {
             command.env("PATH", path);
         }
@@ -5239,7 +5299,9 @@ fn terminate_process(child: &mut Child) {
     #[cfg(target_os = "windows")]
     {
         let process_id = child.id().to_string();
-        if Command::new("taskkill")
+        let mut command = Command::new("taskkill");
+        configure_background_command(&mut command);
+        if command
             .args(["/PID", &process_id, "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -6148,13 +6210,11 @@ fn open_in_vscode(path: &Path) -> Result<(), String> {
         }
     }
 
-    Command::new(if cfg!(windows) { "code.cmd" } else { "code" })
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| {
-            "VS Code não encontrado. Instale-o ou adicione o comando 'code' ao PATH.".into()
-        })
+    let mut command = Command::new(if cfg!(windows) { "code.cmd" } else { "code" });
+    configure_background_command(&mut command);
+    command.arg(path).spawn().map(|_| ()).map_err(|_| {
+        "VS Code não encontrado. Instale-o ou adicione o comando 'code' ao PATH.".into()
+    })
 }
 
 fn runtime_badge(ui: &mut egui::Ui, label: &str, color: Color32) {

@@ -1,4 +1,4 @@
-LocalCodePilot 0.4.0-alpha.2 para Windows x64
+LocalCodePilot 0.4.0-alpha.3 para Windows x64
 ================================================
 
 1. Extraia todos os arquivos do ZIP para uma pasta.
@@ -16,7 +16,7 @@ Integridade do download
 
 Compare o SHA-256 do ZIP com o arquivo SHA256SUMS.txt publicado na mesma release:
 
-  (Get-FileHash .\LocalCodePilot-0.4.0-alpha.2-windows-x64.zip -Algorithm SHA256).Hash
+  (Get-FileHash .\LocalCodePilot-0.4.0-alpha.3-windows-x64.zip -Algorithm SHA256).Hash
 
 Esta versão alpha ainda não possui assinatura digital. Por isso, o Windows pode
 exibir um aviso do SmartScreen.
