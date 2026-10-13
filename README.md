@@ -77,6 +77,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Dart | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
 | Flutter | Experimental | Não | Ainda não suportada de ponta a ponta |
 | Site estático / JavaScript sem framework | Experimental | Requer um servidor local disponível | Experimental |
+| Containers / Docker / Podman | Experimental | Não | Não: somente identificação, diagnóstico e prévia de comandos |
 
 Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já podem ser reconhecidos. Isso ainda não deve ser interpretado como suporte funcional para iniciar e abrir esses aplicativos.
 
@@ -93,7 +94,13 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 
 ### Containers: diagnóstico e prévia (experimental)
 
-A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Os comandos apresentados são somente uma prévia; não há instalação de motores, download de imagens nem execução de containers nesta etapa. Variáveis, overrides e referências externas ainda não são resolvidos. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) para os limites e a CLI `containers <pasta>`.
+**Limite atual: o LocalCodePilot apenas identifica e diagnostica projetos com containers. Ele ainda não executa containers.** A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Os comandos apresentados são somente uma prévia; não há instalação de motores, download de imagens, `up`, `stop`, logs ou acompanhamento de containers nesta etapa. Variáveis, overrides e referências externas ainda não são resolvidos. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) para os limites e a CLI `containers <pasta>`.
+
+### Atualização pelo aplicativo (experimental)
+
+Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
+
+Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. Builds de desenvolvimento, outros sistemas operacionais e pastas protegidas continuam oferecendo o ZIP oficial como alternativa. Quem usa a alpha 4 ou uma versão anterior precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
 
 ### Atualização pelo aplicativo (experimental)
 
@@ -339,6 +346,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Dart | Experimental | Initial implementation, not validated | Not yet supported end to end |
 | Flutter | Experimental | No | Not yet supported end to end |
 | Static site / frameworkless JavaScript | Experimental | Requires an available local server | Experimental |
+| Containers / Docker / Podman | Experimental | No | No: identification, diagnostics, and command previews only |
 
 Go, Dart, and Flutter appear in diagnostics because their files and manifests can already be recognized. This must not be interpreted as functional support for starting and opening those applications.
 
@@ -355,7 +363,13 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 
 ### Containers: diagnosis and preview (experimental)
 
-The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded or containers started. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
+**Current limit: LocalCodePilot only identifies and diagnoses container projects. It does not run containers yet.** The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded, or container `up`, `stop`, logs, or monitoring operations executed. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
+
+### In-app updates (experimental)
+
+When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
+
+This flow works for the official `LocalCodePilot.exe` when its directory is writable. Development builds, other operating systems, and protected directories keep the official ZIP as a fallback. Users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
 
 ### In-app updates (experimental)
 
