@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.0-alpha.1",
+    [string]$Version = "0.4.0-alpha.2",
     [string]$TargetDirectory = "target",
     [switch]$SkipBuild
 )

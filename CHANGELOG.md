@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.2] - 2026-10-13
+
 ### Corrigido
 
 - Descoberta automática de projetos Java por manifests Maven/Gradle e wrappers, mesmo com apenas um arquivo fonte.
@@ -62,6 +64,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Automação de release com pacote ZIP e arquivo de verificação SHA-256.
 - Etapa opcional de assinatura Authenticode por Microsoft Artifact Signing.
 
-[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.1...HEAD
+[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.2...HEAD
 [0.4.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
 [0.3.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/releases/tag/v0.3.0-alpha.1
+
+[0.4.0-alpha.2]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.1...v0.4.0-alpha.2
