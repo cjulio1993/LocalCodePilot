@@ -29,3 +29,6 @@ OPEN_SOURCE_SETUP_LOCAL.md
 *.sw?
 
 OPEN.md
+
+# Laboratório local de QA; não versionar.
+/qa/

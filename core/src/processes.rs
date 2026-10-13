@@ -6,7 +6,18 @@ pub enum ProcessState {
     Stopped,
     Starting,
     Running,
+    Completed,
     Failed,
+}
+
+impl ProcessState {
+    pub fn after_exit(exit_code: Option<i32>, expects_service: bool) -> Self {
+        if exit_code == Some(0) && !expects_service {
+            Self::Completed
+        } else {
+            Self::Failed
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +91,27 @@ impl ProjectProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distinguishes_completed_commands_from_failed_services() {
+        assert_eq!(
+            ProcessState::after_exit(Some(0), false),
+            ProcessState::Completed
+        );
+        assert_eq!(
+            ProcessState::after_exit(Some(1), false),
+            ProcessState::Failed
+        );
+        assert_eq!(ProcessState::after_exit(None, false), ProcessState::Failed);
+        assert_eq!(
+            ProcessState::after_exit(Some(0), true),
+            ProcessState::Failed
+        );
+        assert_eq!(
+            ProcessState::after_exit(Some(1), true),
+            ProcessState::Failed
+        );
+    }
 
     fn process(args: &[&str], port_override: PortOverride) -> ProjectProcess {
         ProjectProcess {

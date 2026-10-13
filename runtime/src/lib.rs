@@ -591,6 +591,7 @@ pub fn detect(path: &Path) -> Vec<RuntimeKind> {
                 let name = name.to_string_lossy();
                 if entry.file_type().is_ok_and(|kind| kind.is_dir())
                     && !name.starts_with('.')
+                    && !entry.path().join(".localcodepilot-ignore").is_file()
                     && !IGNORED_DIRECTORIES
                         .iter()
                         .any(|ignored| name.eq_ignore_ascii_case(ignored))
@@ -631,6 +632,7 @@ pub fn detect_technologies(path: &Path) -> Vec<TechnologyKind> {
                 let name = name.to_string_lossy();
                 if entry.file_type().is_ok_and(|kind| kind.is_dir())
                     && !name.starts_with('.')
+                    && !entry.path().join(".localcodepilot-ignore").is_file()
                     && !IGNORED_DIRECTORIES
                         .iter()
                         .any(|ignored| name.eq_ignore_ascii_case(ignored))
@@ -665,6 +667,7 @@ pub fn detect_processes(project: &Project) -> Vec<ProjectProcess> {
                 let name = name.to_string_lossy();
                 if entry.file_type().is_ok_and(|kind| kind.is_dir())
                     && !name.starts_with('.')
+                    && !entry.path().join(".localcodepilot-ignore").is_file()
                     && !IGNORED_DIRECTORIES
                         .iter()
                         .any(|ignored| name.eq_ignore_ascii_case(ignored))
@@ -1603,6 +1606,37 @@ impl RuntimeDetector for ManifestRuntimeDetector {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ignores_qa_fixtures_in_parent_but_allows_direct_inspection() {
+        let root = std::env::temp_dir().join(format!("lcp-ignored-qa-{}", std::process::id()));
+        let fixture = root.join("qa").join("node");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(&fixture).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "qa-root"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("qa/.localcodepilot-ignore"), "").unwrap();
+        fs::write(
+            fixture.join("package.json"),
+            r#"{"scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&root), vec![RuntimeKind::Rust]);
+        assert!(!detect_technologies(&root).contains(&TechnologyKind::JavaScript));
+        assert!(detect_processes(&Project::new(root.clone(), detect(&root))).is_empty());
+        assert_eq!(detect(&fixture), vec![RuntimeKind::Node]);
+        assert_eq!(
+            detect_processes(&Project::new(fixture.clone(), detect(&fixture))).len(),
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
     use std::{fs, time::SystemTime};
 

@@ -1755,6 +1755,10 @@ impl LocalCodePilot {
                 session.status = match &result {
                     Ok(_) => DependencyInstallStatus::Succeeded,
                     Err(error) => {
+                        let failure = format!("[erro] {error}");
+                        if session.logs.back() != Some(&failure) {
+                            session.logs.push_back(failure);
+                        }
                         let logs = session.logs.iter().cloned().collect::<Vec<_>>().join("\n");
                         DependencyInstallStatus::Failed {
                             error: error.clone(),
@@ -2297,77 +2301,88 @@ impl LocalCodePilot {
         let mut open = true;
         let mut confirm = false;
         let mut cancel = false;
+        let window_height = (root_ui.max_rect().height() - 64.0).max(120.0);
         egui::Window::new("Preparar ambiente")
             .id(egui::Id::new(("environment-plan", &plan.project_path)))
             .open(&mut open)
             .default_width(620.0)
+            .default_height(window_height.min(640.0))
+            .max_height(window_height)
             .resizable(true)
             .collapsible(false)
             .show(root_ui, |ui| {
-                ui.label(RichText::new(&plan.title).strong().size(16.0));
-                ui.label(
-                    RichText::new(plan.project_path.to_string_lossy())
-                        .color(theme::MUTED)
-                        .monospace()
-                        .size(10.0),
-                );
-                ui.add_space(10.0);
-                if !plan.requirements.is_empty() {
-                    ui.label(RichText::new("Requisitos").strong().size(12.0));
-                    for requirement in &plan.requirements {
-                        let status = match &requirement.status {
-                            RequirementStatus::Available { version, .. } => {
-                                format!("instalado: {version}")
+                let details_height = (ui.available_height() - 48.0).max(32.0);
+                egui::ScrollArea::vertical()
+                    .id_salt(("environment-plan-details", &plan.project_path))
+                    .max_height(details_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(&plan.title).strong().size(16.0));
+                        ui.label(
+                            RichText::new(plan.project_path.to_string_lossy())
+                                .color(theme::MUTED)
+                                .monospace()
+                                .size(10.0),
+                        );
+                        ui.add_space(10.0);
+                        if !plan.requirements.is_empty() {
+                            ui.label(RichText::new("Requisitos").strong().size(12.0));
+                            for requirement in &plan.requirements {
+                                let status = match &requirement.status {
+                                    RequirementStatus::Available { version, .. } => {
+                                        format!("instalado: {version}")
+                                    }
+                                    RequirementStatus::Missing => "não encontrado".into(),
+                                    RequirementStatus::Incompatible {
+                                        installed_version, ..
+                                    } => format!("incompatível: {installed_version}"),
+                                    RequirementStatus::Pending => "verificando".into(),
+                                };
+                                ui.label(format!(
+                                    "{} {} · {status}",
+                                    requirement.runtime, requirement.version.value
+                                ));
                             }
-                            RequirementStatus::Missing => "não encontrado".into(),
-                            RequirementStatus::Incompatible {
-                                installed_version, ..
-                            } => format!("incompatível: {installed_version}"),
-                            RequirementStatus::Pending => "verificando".into(),
-                        };
-                        ui.label(format!(
-                            "{} {} · {status}",
-                            requirement.runtime, requirement.version.value
-                        ));
-                    }
-                    ui.add_space(10.0);
-                }
-                for (index, step) in plan.steps.iter().enumerate() {
-                    Frame::new()
-                        .fill(theme::SURFACE)
-                        .corner_radius(6)
-                        .inner_margin(Margin::same(10))
-                        .show(ui, |ui| {
+                            ui.add_space(10.0);
+                        }
+                        for (index, step) in plan.steps.iter().enumerate() {
+                            Frame::new()
+                                .fill(theme::SURFACE)
+                                .corner_radius(6)
+                                .inner_margin(Margin::same(10))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(format!("{}. {}", index + 1, step.label))
+                                            .strong(),
+                                    );
+                                    ui.label(RichText::new(&step.detail).color(theme::MUTED).size(10.0));
+                                    if let Some(source) = &step.source {
+                                        ui.label(
+                                            RichText::new(format!("Origem: {source}"))
+                                                .color(theme::MUTED)
+                                                .size(9.0),
+                                        );
+                                    }
+                                    ui.label(
+                                        RichText::new(installation_step_command(step))
+                                            .color(Color32::from_rgb(150, 164, 185))
+                                            .monospace()
+                                            .size(9.0),
+                                    );
+                                });
+                            ui.add_space(6.0);
+                        }
+                        if plan.requires_elevation() {
                             ui.label(
-                                RichText::new(format!("{}. {}", index + 1, step.label))
-                                    .strong(),
+                                RichText::new(
+                                    "O Windows solicitará autorização de administrador durante a instalação.",
+                                )
+                                .color(Color32::from_rgb(255, 205, 75))
+                                .size(10.0),
                             );
-                            ui.label(RichText::new(&step.detail).color(theme::MUTED).size(10.0));
-                            if let Some(source) = &step.source {
-                                ui.label(
-                                    RichText::new(format!("Origem: {source}"))
-                                        .color(theme::MUTED)
-                                        .size(9.0),
-                                );
-                            }
-                            ui.label(
-                                RichText::new(installation_step_command(step))
-                                    .color(Color32::from_rgb(150, 164, 185))
-                                    .monospace()
-                                    .size(9.0),
-                            );
-                        });
-                    ui.add_space(6.0);
-                }
-                if plan.requires_elevation() {
-                    ui.label(
-                        RichText::new(
-                            "O Windows solicitará autorização de administrador durante a instalação.",
-                        )
-                        .color(Color32::from_rgb(255, 205, 75))
-                        .size(10.0),
-                    );
-                }
+                        }
+                    });
+                ui.separator();
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancelar").clicked() {
@@ -2813,6 +2828,15 @@ impl LocalCodePilot {
             match running.child.try_wait() {
                 Ok(Some(status)) => {
                     running.finished = true;
+                    let exit_state =
+                        ProcessState::after_exit(status.code(), assigned_ports.contains_key(id));
+                    if exit_state == ProcessState::Completed {
+                        running.logs.push_back(
+                            "[LocalCodePilot] Aplicação concluída com sucesso (código 0).".into(),
+                        );
+                        state_updates.push((id.clone(), exit_state, status.code(), None));
+                        continue;
+                    }
                     let stopped_during_startup = state == ProcessState::Starting;
                     let reason = if stopped_during_startup {
                         "o processo encerrou antes de disponibilizar o serviço".to_owned()
@@ -3331,7 +3355,7 @@ impl LocalCodePilot {
                                                     egui::Button::new("Iniciando..."),
                                                 );
                                             }
-                                            ProcessState::Stopped | ProcessState::Failed => {
+                                            ProcessState::Stopped | ProcessState::Completed | ProcessState::Failed => {
                                                 let start = ui.add_enabled(
                                                     environment.is_ready(),
                                                     egui::Button::new(RichText::new(format!(
@@ -4120,6 +4144,18 @@ fn resolve_environment_plan(
     project_path: &Path,
     environment: &ProjectEnvironment,
 ) -> Result<InstallationPlan, String> {
+    resolve_environment_plan_with_tools_directory(
+        project_path,
+        environment,
+        managed_bin_directory(),
+    )
+}
+
+fn resolve_environment_plan_with_tools_directory(
+    project_path: &Path,
+    environment: &ProjectEnvironment,
+    tools_directory: Option<PathBuf>,
+) -> Result<InstallationPlan, String> {
     let mut steps = Vec::new();
     let node_constraints = environment
         .runtime_requirements
@@ -4286,7 +4322,7 @@ fn resolve_environment_plan(
         .iter()
         .any(|program| program == "composer")
     {
-        let install_directory = managed_bin_directory().ok_or_else(|| {
+        let install_directory = tools_directory.clone().ok_or_else(|| {
             "Não foi possível localizar a pasta local de ferramentas do usuário".to_owned()
         })?;
         steps.push(InstallationStep {
@@ -4406,7 +4442,7 @@ fn resolve_environment_plan(
                     working_directory: working_directory.clone(),
                 },
             });
-            let install_directory = managed_bin_directory().ok_or_else(|| {
+            let install_directory = tools_directory.clone().ok_or_else(|| {
                 "Não foi possível localizar a pasta local de ferramentas do usuário".to_owned()
             })?;
             steps.push(InstallationStep {
@@ -4635,7 +4671,17 @@ fn run_installation_plan(
                 if let Some(reader) = stderr_reader {
                     let _ = reader.join();
                 }
-                if !status.success() {
+                // WinGet reports an installed package with no applicable update as nonzero.
+                // Continue only to refresh the environment and validate the actual runtime.
+                if program == "winget"
+                    && args.first().is_some_and(|arg| arg == "install")
+                    && matches!(status.code(), Some(-1978335189 | -1978335135))
+                {
+                    environment_path = Some(refreshed_environment_path()?);
+                    let _ = sender.send(DependencyInstallEvent::Log(
+                        "[informação] Pacote já instalado; a versão será validada nas próximas etapas".into(),
+                    ));
+                } else if !status.success() {
                     let error = format!(
                         "{} falhou com código de saída {}",
                         step.label,
@@ -5329,6 +5375,7 @@ fn relative_time(timestamp: u64) -> String {
 fn process_state_key(state: ProcessState) -> &'static str {
     match state {
         ProcessState::Stopped => "stopped",
+        ProcessState::Completed => "completed",
         ProcessState::Starting => "starting",
         ProcessState::Running => "running",
         ProcessState::Failed => "failed",
@@ -5340,6 +5387,7 @@ fn service_history_status(status: &str) -> &'static str {
         "starting" => "inicialização interrompida",
         "running" => "executado com sucesso",
         "failed" => "falhou",
+        "completed" => "concluído com sucesso",
         _ => "finalizado",
     }
 }
@@ -5356,6 +5404,7 @@ fn project_history_status(history: &config::ProjectHistory) -> &'static str {
 fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
     match state {
         ProcessState::Stopped => ("Parado", theme::MUTED),
+        ProcessState::Completed => ("Concluído", theme::SUCCESS),
         ProcessState::Starting => ("Iniciando", Color32::from_rgb(255, 205, 75)),
         ProcessState::Running => ("Executando", theme::SUCCESS),
         ProcessState::Failed => ("Falhou", Color32::from_rgb(235, 87, 87)),
@@ -5514,7 +5563,7 @@ fn inspect_project_environment(
 
         let uses_node = matches!(process.program.as_str(), "npm" | "pnpm" | "yarn" | "bun");
         let missing_node_dependencies = uses_node
-            && process.working_directory.join("package.json").is_file()
+            && node_project_needs_dependencies(&process.working_directory)
             && !has_node_dependencies(&process.working_directory, &project.path);
         if missing_node_dependencies {
             if !missing_dependencies.iter().any(|item| item == "Node.js") {
@@ -5725,6 +5774,33 @@ fn laravel_major(constraint: &str) -> Option<u64> {
         .find(|part| !part.is_empty())?
         .parse()
         .ok()
+}
+
+fn node_project_needs_dependencies(directory: &Path) -> bool {
+    let manifest = directory.join("package.json");
+    if !manifest.is_file() {
+        return false;
+    }
+    let Some(document) = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+    else {
+        return true;
+    };
+    document.get("workspaces").is_some()
+        || [
+            "dependencies",
+            "devDependencies",
+            "optionalDependencies",
+            "peerDependencies",
+        ]
+        .iter()
+        .any(|key| {
+            document
+                .get(*key)
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|items| !items.is_empty())
+        })
 }
 
 fn has_node_dependencies(directory: &Path, project_root: &Path) -> bool {
@@ -6125,7 +6201,8 @@ mod tests {
         executable_available, initials_from_username, inspect_project_environment, laravel_major,
         lowercase_hex, prepare_laravel_migration_files, process_error_suggestion,
         process_exposes_application_url, process_matches_search, project_process_ids,
-        resolve_environment_plan, run_dependency_installs, runtime_requirement_status,
+        resolve_environment_plan, resolve_environment_plan_with_tools_directory,
+        run_dependency_installs, runtime_requirement_status,
     };
     use localcodepilot_core::{
         environments::{
@@ -6226,10 +6303,22 @@ mod tests {
             ..ProjectEnvironment::default()
         };
 
-        let plan = resolve_environment_plan(&project_path, &environment).unwrap();
+        let tools_directory = project_path.join("managed-tools");
+        let plan = resolve_environment_plan_with_tools_directory(
+            &project_path,
+            &environment,
+            Some(tools_directory.clone()),
+        )
+        .unwrap();
+        assert!(
+            resolve_environment_plan_with_tools_directory(&project_path, &environment, None,)
+                .unwrap_err()
+                .contains("pasta local de ferramentas")
+        );
         assert!(plan.steps.iter().any(|step| matches!(
             &step.kind,
-            InstallationStepKind::CreateCorepackShim { manager, .. } if manager == "pnpm"
+            InstallationStepKind::CreateCorepackShim { manager, install_directory }
+                if manager == "pnpm" && install_directory == &tools_directory
         )));
         assert!(matches!(
             &plan.steps.last().unwrap().kind,
@@ -6383,6 +6472,15 @@ mod tests {
             expected_port: Some(Port::new(5173).unwrap()),
             port_override: None,
         };
+        let no_dependencies =
+            inspect_project_environment(&project, std::slice::from_ref(&node_process), None);
+        assert!(no_dependencies.missing_dependencies.is_empty());
+        assert!(no_dependencies.install_steps.is_empty());
+        fs::write(
+            path.join("package.json"),
+            r#"{"devDependencies":{"vite":"^6.0.0"}}"#,
+        )
+        .unwrap();
         let missing_dependencies =
             inspect_project_environment(&project, std::slice::from_ref(&node_process), None);
         assert_eq!(missing_dependencies.missing_dependencies, ["Node.js"]);

@@ -265,6 +265,19 @@ pub fn inspect_program(
     path: Option<&OsStr>,
 ) -> Option<ProgramInventory> {
     let executable = find_executable(program, path)?;
+    #[cfg(target_os = "windows")]
+    let mut command = if executable
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "bat" | "cmd"))
+    {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/D", "/C"]).arg(&executable);
+        command
+    } else {
+        Command::new(&executable)
+    };
+    #[cfg(not(target_os = "windows"))]
     let mut command = Command::new(&executable);
     command.args(version_args);
     if let Some(path) = path {
@@ -297,8 +310,10 @@ pub fn find_executable(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     let search_path = path.map(OsString::from).or_else(|| env::var_os("PATH"))?;
     for directory in env::split_paths(&search_path) {
         let candidate = directory.join(program);
-        if executable_candidate(&candidate) {
-            return Some(candidate);
+        if (cfg!(not(target_os = "windows")) || candidate.extension().is_some())
+            && executable_candidate(&candidate)
+        {
+            return Some(resolve_dart_launcher(program, candidate));
         }
         #[cfg(target_os = "windows")]
         if candidate.extension().is_none() {
@@ -307,12 +322,28 @@ pub fn find_executable(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
                 let extension = extension.trim().trim_start_matches('.');
                 let candidate = candidate.with_extension(extension);
                 if !extension.is_empty() && executable_candidate(&candidate) {
-                    return Some(candidate);
+                    return Some(resolve_dart_launcher(program, candidate));
                 }
             }
         }
     }
     None
+}
+
+fn resolve_dart_launcher(program: &str, candidate: PathBuf) -> PathBuf {
+    if (program.eq_ignore_ascii_case("dart") || program.eq_ignore_ascii_case("dart.bat"))
+        && let Some(bin) = candidate.parent()
+    {
+        let sdk = bin
+            .join("cache")
+            .join("dart-sdk")
+            .join("bin")
+            .join("dart.exe");
+        if executable_candidate(&sdk) {
+            return sdk;
+        }
+    }
+    candidate
 }
 
 pub fn refreshed_environment_path() -> Result<OsString, String> {
@@ -344,6 +375,32 @@ pub fn refreshed_environment_path() -> Result<OsString, String> {
         }
         let refreshed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         let merged = merge_paths(Some(OsString::from(refreshed)), env::var_os("PATH"))?;
+        let mut dart_paths = Vec::new();
+        for base in [
+            env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Microsoft/WinGet/Packages")),
+            env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("WinGet/Packages")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Ok(entries) = std::fs::read_dir(base) {
+                for entry in entries.flatten() {
+                    if entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("Google.DartSDK_")
+                    {
+                        let bin = entry.path().join("dart-sdk/bin");
+                        if executable_candidate(&bin.join("dart.exe")) {
+                            dart_paths.push(bin);
+                        }
+                    }
+                }
+            }
+        }
+        let dart_path = env::join_paths(dart_paths)
+            .map_err(|error| format!("PATH do Dart inválido: {error}"))?;
+        let merged = merge_paths(Some(dart_path), Some(merged))?;
         merge_paths(managed_bin_directory().map(OsString::from), Some(merged))
     }
 
@@ -501,6 +558,64 @@ fn configure_background_command(_command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn prefers_windows_launcher_over_extensionless_unix_script() {
+        let directory = env::temp_dir().join(format!("lcp npm launcher {}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("qa-npm"), "#!/bin/sh\necho unix").unwrap();
+        std::fs::write(directory.join("qa-npm.cmd"), "@echo off\r\necho 10.0.0\r\n").unwrap();
+        let path = env::join_paths([&directory]).unwrap();
+        assert_eq!(
+            find_executable("qa-npm", Some(&path)).map(|path| std::fs::canonicalize(path).unwrap()),
+            Some(std::fs::canonicalize(directory.join("qa-npm.cmd")).unwrap())
+        );
+        assert_eq!(
+            inspect_program("qa-npm", &["--version"], Some(&path))
+                .unwrap()
+                .version,
+            "10.0.0"
+        );
+        std::fs::remove_file(directory.join("qa-npm.cmd")).unwrap();
+        assert_eq!(find_executable("qa-npm", Some(&path)), None);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn uses_flutter_embedded_dart_without_bootstrapping_flutter() {
+        let root = env::temp_dir().join(format!("lcp-flutter-dart-{}", std::process::id()));
+        let bin = root.join("bin");
+        let sdk = bin.join("cache/dart-sdk/bin/dart.exe");
+        std::fs::create_dir_all(sdk.parent().unwrap()).unwrap();
+        std::fs::write(&sdk, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sdk, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(resolve_dart_launcher("dart", bin.join("dart.bat")), sdk);
+        assert_eq!(
+            resolve_dart_launcher("flutter", bin.join("flutter.bat")),
+            bin.join("flutter.bat")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn inspects_batch_runtime_in_a_path_with_spaces() {
+        let directory = env::temp_dir().join(format!("lcp batch runtime {}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("qa-runtime.bat"),
+            "@echo off\r\necho Dart SDK version: 3.13.4\r\n",
+        )
+        .unwrap();
+        let path = env::join_paths([&directory]).unwrap();
+        let inventory = inspect_program("qa-runtime.bat", &["--version"], Some(&path)).unwrap();
+        assert_eq!(inventory.version, "Dart SDK version: 3.13.4");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn parses_and_orders_winget_versions() {

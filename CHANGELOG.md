@@ -6,6 +6,19 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Corrigido
+
+- Descoberta automática de projetos Java por manifests Maven/Gradle e wrappers, mesmo com apenas um arquivo fonte.
+- Projetos Node sem dependências externas não exigem a criação de node_modules para serem considerados prontos.
+- Resolução de npm e outros comandos no Windows prioriza extensões executáveis do PATHEXT em vez de scripts Unix sem extensão.
+- Erros ao iniciar a preparação passam a constar nos logs persistidos da instalação.
+- Aplicações de terminal que encerram com código 0 e sem porta monitorada recebem o estado Concluído e histórico de sucesso, em vez de erro de processo inesperado.
+- Localização do Dart embutido no Flutter e do SDK portátil do winget, evitando reinstalações causadas por lançadores ou PATH incompleto.
+- Pacotes winget já instalados sem atualização seguem para atualização do ambiente e verificação obrigatória da versão.
+- Rolagem dos requisitos e etapas na confirmação de preparação, mantendo os botões acessíveis.
+- Verificação de versão de runtimes distribuídos como lançadores `.bat`/`.cmd` no Windows.
+- Isolamento de pastas com `.localcodepilot-ignore` durante a descoberta recursiva, evitando agregar fixtures de QA ao ambiente do projeto pai.
+
 ## [0.4.0-alpha.1] - 2026-10-06
 
 ### Adicionado
