@@ -8,6 +8,7 @@ fn main() -> ExitCode {
         None | Some("status") => status(),
         Some("scan") => scan(),
         Some("inspect") => inspect(env::args_os().nth(2).map(PathBuf::from)),
+        Some("containers") => containers(env::args_os().nth(2).map(PathBuf::from)),
         Some("--help" | "-h" | "help") => {
             help();
             ExitCode::SUCCESS
@@ -77,6 +78,72 @@ fn scan() -> ExitCode {
 
 fn help() {
     println!(
-        "LocalCodePilot CLI\n\n  localcodepilot status\n  localcodepilot scan\n  localcodepilot inspect <pasta>"
+        "LocalCodePilot CLI\n\n  localcodepilot status\n  localcodepilot scan\n  localcodepilot inspect <pasta>\n  localcodepilot containers <pasta>"
     );
+}
+
+fn containers(path: Option<PathBuf>) -> ExitCode {
+    let Some(path) = path.filter(|path| path.is_dir()) else {
+        eprintln!("Uso: localcodepilot containers <pasta existente>");
+        return ExitCode::FAILURE;
+    };
+    let projects = localcodepilot_runtime::containers::detect_container_projects(&path);
+    println!(
+        "Diagnóstico de containers — nenhuma instalação ou execução de containers será iniciada."
+    );
+    for engine in localcodepilot_platform::containers::inspect_container_engines(None) {
+        println!(
+            "{}: {:?} · Compose: {}",
+            engine.engine,
+            engine.state,
+            if engine.compose_available {
+                "disponível"
+            } else {
+                "não confirmado"
+            }
+        );
+    }
+    let mut invalid = false;
+    for project in &projects {
+        println!("\n{}", project.directory.display());
+        if let Some(file) = &project.dockerfile {
+            println!("Dockerfile: {}", file.display());
+        }
+        if let Some(file) = &project.compose_file {
+            println!("Compose: {}", file.display());
+        }
+        if let Some(error) = &project.error {
+            eprintln!("Erro: {error}");
+            invalid = true;
+        }
+        for service in &project.services {
+            println!(
+                "  {} · imagem: {} · build: {} · portas: {} · perfis: {}",
+                service.name,
+                service.image.as_deref().unwrap_or("não declarada"),
+                service.builds_image,
+                service.ports.join(", "),
+                service.profiles.join(", ")
+            );
+        }
+        for warning in &project.warnings {
+            println!("Aviso: {warning}");
+        }
+        for engine in [
+            localcodepilot_core::containers::ContainerEngine::Docker,
+            localcodepilot_core::containers::ContainerEngine::Podman,
+        ] {
+            for command in project.proposed_commands(engine) {
+                println!("Prévia — {}: {}", command.label, command.display());
+            }
+        }
+    }
+    if projects.is_empty() {
+        println!("Nenhum manifesto de containers encontrado.");
+    }
+    if invalid {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }

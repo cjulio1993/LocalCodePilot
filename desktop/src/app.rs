@@ -1,3 +1,6 @@
+#[path = "container_ui.rs"]
+mod container_ui;
+
 use crate::{
     config, theme,
     updates::{self, UpdateInfo},
@@ -63,6 +66,7 @@ enum Page {
     Overview,
     Projects,
     Processes,
+    Containers,
     Plugins,
     Settings,
 }
@@ -73,6 +77,7 @@ impl Page {
             Self::Overview => "overview",
             Self::Projects => "projects",
             Self::Processes => "processes",
+            Self::Containers => "containers",
             Self::Plugins => "plugins",
             Self::Settings => "settings",
         }
@@ -82,6 +87,7 @@ impl Page {
         match key {
             "projects" => Self::Projects,
             "processes" => Self::Processes,
+            "containers" => Self::Containers,
             "plugins" => Self::Plugins,
             "settings" => Self::Settings,
             _ => Self::Overview,
@@ -330,6 +336,7 @@ impl ProjectEnvironment {
 }
 
 enum ProjectCardAction {
+    ViewContainers,
     Open(PathBuf),
     OpenUrl(String),
     Start(PathBuf),
@@ -386,6 +393,7 @@ pub struct LocalCodePilot {
     available_update: Option<UpdateInfo>,
     manual_update_check: bool,
     update_check_result: Option<Result<String, String>>,
+    container_state: container_ui::ContainerState,
 }
 
 impl LocalCodePilot {
@@ -459,6 +467,7 @@ impl LocalCodePilot {
             available_update,
             manual_update_check: false,
             update_check_result: None,
+            container_state: container_ui::ContainerState::default(),
         }
     }
 
@@ -781,6 +790,7 @@ impl LocalCodePilot {
                     Some(self.projects.len()),
                 );
                 self.nav_button(ui, Page::Processes, TERMINAL, "Processos", None);
+                self.nav_button(ui, Page::Containers, LAYOUT, "Containers", None);
                 ui.add_space(18.0);
                 ui.label(
                     RichText::new("SISTEMA")
@@ -901,7 +911,7 @@ impl LocalCodePilot {
                         let search_hint = match self.page {
                             Page::Overview | Page::Projects => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
-                            Page::Plugins | Page::Settings => None,
+                            Page::Plugins | Page::Settings | Page::Containers => None,
                         };
                         if let Some(search_hint) = search_hint {
                             ui.add_sized(
@@ -921,12 +931,13 @@ impl LocalCodePilot {
             Page::Overview => "Visão geral",
             Page::Projects => "Projetos",
             Page::Processes => "Processos",
+            Page::Containers => "Containers",
             Page::Plugins => "Plugins",
             Page::Settings => "Configurações",
         }
     }
 
-    fn poll_discovery(&mut self) {
+    fn poll_discovery(&mut self, ctx: &egui::Context) {
         let Some(receiver) = &self.discovery else {
             return;
         };
@@ -951,6 +962,7 @@ impl LocalCodePilot {
                     .collect();
                 self.projects = projects;
                 self.discovery = None;
+                self.refresh_containers(ctx.clone());
             }
             Ok(Err(error)) => {
                 self.notify(format!("Não foi possível concluir a varredura: {error}"));
@@ -1239,6 +1251,7 @@ impl LocalCodePilot {
                             width: card_width,
                         },
                     ) {
+                        Some(ProjectCardAction::ViewContainers) => self.page = Page::Containers,
                         Some(ProjectCardAction::Open(path)) => {
                             self.notify(match open_in_vscode(&path) {
                                 Ok(()) => format!("Abrindo {} no VS Code...", project.name),
@@ -3807,6 +3820,7 @@ impl LocalCodePilot {
                     Page::Projects => self.projects_page(&ctx, ui),
                     Page::Processes => self.processes_page(ui),
                     Page::Settings => self.settings_page(ui),
+                    Page::Containers => self.containers_page(ui),
                     Page::Plugins => {
                         ui.heading(self.page_title());
                         ui.add_space(8.0);
@@ -3825,12 +3839,13 @@ impl LocalCodePilot {
 
 impl eframe::App for LocalCodePilot {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_discovery();
+        self.poll_discovery(ctx);
         self.poll_environment_plan();
         self.poll_dependency_installs(ctx);
         self.poll_laravel_migration(ctx);
         self.poll_processes(ctx);
         self.poll_update_check();
+        self.poll_containers();
         self.persist_workspace_state(false);
     }
 
@@ -5980,6 +5995,11 @@ fn project_card(
                     }
                 }
             });
+            if project.technologies.contains(&TechnologyKind::Containers)
+                && ui.button("Ver ambiente de containers").clicked()
+            {
+                action = Some(ProjectCardAction::ViewContainers);
+            }
             ui.add_space(10.0);
             let (status, status_color) = if resolving_plan {
                 ("Preparando plano", theme::PRIMARY)
@@ -5991,6 +6011,10 @@ fn project_card(
                 ("Disponível", theme::SUCCESS)
             } else if active_processes > 0 {
                 ("Em execução", theme::SUCCESS)
+            } else if environment.command_count == 0
+                && project.technologies.contains(&TechnologyKind::Containers)
+            {
+                ("Ambiente de containers detectado", theme::PRIMARY)
             } else {
                 environment.status()
             };
@@ -6251,6 +6275,7 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
         TechnologyKind::JavaScript => Color32::from_rgb(240, 219, 79),
         TechnologyKind::Flutter => Color32::from_rgb(84, 197, 248),
         TechnologyKind::StaticSite => Color32::from_rgb(70, 180, 140),
+        TechnologyKind::Containers => Color32::from_rgb(90, 160, 240),
     }
 }
 

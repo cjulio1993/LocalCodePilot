@@ -93,6 +93,10 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 - Portas de sites estáticos são derivadas do caminho do projeto para reduzir conflitos e impedir que a URL de outro projeto seja reutilizada.
 - Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
 
+### Containers: diagnóstico e prévia (experimental)
+
+A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Os comandos apresentados são somente uma prévia; não há instalação de motores, download de imagens nem execução de containers nesta etapa. Variáveis, overrides e referências externas ainda não são resolvidos. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) para os limites e a CLI `containers <pasta>`.
+
 ### Preparação assistida do ambiente (experimental)
 
 - O diagnóstico separa runtime ausente, versão incompatível, gerenciador de pacotes ausente, dependências do projeto e extensões PHP requeridas.
@@ -340,6 +344,10 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 - Web services expose a URL after it is confirmed; terminal applications should remain observable through their logs.
 - Static-site ports are derived from the project path to reduce conflicts and prevent another project's URL from being reused.
 - Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
+
+### Containers: diagnosis and preview (experimental)
+
+The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded or containers started. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
 
 ### Assisted environment setup (experimental)
 

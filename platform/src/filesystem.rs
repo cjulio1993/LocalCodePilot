@@ -6,6 +6,12 @@ use std::{
 };
 
 const PROJECT_MARKERS: &[&str] = &[
+    "Dockerfile",
+    "Containerfile",
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
     "Cargo.toml",
     "package.json",
     "composer.json",
@@ -189,6 +195,25 @@ fn home_directory() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::time::SystemTime;
+    #[test]
+    fn discovers_container_only_projects_without_native_manifests() {
+        let root =
+            std::env::temp_dir().join(format!("lcp-container-discovery-{}", std::process::id()));
+        for (name, marker) in [
+            ("image", "Dockerfile"),
+            ("compose", "compose.yaml"),
+            ("podman", "Containerfile"),
+        ] {
+            let directory = root.join(name);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(marker), "").unwrap();
+        }
+        let candidates = FilesystemProjectSource::new(vec![root.clone()])
+            .candidate_paths()
+            .unwrap();
+        assert_eq!(candidates.len(), 3);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn discovers_java_projects_by_their_manifest_or_wrapper() {
         let root =

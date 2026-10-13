@@ -6,6 +6,14 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Adicionado
+
+- Diagnóstico inicial de Docker/Podman e Compose em segundo plano, com timeout por consulta.
+- Descoberta de projetos por Dockerfile, Containerfile e manifests Compose.
+- Aba Containers com prévia de serviços, imagens, portas, perfis e comandos propostos, sem execução de containers.
+- CLI containers <pasta> para diagnóstico e inspeção de manifests.
+
+
 ## [0.4.0-alpha.3] - 2026-10-13
 
 ### Corrigido
