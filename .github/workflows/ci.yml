@@ -14,6 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docker-smoke:
+    name: Docker Compose smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate container command flow
+        working-directory: tests/fixtures/containers-smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() { docker compose --file compose.yaml down --volumes --remove-orphans; }
+          trap cleanup EXIT
+          docker compose --file compose.yaml config --quiet
+          docker compose --file compose.yaml up --detach
+          docker compose --file compose.yaml ps --all
+          docker compose --file compose.yaml logs --tail 200 | grep "LocalCodePilot Docker QA OK"
+          docker compose --file compose.yaml stop
+          test -z "$(docker compose --file compose.yaml ps --status running --quiet)"
+          docker build --file Dockerfile .
+
   quality:
     name: Formatting and Clippy
     runs-on: ubuntu-latest

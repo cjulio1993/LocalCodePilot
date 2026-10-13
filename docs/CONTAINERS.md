@@ -47,7 +47,7 @@ O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos
 - Um Dockerfile isolado oferece somente build, sem nomear a imagem nem oferecer `run`.
 - A parada usa `stop`; não há remoção de containers, redes ou volumes.
 - O app não instala Docker/Podman, não inicia Docker Desktop ou máquinas Podman e não aceita entrada interativa no comando.
-- A implementação ainda precisa ser validada de ponta a ponta em motores Docker e Podman reais antes da alpha 6.
+- O CI valida o fluxo real de comandos Docker (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. A interação completa pela interface e o Podman ainda precisam de validação manual antes da alpha 6.
 
 ## Antes da alpha 6
 
