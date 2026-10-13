@@ -3,7 +3,7 @@ mod container_ui;
 
 use crate::{
     config, theme,
-    updates::{self, UpdateInfo},
+    updates::{self, UpdateInfo, UpdateInstallEvent},
 };
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
@@ -393,11 +393,15 @@ pub struct LocalCodePilot {
     available_update: Option<UpdateInfo>,
     manual_update_check: bool,
     update_check_result: Option<Result<String, String>>,
+    update_install: Option<Receiver<UpdateInstallEvent>>,
+    update_install_version: Option<String>,
+    update_install_progress: Option<(u64, Option<u64>)>,
+    update_install_error: Option<String>,
     container_state: container_ui::ContainerState,
 }
 
 impl LocalCodePilot {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, startup_notification: Option<String>) -> Self {
         theme::configure(&cc.egui_ctx);
         let mut fonts = eframe::egui::FontDefinitions::default();
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
@@ -454,7 +458,8 @@ impl LocalCodePilot {
             user_initials,
             search: String::new(),
             notification: Some(Notification {
-                message: "Procurando projetos na máquina...".into(),
+                message: startup_notification
+                    .unwrap_or_else(|| "Procurando projetos na máquina...".into()),
                 created_at: Instant::now(),
             }),
             scan_roots,
@@ -467,6 +472,10 @@ impl LocalCodePilot {
             available_update,
             manual_update_check: false,
             update_check_result: None,
+            update_install: None,
+            update_install_version: None,
+            update_install_progress: None,
+            update_install_error: None,
             container_state: container_ui::ContainerState::default(),
         }
     }
@@ -631,11 +640,89 @@ impl LocalCodePilot {
         }
     }
 
+    fn start_update_install(&mut self, update: &UpdateInfo, ctx: egui::Context) {
+        if self.update_install.is_some() {
+            return;
+        }
+        self.update_install_error = None;
+        self.update_install_progress = Some((0, None));
+        self.update_install_version = Some(update.version.clone());
+        match updates::spawn_update_download(update, ctx) {
+            Ok(receiver) => {
+                self.update_install = Some(receiver);
+            }
+            Err(error) => {
+                self.update_install_progress = None;
+                self.update_install_version = None;
+                self.update_install_error = Some(error);
+            }
+        }
+    }
+
+    fn poll_update_install(&mut self, ctx: &egui::Context) {
+        let mut events = Vec::new();
+        let mut disconnected = false;
+        if let Some(receiver) = &self.update_install {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for event in events {
+            match event {
+                UpdateInstallEvent::Progress {
+                    downloaded_bytes,
+                    total_bytes,
+                } => {
+                    self.update_install_progress = Some((downloaded_bytes, total_bytes));
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+                UpdateInstallEvent::Prepared(prepared) => {
+                    self.update_install = None;
+                    self.update_install_progress = None;
+                    self.persist_workspace_state(true);
+                    match updates::launch_prepared_update(&prepared) {
+                        Ok(()) => {
+                            self.notify("Atualização validada. Reiniciando o LocalCodePilot...");
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        Err(error) => {
+                            self.update_install_version = None;
+                            self.update_install_error = Some(error);
+                        }
+                    }
+                }
+                UpdateInstallEvent::Failed(error) => {
+                    self.update_install = None;
+                    self.update_install_progress = None;
+                    self.update_install_version = None;
+                    self.update_install_error = Some(error);
+                }
+            }
+        }
+        if disconnected && self.update_install.is_some() {
+            self.update_install = None;
+            self.update_install_progress = None;
+            self.update_install_version = None;
+            self.update_install_error =
+                Some("o download da atualização foi interrompido; tente novamente".into());
+        }
+    }
+
     fn show_update_banner(&mut self, ui: &mut egui::Ui) {
         let Some(update) = self.available_update.clone() else {
             return;
         };
+        let automatic_update = updates::automatic_update_available(&update);
+        let installing = self.update_install.is_some();
         let mut remind_later = false;
+        let mut start_install = false;
         Frame::new()
             .fill(theme::PRIMARY.gamma_multiply(0.12))
             .stroke(Stroke::new(1.0, theme::PRIMARY.gamma_multiply(0.65)))
@@ -646,27 +733,43 @@ impl LocalCodePilot {
                 ui.horizontal_wrapped(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new(format!(
-                                "Nova versão disponível: {}",
-                                update.version
-                            ))
-                            .strong()
-                            .color(Color32::WHITE),
+                            RichText::new(format!("Nova versão disponível: {}", update.version))
+                                .strong()
+                                .color(Color32::WHITE),
                         );
                         ui.label(
                             RichText::new(format!(
-                                "Você está usando a versão {}. O download será aberto no site oficial.",
-                                updates::current_version()
+                                "Você está usando a versão {}. {}",
+                                updates::current_version(),
+                                if automatic_update {
+                                    "O app pode baixar, validar e instalar a nova versão."
+                                } else {
+                                    "Use o pacote oficial para concluir esta atualização."
+                                }
                             ))
                             .color(theme::MUTED)
                             .size(10.0),
                         );
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("Lembrar depois").clicked() {
+                        if ui
+                            .add_enabled(!installing, egui::Button::new("Lembrar depois"))
+                            .clicked()
+                        {
                             remind_later = true;
                         }
-                        if ui
+                        if automatic_update {
+                            if ui
+                                .add_enabled(
+                                    !installing,
+                                    egui::Button::new("Atualizar agora")
+                                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                                )
+                                .clicked()
+                            {
+                                start_install = true;
+                            }
+                        } else if ui
                             .add(
                                 egui::Button::new("Baixar atualização")
                                     .fill(theme::PRIMARY.gamma_multiply(0.72)),
@@ -682,8 +785,34 @@ impl LocalCodePilot {
                         }
                     });
                 });
+                if installing {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(update_download_status(
+                            self.update_install_version.as_deref(),
+                            self.update_install_progress,
+                        ));
+                    });
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                }
+                if let Some(error) = &self.update_install_error {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("Atualização automática: {error}"))
+                            .color(Color32::from_rgb(255, 112, 112))
+                            .size(10.0),
+                    );
+                    if ui.link("Baixar o ZIP manualmente").clicked() {
+                        ui.ctx()
+                            .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                    }
+                }
             });
         ui.add_space(14.0);
+        if start_install {
+            self.start_update_install(&update, ui.ctx().clone());
+        }
         if remind_later {
             self.workspace_state.update_remind_after =
                 unix_timestamp().saturating_add(updates::CHECK_INTERVAL_SECONDS);
@@ -3632,6 +3761,11 @@ impl LocalCodePilot {
     }
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {
+        let available_update = self.available_update.clone();
+        let automatic_update = available_update
+            .as_ref()
+            .is_some_and(updates::automatic_update_available);
+        let mut start_install = false;
         ui.heading("Atualizações");
         ui.add_space(12.0);
         Frame::new()
@@ -3643,12 +3777,23 @@ impl LocalCodePilot {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!("LocalCodePilot {}", updates::current_version())).strong());
-                    if ui.add_enabled(self.update_check.is_none(), egui::Button::new("Verificar se há atualizações")).clicked() {
+                    if ui.add_enabled(self.update_check.is_none() && self.update_install.is_none(), egui::Button::new("Verificar se há atualizações")).clicked() {
                         self.manual_update_check = true;
                         self.workspace_state.update_remind_after = 0;
                         self.workspace_dirty = true;
                         self.update_check_result = None;
                         self.update_check = Some(updates::spawn_update_check(ui.ctx().clone()));
+                    }
+                    if automatic_update
+                        && ui
+                            .add_enabled(
+                                self.update_install.is_none(),
+                                egui::Button::new("Atualizar agora")
+                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                            )
+                            .clicked()
+                    {
+                        start_install = true;
                     }
                 });
                 ui.add_space(6.0);
@@ -3662,11 +3807,36 @@ impl LocalCodePilot {
                     };
                     ui.label(RichText::new(message).color(color).size(11.0));
                 }
+                if self.update_install.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(update_download_status(
+                            self.update_install_version.as_deref(),
+                            self.update_install_progress,
+                        ));
+                    });
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                } else if let Some(error) = &self.update_install_error {
+                    ui.label(
+                        RichText::new(format!("Atualização automática: {error}"))
+                            .color(Color32::from_rgb(255, 112, 112))
+                            .size(11.0),
+                    );
+                    if let Some(update) = &available_update
+                        && ui.link("Baixar o ZIP manualmente").clicked()
+                    {
+                        ui.ctx()
+                            .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                    }
+                }
                 if self.workspace_state.last_update_check > 0 {
                     ui.label(RichText::new(format!("Última consulta concluída: {}", relative_time(self.workspace_state.last_update_check))).color(theme::MUTED).size(10.0));
                 }
                 ui.label(RichText::new("A consulta automática acontece uma vez por dia ao abrir o app. Você pode verificar agora a qualquer momento.").color(theme::MUTED).size(10.0));
             });
+        if start_install && let Some(update) = available_update {
+            self.start_update_install(&update, ui.ctx().clone());
+        }
         ui.add_space(24.0);
         ui.heading("Runtimes");
         ui.label(
@@ -3845,6 +4015,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_laravel_migration(ctx);
         self.poll_processes(ctx);
         self.poll_update_check();
+        self.poll_update_install(ctx);
         self.poll_containers();
         self.persist_workspace_state(false);
     }
@@ -5446,6 +5617,23 @@ fn relative_time(timestamp: u64) -> String {
         60..=3_599 => format!("há {} min", elapsed / 60),
         3_600..=86_399 => format!("há {} h", elapsed / 3_600),
         _ => format!("há {} dia(s)", elapsed / 86_400),
+    }
+}
+
+fn update_download_status(version: Option<&str>, progress: Option<(u64, Option<u64>)>) -> String {
+    let version = version.unwrap_or("nova versão");
+    let Some((downloaded, total)) = progress else {
+        return format!("Preparando LocalCodePilot {version}...");
+    };
+    let downloaded_megabytes = downloaded as f64 / (1024.0 * 1024.0);
+    if let Some(total) = total.filter(|total| *total > 0) {
+        let total_megabytes = total as f64 / (1024.0 * 1024.0);
+        let percentage = ((downloaded as f64 / total as f64) * 100.0).clamp(0.0, 100.0);
+        format!(
+            "Baixando {version}: {downloaded_megabytes:.1}/{total_megabytes:.1} MB ({percentage:.0}%)"
+        )
+    } else {
+        format!("Baixando {version}: {downloaded_megabytes:.1} MB")
     }
 }
 
