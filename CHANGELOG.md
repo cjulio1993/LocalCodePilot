@@ -6,6 +6,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Alterado
+
+- A matriz de suporte e a documentação de Containers agora destacam que o recurso somente identifica, diagnostica e apresenta comandos, sem instalar motores, baixar imagens ou executar containers.
+
 ## [0.4.0-alpha.5] - 2026-10-13
 
 ### Adicionado
