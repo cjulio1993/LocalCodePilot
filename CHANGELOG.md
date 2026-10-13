@@ -13,6 +13,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Aba Containers com prévia de serviços, imagens, portas, perfis e comandos propostos, sem execução de containers.
 - CLI containers <pasta> para diagnóstico e inspeção de manifests.
 
+### Alterado
+
+- O fluxo de contribuição agora exige a atualização do README e do changelog junto com toda correção, mudança de comportamento ou funcionalidade nova.
+
 
 ## [0.4.0-alpha.3] - 2026-10-13
 

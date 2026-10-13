@@ -163,6 +163,10 @@ Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica com
 - Integração opcional com Docker e Podman sem substituir instalações locais.
 - Instalador e validação completa no macOS após a estabilização do fluxo local e da integração com contêineres.
 
+### Regra de documentação
+
+Toda correção, alteração de comportamento ou funcionalidade incluída no LocalCodePilot deve atualizar este README no mesmo commit, mantendo o estado atual do produto claro para quem baixa ou contribui com o projeto. O histórico detalhado de cada versão também deve ser registrado no [CHANGELOG.md](CHANGELOG.md); documentações técnicas mais extensas podem ficar em `docs/`, sempre com um link neste README.
+
 ### Arquitetura
 
 ```text
@@ -414,6 +418,10 @@ On project cards and the **Processos** page, LocalCodePilot identifies commands 
 - Accessibility and user-experience improvements.
 - Optional Docker and Podman integration without replacing local installations.
 - A macOS installer and complete validation after the local workflow and container integration are stabilized.
+
+### Documentation rule
+
+Every fix, behavior change, or feature added to LocalCodePilot must update this README in the same commit, keeping the current product state clear for users and contributors. The detailed history of each version must also be recorded in [CHANGELOG.md](CHANGELOG.md); longer technical documentation may live under `docs/`, with a link from this README.
 
 ### Architecture
 

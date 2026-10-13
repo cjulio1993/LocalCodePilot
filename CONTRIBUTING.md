@@ -24,8 +24,9 @@ Thank you for considering a contribution to LocalCodePilot. The project is still
 2. Crie uma branch a partir de `main`, como `feat/project-details` ou `fix/scanner-permissions`.
 3. Faça alterações pequenas e focadas.
 4. Adicione ou atualize testes quando o comportamento mudar.
-5. Execute todas as verificações locais.
-6. Abra um pull request explicando motivação, implementação e forma de teste.
+5. Atualize o `README.md` no mesmo commit para toda correção, alteração de comportamento ou funcionalidade nova; registre também o histórico detalhado no `CHANGELOG.md`.
+6. Execute todas as verificações locais.
+7. Abra um pull request explicando motivação, implementação e forma de teste.
 
 ---
 
@@ -33,8 +34,9 @@ Thank you for considering a contribution to LocalCodePilot. The project is still
 2. Create a branch from `main`, such as `feat/project-details` or `fix/scanner-permissions`.
 3. Keep changes small and focused.
 4. Add or update tests whenever behavior changes.
-5. Run every local check.
-6. Open a pull request explaining its motivation, implementation, and test procedure.
+5. Update `README.md` in the same commit for every fix, behavior change, or new feature, and record the detailed history in `CHANGELOG.md` as well.
+6. Run every local check.
+7. Open a pull request explaining its motivation, implementation, and test procedure.
 
 ## Verificações obrigatórias / Required checks
 
