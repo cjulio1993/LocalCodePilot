@@ -132,11 +132,19 @@ impl ContainerProject {
                     ]
                 })
                 .collect::<Vec<_>>();
+            let validate_args = match engine {
+                ContainerEngine::Docker => vec!["config", "--quiet"],
+                ContainerEngine::Podman => vec!["config"],
+            };
+            let status_args = match engine {
+                ContainerEngine::Docker => vec!["ps", "--all"],
+                ContainerEngine::Podman => vec!["ps"],
+            };
             return [
                 (
                     ContainerAction::Validate,
                     "Validar configuração",
-                    vec!["config", "--quiet"],
+                    validate_args,
                 ),
                 (
                     ContainerAction::Start,
@@ -144,11 +152,7 @@ impl ContainerProject {
                     vec!["up", "--detach"],
                 ),
                 (ContainerAction::Stop, "Parar serviços", vec!["stop"]),
-                (
-                    ContainerAction::Status,
-                    "Consultar estado",
-                    vec!["ps", "--all"],
-                ),
+                (ContainerAction::Status, "Consultar estado", status_args),
                 (
                     ContainerAction::Logs,
                     "Consultar logs",
@@ -213,13 +217,19 @@ mod tests {
             assert_eq!(commands[0].working_directory, project.directory);
             assert_eq!(commands[1].action, ContainerAction::Start);
             assert_eq!(commands[2].args.last().unwrap(), "stop");
-            assert_eq!(commands[3].args.last().unwrap(), "--all");
             assert_eq!(commands[4].args.last().unwrap(), "200");
             assert!(
                 commands
                     .iter()
                     .all(|cmd| !cmd.args.iter().any(|arg| arg == "--volumes"))
             );
+            if engine == ContainerEngine::Docker {
+                assert_eq!(commands[0].args.last().unwrap(), "--quiet");
+                assert_eq!(commands[3].args.last().unwrap(), "--all");
+            } else {
+                assert_eq!(commands[0].args.last().unwrap(), "config");
+                assert_eq!(commands[3].args.last().unwrap(), "ps");
+            }
         }
         let mut invalid = project;
         invalid.error = Some("invalid".into());
