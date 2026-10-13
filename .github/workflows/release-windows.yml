@@ -1,4 +1,4 @@
-name: Release Windows alpha
+name: Release desktop alpha
 
 on:
   push:
@@ -10,8 +10,8 @@ permissions:
   id-token: write
 
 jobs:
-  release:
-    name: Build and publish Windows x64
+  windows:
+    name: Build Windows x64
     runs-on: windows-2022
     env:
       ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
@@ -87,55 +87,119 @@ jobs:
           if ($signature.Status -ne "Valid") {
             throw "A assinatura Authenticode não é válida: $($signature.StatusMessage)"
           }
-          Write-Host "Assinado por $($signature.SignerCertificate.Subject)"
 
       - name: Record unsigned build notice
         if: env.ARTIFACT_SIGNING_ENDPOINT == '' || env.ARTIFACT_SIGNING_ACCOUNT == '' || env.ARTIFACT_SIGNING_PROFILE == '' || env.AZURE_TENANT_ID == '' || env.AZURE_CLIENT_ID == '' || env.AZURE_CLIENT_SECRET == ''
         shell: pwsh
         run: |
           "### Assinatura digital" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "O executável foi publicado sem Authenticode porque o Artifact Signing ainda não foi configurado." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "O executável foi criado sem Authenticode porque o Artifact Signing ainda não foi configurado." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Package portable application
         shell: pwsh
         run: .\scripts\package-windows.ps1 -Version "${{ steps.version.outputs.value }}" -SkipBuild
 
-      - name: Upload workflow artifact
+      - name: Upload Windows release assets
         uses: actions/upload-artifact@v4
         with:
-          name: LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64
+          name: windows-release-assets
           path: |
             dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64.zip
             dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64.exe
             dist/SHA256SUMS.txt
 
-      - name: Publish GitHub prerelease
-        shell: pwsh
+  macos:
+    name: Build macOS universal
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve and validate release version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "localcodepilot-desktop") | .version')"
+          if [[ "$cargo_version" != "$version" ]]; then
+            echo "A tag contém $version, mas Cargo.toml contém $cargo_version." >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests on macOS
+        run: cargo test --workspace --locked
+
+      - name: Build Intel and Apple Silicon binaries
+        run: |
+          cargo build --release --locked -p localcodepilot-desktop --target x86_64-apple-darwin
+          cargo build --release --locked -p localcodepilot-desktop --target aarch64-apple-darwin
+          mkdir -p target/macos-universal
+          lipo -create \
+            target/x86_64-apple-darwin/release/localcodepilot-desktop \
+            target/aarch64-apple-darwin/release/localcodepilot-desktop \
+            -output target/macos-universal/localcodepilot-desktop
+          lipo target/macos-universal/localcodepilot-desktop -verify_arch x86_64 arm64
+
+      - name: Package and verify DMG
+        run: bash scripts/package-macos.sh "${{ steps.version.outputs.value }}" target/macos-universal/localcodepilot-desktop
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-assets
+          path: |
+            dist/LocalCodePilot-${{ steps.version.outputs.value }}-macos-universal.dmg
+            dist/SHA256SUMS-macos.txt
+
+  publish:
+    name: Publish GitHub prerelease
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Windows assets
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release-assets
+          path: dist/windows
+
+      - name: Download macOS assets
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release-assets
+          path: dist/macos
+
+      - name: Publish release only after both platforms succeed
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = "${{ steps.version.outputs.value }}"
-          $repository = "${{ github.repository }}"
-          $archive = "dist\LocalCodePilot-$version-windows-x64.zip"
-          $executable = "dist\LocalCodePilot-$version-windows-x64.exe"
-          $checksums = "dist\SHA256SUMS.txt"
-          $notes = "docs\releases\v$version.md"
-
-          if (gh release view $tag --repo $repository --json tagName 2>$null) {
-            gh release edit $tag `
-              --repo $repository `
-              --prerelease `
-              --title "LocalCodePilot $version" `
-              --notes-file $notes
-            gh release upload $tag $archive $executable $checksums `
-              --repo $repository `
-              --clobber
-          } else {
-            gh release create $tag $archive $executable $checksums `
-              --repo $repository `
-              --verify-tag `
-              --prerelease `
-              --title "LocalCodePilot $version" `
-              --notes-file $notes
-          }
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          notes="docs/releases/v$version.md"
+          cat dist/windows/SHA256SUMS.txt dist/macos/SHA256SUMS-macos.txt > dist/SHA256SUMS.txt
+          assets=(
+            "dist/windows/LocalCodePilot-$version-windows-x64.zip"
+            "dist/windows/LocalCodePilot-$version-windows-x64.exe"
+            "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
+            "dist/SHA256SUMS.txt"
+          )
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "LocalCodePilot $version" --notes-file "$notes"
+            gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --title "LocalCodePilot $version" --notes-file "$notes"
+          fi

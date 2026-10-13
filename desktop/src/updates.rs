@@ -255,6 +255,14 @@ fn fetch_update(current: &Version) -> Result<Option<UpdateInfo>, String> {
 }
 
 fn select_update(releases: Vec<GithubRelease>, current: &Version) -> Option<UpdateInfo> {
+    select_update_for_os(releases, current, env::consts::OS)
+}
+
+fn select_update_for_os(
+    releases: Vec<GithubRelease>,
+    current: &Version,
+    operating_system: &str,
+) -> Option<UpdateInfo> {
     releases
         .into_iter()
         .filter(|release| !release.draft)
@@ -268,7 +276,7 @@ fn select_update(releases: Vec<GithubRelease>, current: &Version) -> Option<Upda
             let download_url = release
                 .assets
                 .iter()
-                .find(|asset| windows_portable_asset(&asset.name))
+                .find(|asset| portable_asset(&asset.name, operating_system))
                 .map(|asset| asset.browser_download_url.clone())
                 .unwrap_or_else(|| release.html_url.clone());
             let executable_url = release
@@ -819,6 +827,19 @@ fn windows_portable_asset(name: &str) -> bool {
         && (name.contains("x64") || name.contains("amd64"))
 }
 
+fn macos_portable_asset(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(".dmg") && name.contains("macos") && name.contains("universal")
+}
+
+fn portable_asset(name: &str, operating_system: &str) -> bool {
+    match operating_system {
+        "windows" => windows_portable_asset(name),
+        "macos" => macos_portable_asset(name),
+        _ => false,
+    }
+}
+
 fn windows_update_asset(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name.ends_with(".exe")
@@ -848,7 +869,7 @@ mod tests {
 
     #[test]
     fn selects_the_newest_alpha_and_all_windows_assets() {
-        let update = select_update(
+        let update = select_update_for_os(
             releases(
                 r#"[
                     {
@@ -879,6 +900,7 @@ mod tests {
                 ]"#,
             ),
             &Version::parse("0.4.0-alpha.4").unwrap(),
+            "windows",
         )
         .unwrap();
 
@@ -892,6 +914,34 @@ mod tests {
             update.checksum_url.as_deref(),
             Some("https://example.com/SHA256SUMS.txt")
         );
+    }
+
+    #[test]
+    fn selects_the_universal_dmg_on_macos() {
+        let update = select_update_for_os(
+            releases(
+                r#"[{
+                    "tag_name":"v0.4.0-alpha.6",
+                    "html_url":"https://example.com/release",
+                    "prerelease":true,
+                    "assets":[
+                        {
+                            "name":"LocalCodePilot-0.4.0-alpha.6-windows-x64.zip",
+                            "browser_download_url":"https://example.com/windows.zip"
+                        },
+                        {
+                            "name":"LocalCodePilot-0.4.0-alpha.6-macos-universal.dmg",
+                            "browser_download_url":"https://example.com/macos.dmg"
+                        }
+                    ]
+                }]"#,
+            ),
+            &Version::parse("0.4.0-alpha.5").unwrap(),
+            "macos",
+        )
+        .unwrap();
+
+        assert_eq!(update.download_url, "https://example.com/macos.dmg");
     }
 
     #[test]

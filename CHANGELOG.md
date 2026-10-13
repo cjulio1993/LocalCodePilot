@@ -6,9 +6,25 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Adicionado
+
+- Health checks HTTP assíncronos para serviços locais, com código de resposta, tempo de resposta, timeout e estados de saúde exibidos na tela Processos.
+- Execução controlada de Compose com Docker ou Podman para validar, iniciar, parar, consultar estado e ler logs, além da construção de Dockerfiles isolados.
+- Confirmação com comando e pasta antes de cada ação de container, saída rolável dentro do app, cancelamento e timeout de 30 minutos.
+- Empacotamento macOS universal para Intel e Apple Silicon em DMG, com ícone, bundle nativo, assinatura ad hoc e verificações automatizadas.
+- Workflow de validação macOS que gera um artefato temporário sem criar release.
+
 ### Alterado
 
-- A matriz de suporte e a documentação de Containers agora destacam que o recurso somente identifica, diagnostica e apresenta comandos, sem instalar motores, baixar imagens ou executar containers.
+- A matriz de suporte e a documentação de Containers agora distinguem o diagnóstico da execução confirmada e deixam claro que o app não instala nem inicia os motores.
+- Arquivos Compose de override detectados agora são enviados ao provedor junto do manifesto principal.
+- O verificador de atualização seleciona o DMG universal no macOS em vez de oferecer o pacote do Windows.
+- A release por tag só é publicada depois que os artefatos de Windows e macOS terminam com sucesso.
+- A publicação da versão `0.4.0-alpha.6` fica condicionada à validação dos health checks HTTP em projetos reais, da execução integrada com Docker/Podman e da instalação no macOS.
+
+### Corrigido
+
+- A verificação do binário universal usa a ordem de argumentos aceita pelo `lipo` do Xcode.
 
 ## [0.4.0-alpha.5] - 2026-10-13
 
