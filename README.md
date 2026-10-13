@@ -102,6 +102,12 @@ Quando uma release mais recente oferece o executável de atualização e `SHA256
 
 Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. Builds de desenvolvimento, outros sistemas operacionais e pastas protegidas continuam oferecendo o ZIP oficial como alternativa. Quem usa a alpha 4 ou uma versão anterior precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
 
+### Atualização pelo aplicativo (experimental)
+
+Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
+
+Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. Builds de desenvolvimento, outros sistemas operacionais e pastas protegidas continuam oferecendo o ZIP oficial como alternativa. Quem usa a alpha 4 ou uma versão anterior precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
+
 ### Preparação assistida do ambiente (experimental)
 
 - O diagnóstico separa runtime ausente, versão incompatível, gerenciador de pacotes ausente, dependências do projeto e extensões PHP requeridas.
@@ -358,6 +364,12 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 ### Containers: diagnosis and preview (experimental)
 
 **Current limit: LocalCodePilot only identifies and diagnoses container projects. It does not run containers yet.** The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded, or container `up`, `stop`, logs, or monitoring operations executed. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
+
+### In-app updates (experimental)
+
+When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
+
+This flow works for the official `LocalCodePilot.exe` when its directory is writable. Development builds, other operating systems, and protected directories keep the official ZIP as a fallback. Users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
 
 ### In-app updates (experimental)
 
