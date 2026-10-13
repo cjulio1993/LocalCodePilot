@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.4] - 2026-10-13
+
 ### Adicionado
 
 - Diagnóstico inicial de Docker/Podman e Compose em segundo plano, com timeout por consulta.
@@ -88,10 +90,11 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Automação de release com pacote ZIP e arquivo de verificação SHA-256.
 - Etapa opcional de assinatura Authenticode por Microsoft Artifact Signing.
 
-[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.3...HEAD
+[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.4...HEAD
 [0.4.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
 [0.3.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/releases/tag/v0.3.0-alpha.1
 
 [0.4.0-alpha.2]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.1...v0.4.0-alpha.2
 
 [0.4.0-alpha.3]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.2...v0.4.0-alpha.3
+[0.4.0-alpha.4]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.3...v0.4.0-alpha.4
