@@ -6,6 +6,17 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.5] - 2026-10-13
+
+### Adicionado
+
+- Atualização do executável pelo próprio aplicativo no Windows, com progresso, verificação SHA-256, reinício automático e restauração do backup quando a nova versão não inicia.
+- Asset `.exe` dedicado à atualização, publicado junto com o ZIP e incluído no `SHA256SUMS.txt`.
+
+### Alterado
+
+- O download manual do ZIP permanece disponível como alternativa para builds de desenvolvimento, sistemas não Windows e pastas sem permissão de escrita.
+
 ## [0.4.0-alpha.4] - 2026-10-13
 
 ### Adicionado
@@ -90,7 +101,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Automação de release com pacote ZIP e arquivo de verificação SHA-256.
 - Etapa opcional de assinatura Authenticode por Microsoft Artifact Signing.
 
-[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.4...HEAD
+[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.5...HEAD
 [0.4.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
 [0.3.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/releases/tag/v0.3.0-alpha.1
 
@@ -98,3 +109,4 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 [0.4.0-alpha.3]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.2...v0.4.0-alpha.3
 [0.4.0-alpha.4]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.3...v0.4.0-alpha.4
+[0.4.0-alpha.5]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.4...v0.4.0-alpha.5

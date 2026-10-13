@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.0-alpha.4",
+    [string]$Version = "0.4.0-alpha.5",
     [string]$TargetDirectory = "target",
     [switch]$SkipBuild
 )
@@ -12,6 +12,7 @@ $distributionRoot = Join-Path $repositoryRoot "dist"
 $packageName = "LocalCodePilot-$Version-windows-x64"
 $stagingDirectory = Join-Path $distributionRoot $packageName
 $archivePath = Join-Path $distributionRoot "$packageName.zip"
+$standalonePath = Join-Path $distributionRoot "$packageName.exe"
 $resolvedTargetDirectory = if ([System.IO.Path]::IsPathRooted($TargetDirectory)) {
     [System.IO.Path]::GetFullPath($TargetDirectory)
 } else {
@@ -34,6 +35,7 @@ function Assert-ChildPath {
 
 Assert-ChildPath -Path $stagingDirectory -Parent $distributionRoot
 Assert-ChildPath -Path $archivePath -Parent $distributionRoot
+Assert-ChildPath -Path $standalonePath -Parent $distributionRoot
 
 if (-not $SkipBuild) {
     Push-Location $repositoryRoot
@@ -59,6 +61,9 @@ if (Test-Path -LiteralPath $stagingDirectory) {
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
 }
+if (Test-Path -LiteralPath $standalonePath) {
+    Remove-Item -LiteralPath $standalonePath -Force
+}
 
 New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
 Copy-Item -LiteralPath $executablePath -Destination (Join-Path $stagingDirectory "LocalCodePilot.exe")
@@ -67,10 +72,15 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs\README-WINDOWS.txt") -De
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs\releases\v$Version.md") -Destination (Join-Path $stagingDirectory "RELEASE-NOTES.md")
 
 Compress-Archive -LiteralPath $stagingDirectory -DestinationPath $archivePath -CompressionLevel Optimal
+Copy-Item -LiteralPath $executablePath -Destination $standalonePath
 
-$archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
-$checksumLine = "$archiveHash  $([System.IO.Path]::GetFileName($archivePath))"
-Set-Content -LiteralPath (Join-Path $distributionRoot "SHA256SUMS.txt") -Value $checksumLine -Encoding ascii
+$checksumLines = @($archivePath, $standalonePath) | ForEach-Object {
+    $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash
+    "$hash  $([System.IO.Path]::GetFileName($_))"
+}
+Set-Content -LiteralPath (Join-Path $distributionRoot "SHA256SUMS.txt") -Value $checksumLines -Encoding ascii
 
 Write-Host "Pacote criado: $archivePath"
-Write-Host "SHA-256: $archiveHash"
+Write-Host "Executável para atualização criado: $standalonePath"
+Write-Host "SHA-256:"
+$checksumLines | ForEach-Object { Write-Host $_ }

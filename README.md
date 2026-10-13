@@ -10,7 +10,7 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.4.0-alpha.4` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.5` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
 [Português](#português) · [English](#english)
 
@@ -58,7 +58,7 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Informações básicas do sistema e uso de memória.
 - Iniciais do usuário do computador geradas automaticamente na interface.
 - Cartões de projeto responsivos ao espaço disponível na janela.
-- CLI com comandos `status`, `scan` e `inspect`.
+- CLI com comandos `status`, `scan`, `inspect` e `containers`.
 - Interface com ícones Phosphor.
 - Estrutura modular baseada em Cargo workspace.
 
@@ -94,6 +94,12 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 ### Containers: diagnóstico e prévia (experimental)
 
 A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Os comandos apresentados são somente uma prévia; não há instalação de motores, download de imagens nem execução de containers nesta etapa. Variáveis, overrides e referências externas ainda não são resolvidos. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) para os limites e a CLI `containers <pasta>`.
+
+### Atualização pelo aplicativo (experimental)
+
+Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
+
+Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. Builds de desenvolvimento, outros sistemas operacionais e pastas protegidas continuam oferecendo o ZIP oficial como alternativa. Quem usa a alpha 4 ou uma versão anterior precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
 
 ### Preparação assistida do ambiente (experimental)
 
@@ -154,7 +160,7 @@ Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica com
 - Verificações HTTP de saúde e tempo de resposta dos serviços.
 - Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
 - Aperfeiçoamento do histórico de instalações e migrações assistidas.
-- Atualização automática do executável após a adoção de assinatura digital e instalador seguro.
+- Assinatura digital e instalador seguro para reforçar a atualização integrada.
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade e experiência de uso.
@@ -272,7 +278,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.4.0-alpha.4` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.5` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
 ### What is LocalCodePilot?
 
@@ -314,7 +320,7 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Basic system and memory information.
 - Computer-user initials generated automatically in the interface.
 - Project cards that adapt to the available window space.
-- CLI commands for `status`, `scan`, and `inspect`.
+- CLI commands for `status`, `scan`, `inspect`, and `containers`.
 - Phosphor icons in the desktop interface.
 - Modular Cargo workspace architecture.
 
@@ -350,6 +356,12 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 ### Containers: diagnosis and preview (experimental)
 
 The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded or containers started. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
+
+### In-app updates (experimental)
+
+When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
+
+This flow works for the official `LocalCodePilot.exe` when its directory is writable. Development builds, other operating systems, and protected directories keep the official ZIP as a fallback. Users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
 
 ### Assisted environment setup (experimental)
 
@@ -410,7 +422,7 @@ On project cards and the **Processos** page, LocalCodePilot identifies commands 
 - HTTP health checks and service response-time monitoring.
 - Starting and controlling services such as MySQL, PostgreSQL, and Redis.
 - Improvements to installation and assisted-migration history.
-- Automatic executable updates after code signing and a secure installer are available.
+- Code signing and a secure installer to strengthen the integrated update flow.
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility and user-experience improvements.

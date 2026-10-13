@@ -10,6 +10,9 @@ use app::LocalCodePilot;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    if let Some(exit_code) = updates::try_run_update_helper() {
+        std::process::exit(exit_code);
+    }
     let icon =
         eframe::icon_data::from_png_bytes(include_bytes!("../../assets/branding/icon-512.png"))
             .expect("the embedded LocalCodePilot icon must be a valid PNG");
@@ -24,6 +27,9 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "LocalCodePilot",
         options,
-        Box::new(|cc| Ok(Box::new(LocalCodePilot::new(cc)))),
+        Box::new(|cc| {
+            let startup_notification = updates::complete_updated_startup();
+            Ok(Box::new(LocalCodePilot::new(cc, startup_notification)))
+        }),
     )
 }
