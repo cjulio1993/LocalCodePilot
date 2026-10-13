@@ -4,4 +4,4 @@ services:
     command:
       - sh
       - -c
-      - echo 'LocalCodePilot Docker QA OK'; while true; do sleep 1; done
+      - trap 'exit 0' TERM INT; echo 'LocalCodePilot Docker QA OK'; while true; do sleep 1; done

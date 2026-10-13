@@ -57,7 +57,7 @@ jobs:
           podman info
           podman compose --file compose.yaml config
           podman compose --file compose.yaml up --detach
-          podman compose --file compose.yaml ps --all
+          podman compose --file compose.yaml ps
           podman compose --file compose.yaml logs --tail 200 | grep "LocalCodePilot Docker QA OK"
           podman compose --file compose.yaml stop
           podman build --file Dockerfile .

@@ -14,14 +14,14 @@ Docker e Podman são verificados independentemente:
 
 O aplicativo não instala ferramentas nem inicia VMs. O provedor Compose do Podman precisa estar instalado separadamente quando não estiver disponível.
 
-Serviços, imagens, build, portas declaradas e perfis aparecem numa prévia local do YAML. Variáveis de ambiente, segredos e comandos internos dos serviços não são exibidos. As portas da prévia são declarações; **Consultar estado** usa a saída efetiva de `compose ps --all` para mostrar o estado e as portas publicadas pelo motor.
+Serviços, imagens, build, portas declaradas e perfis aparecem numa prévia local do YAML. Variáveis de ambiente, segredos e comandos internos dos serviços não são exibidos. As portas da prévia são declarações; **Consultar estado** usa a saída efetiva de `compose ps --all` no Docker ou `compose ps` no Podman para mostrar o estado e as portas publicadas pelo motor.
 
 Quando o motor e o provedor Compose selecionados estão disponíveis, cada projeto oferece estas ações:
 
 - **Validar configuração** executa `compose config --quiet` no Docker e `compose config` no Podman para manter compatibilidade com versões anteriores do `podman-compose`;
 - **Iniciar ambiente** executa `compose up --detach` e pode baixar ou construir imagens;
 - **Parar serviços** executa `compose stop`, sem remover volumes;
-- **Consultar estado** executa `compose ps --all`;
+- **Consultar estado** executa `compose ps --all` no Docker e `compose ps` no Podman;
 - **Consultar logs** lê as 200 linhas mais recentes com `compose logs --tail 200`;
 - um Dockerfile isolado oferece **Construir imagem**, sem inventar nome, porta ou comando `run`.
 
