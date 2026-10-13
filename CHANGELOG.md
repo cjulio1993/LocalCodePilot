@@ -22,6 +22,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - A release por tag só é publicada depois que os artefatos de Windows e macOS terminam com sucesso.
 - A publicação da versão `0.4.0-alpha.6` fica condicionada à validação dos health checks HTTP em projetos reais, da execução integrada com Docker/Podman e da instalação no macOS.
 
+### Corrigido
+
+- A verificação do binário universal usa a ordem de argumentos aceita pelo `lipo` do Xcode.
+
 ## [0.4.0-alpha.5] - 2026-10-13
 
 ### Adicionado

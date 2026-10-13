@@ -148,7 +148,7 @@ jobs:
             target/x86_64-apple-darwin/release/localcodepilot-desktop \
             target/aarch64-apple-darwin/release/localcodepilot-desktop \
             -output target/macos-universal/localcodepilot-desktop
-          lipo -verify_arch x86_64 arm64 target/macos-universal/localcodepilot-desktop
+          lipo target/macos-universal/localcodepilot-desktop -verify_arch x86_64 arm64
 
       - name: Package and verify DMG
         run: bash scripts/package-macos.sh "${{ steps.version.outputs.value }}" target/macos-universal/localcodepilot-desktop

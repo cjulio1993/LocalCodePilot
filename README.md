@@ -276,7 +276,7 @@ cargo build --release --workspace
 
 No Windows, os executáveis são gerados em `target\release\`.
 
-No macOS, o workflow de validação compila um binário universal e executa `scripts/package-macos.sh` para criar e verificar o DMG. Esse artefato é somente para validação até a conclusão do teste num Mac real.
+No macOS, o workflow de validação compila um binário universal, confirma com `lipo` a presença das arquiteturas Intel e Apple Silicon e executa `scripts/package-macos.sh` para criar e verificar o DMG. Esse artefato é somente para validação até a conclusão do teste num Mac real.
 
 ### Contribuição
 
@@ -548,7 +548,7 @@ cargo build --release --workspace
 
 On Windows, binaries are generated under `target\release\`.
 
-On macOS, the validation workflow builds a universal binary and runs `scripts/package-macos.sh` to create and verify the DMG. This artifact remains validation-only until it has been tested on a real Mac.
+On macOS, the validation workflow builds a universal binary, uses `lipo` to confirm both Intel and Apple Silicon architectures, and runs `scripts/package-macos.sh` to create and verify the DMG. This artifact remains validation-only until it has been tested on a real Mac.
 
 ### Contributing
 
