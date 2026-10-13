@@ -16,6 +16,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 ### Alterado
 
 - O fluxo de contribuição agora exige a atualização do README e do changelog junto com toda correção, mudança de comportamento ou funcionalidade nova.
+- O procedimento administrativo de assinatura do Windows foi retirado da documentação pública e preservado somente no manual local do mantenedor, ignorado pelo Git.
 
 
 ## [0.4.0-alpha.3] - 2026-10-13

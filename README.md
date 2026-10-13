@@ -12,8 +12,6 @@
 
 **Alpha para Windows:** a versão `0.4.0-alpha.3` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
-O processo de assinatura Authenticode e os segredos opcionais do pipeline estão documentados em [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
-
 [Português](#português) · [English](#english)
 
 ---
@@ -167,6 +165,8 @@ Nos cartões de projeto e na tela **Processos**, o LocalCodePilot identifica com
 
 Toda correção, alteração de comportamento ou funcionalidade incluída no LocalCodePilot deve atualizar este README no mesmo commit, mantendo o estado atual do produto claro para quem baixa ou contribui com o projeto. O histórico detalhado de cada versão também deve ser registrado no [CHANGELOG.md](CHANGELOG.md); documentações técnicas mais extensas podem ficar em `docs/`, sempre com um link neste README.
 
+A documentação pública deve se limitar ao uso, desenvolvimento e contribuição no produto. Procedimentos administrativos, credenciais e configurações privadas do mantenedor permanecem somente em arquivos locais ignorados pelo Git.
+
 ### Arquitetura
 
 ```text
@@ -273,8 +273,6 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 ## English
 
 **Windows alpha:** version `0.4.0-alpha.3` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
-
-The Authenticode signing process and optional pipeline secrets are documented in [docs/SIGNING-WINDOWS.md](docs/SIGNING-WINDOWS.md).
 
 ### What is LocalCodePilot?
 
@@ -422,6 +420,8 @@ On project cards and the **Processos** page, LocalCodePilot identifies commands 
 ### Documentation rule
 
 Every fix, behavior change, or feature added to LocalCodePilot must update this README in the same commit, keeping the current product state clear for users and contributors. The detailed history of each version must also be recorded in [CHANGELOG.md](CHANGELOG.md); longer technical documentation may live under `docs/`, with a link from this README.
+
+Public documentation must be limited to using, developing, and contributing to the product. Administrative procedures, credentials, and private maintainer configuration remain only in local files ignored by Git.
 
 ### Architecture
 
