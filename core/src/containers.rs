@@ -132,11 +132,15 @@ impl ContainerProject {
                     ]
                 })
                 .collect::<Vec<_>>();
+            let validate_args = match engine {
+                ContainerEngine::Docker => vec!["config", "--quiet"],
+                ContainerEngine::Podman => vec!["config"],
+            };
             return [
                 (
                     ContainerAction::Validate,
                     "Validar configuração",
-                    vec!["config", "--quiet"],
+                    validate_args,
                 ),
                 (
                     ContainerAction::Start,
@@ -220,6 +224,11 @@ mod tests {
                     .iter()
                     .all(|cmd| !cmd.args.iter().any(|arg| arg == "--volumes"))
             );
+            if engine == ContainerEngine::Docker {
+                assert_eq!(commands[0].args.last().unwrap(), "--quiet");
+            } else {
+                assert_eq!(commands[0].args.last().unwrap(), "config");
+            }
         }
         let mut invalid = project;
         invalid.error = Some("invalid".into());

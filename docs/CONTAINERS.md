@@ -18,7 +18,7 @@ Serviços, imagens, build, portas declaradas e perfis aparecem numa prévia loca
 
 Quando o motor e o provedor Compose selecionados estão disponíveis, cada projeto oferece estas ações:
 
-- **Validar configuração** executa `compose config --quiet`;
+- **Validar configuração** executa `compose config --quiet` no Docker e `compose config` no Podman para manter compatibilidade com versões anteriores do `podman-compose`;
 - **Iniciar ambiente** executa `compose up --detach` e pode baixar ou construir imagens;
 - **Parar serviços** executa `compose stop`, sem remover volumes;
 - **Consultar estado** executa `compose ps --all`;
@@ -47,7 +47,7 @@ O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos
 - Um Dockerfile isolado oferece somente build, sem nomear a imagem nem oferecer `run`.
 - A parada usa `stop`; não há remoção de containers, redes ou volumes.
 - O app não instala Docker/Podman, não inicia Docker Desktop ou máquinas Podman e não aceita entrada interativa no comando.
-- O CI valida o fluxo real de comandos Docker (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. A interação completa pela interface e o Podman ainda precisam de validação manual antes da alpha 6.
+- O CI valida os fluxos reais de comandos Docker e Podman (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. A interação completa pela interface ainda precisa de validação manual antes da alpha 6.
 
 ## Antes da alpha 6
 
