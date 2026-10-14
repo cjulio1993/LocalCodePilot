@@ -12,6 +12,7 @@ permissions:
 jobs:
   windows:
     name: Build Windows x64
+    if: github.ref_name != 'v0.4.0-alpha.6-rc.1'
     runs-on: windows-2022
     env:
       ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
@@ -164,6 +165,10 @@ jobs:
   publish:
     name: Publish GitHub prerelease
     needs: [windows, macos]
+    if: >-
+      always() && !cancelled() && needs.macos.result == 'success' &&
+      (needs.windows.result == 'success' ||
+       (github.ref_name == 'v0.4.0-alpha.6-rc.1' && needs.windows.result == 'skipped'))
     runs-on: ubuntu-latest
 
     steps:
@@ -171,6 +176,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download Windows assets
+        if: needs.windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: windows-release-assets
@@ -182,7 +188,7 @@ jobs:
           name: macos-release-assets
           path: dist/macos
 
-      - name: Publish release only after both platforms succeed
+      - name: Publish release after required platforms succeed
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -190,13 +196,18 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
           notes="docs/releases/v$version.md"
-          cat dist/windows/SHA256SUMS.txt dist/macos/SHA256SUMS-macos.txt > dist/SHA256SUMS.txt
+          cp dist/macos/SHA256SUMS-macos.txt dist/SHA256SUMS.txt
           assets=(
-            "dist/windows/LocalCodePilot-$version-windows-x64.zip"
-            "dist/windows/LocalCodePilot-$version-windows-x64.exe"
             "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
             "dist/SHA256SUMS.txt"
           )
+          if [[ "$tag" != "v0.4.0-alpha.6-rc.1" ]]; then
+            cat dist/windows/SHA256SUMS.txt >> dist/SHA256SUMS.txt
+            assets+=(
+              "dist/windows/LocalCodePilot-$version-windows-x64.zip"
+              "dist/windows/LocalCodePilot-$version-windows-x64.exe"
+            )
+          fi
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "LocalCodePilot $version" --notes-file "$notes"
             gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
