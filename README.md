@@ -10,7 +10,7 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.4.0-alpha.5` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.5.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
 **macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A alpha 6 só será publicada depois que a instalação e a primeira abertura forem validadas num Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
@@ -290,7 +290,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.4.0-alpha.5` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.5.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
 **macOS under validation:** the repository now produces a universal Intel and Apple Silicon application in a DMG, but this package is not part of a public release yet. Alpha 6 will only be published after installation and first launch are validated on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
