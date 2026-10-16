@@ -6,6 +6,15 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.5.1] - 2026-10-16
+
+### Corrigido
+
+- O atualizador exige um pacote para o sistema em uso: Windows recebe somente pacotes Windows e macOS recebe somente DMGs macOS.
+- Releases sem pacote compat?vel s?o ignoradas, inclusive quando forem mais recentes; o app continua procurando a vers?o compat?vel mais recente.
+- Avisos incompat?veis salvos em cache s?o descartados.
+- Corre??o baseada na alpha 5, sem antecipar as funcionalidades da alpha 6 em valida??o.
+
 ## [0.4.0-alpha.5] - 2026-10-13
 
 ### Adicionado

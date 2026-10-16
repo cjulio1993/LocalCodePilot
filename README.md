@@ -10,7 +10,7 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.4.0-alpha.5` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.5.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
 [Português](#português) · [English](#english)
 
@@ -96,6 +96,8 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Os comandos apresentados são somente uma prévia; não há instalação de motores, download de imagens nem execução de containers nesta etapa. Variáveis, overrides e referências externas ainda não são resolvidos. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) para os limites e a CLI `containers <pasta>`.
 
 ### Atualização pelo aplicativo (experimental)
+
+A alpha `0.4.0-alpha.5.1` corrige os avisos de atualiza??o: cada sistema recebe somente releases com pacote compat?vel. Notifica??es incompat?veis em cache s?o descartadas. Quem usa alpha 5 deve instalar este pacote manualmente se o aviso de uma release exclusiva do macOS impedir a atualiza??o integrada.
 
 Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
 
@@ -278,7 +280,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.4.0-alpha.5` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.5.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
 ### What is LocalCodePilot?
 
@@ -358,6 +360,8 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services and checks Docker/Podman and Compose availability in the background. Commands are previewed only: no engines are installed, images downloaded or containers started. Variables, overrides and external references are not resolved yet. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the `containers <directory>` CLI command.
 
 ### In-app updates (experimental)
+
+Alpha `0.4.0-alpha.5.1` fixes update notifications: each operating system only receives releases with a compatible package. Incompatible cached notifications are discarded. Alpha 5 users should install this package manually if a macOS-only release notification prevents the in-app update.
 
 When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
 

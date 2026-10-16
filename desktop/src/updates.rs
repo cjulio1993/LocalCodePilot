@@ -103,7 +103,16 @@ pub fn current_version() -> Version {
 }
 
 pub fn cached_update_is_newer(update: &UpdateInfo) -> bool {
-    parse_version(&update.version).is_some_and(|version| version > current_version())
+    cached_update_matches_os(update, env::consts::OS)
+        && parse_version(&update.version).is_some_and(|version| version > current_version())
+}
+
+fn cached_update_matches_os(update: &UpdateInfo, operating_system: &str) -> bool {
+    update
+        .download_url
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| compatible_update_asset(name, operating_system))
 }
 
 pub fn automatic_update_available(update: &UpdateInfo) -> bool {
@@ -255,6 +264,14 @@ fn fetch_update(current: &Version) -> Result<Option<UpdateInfo>, String> {
 }
 
 fn select_update(releases: Vec<GithubRelease>, current: &Version) -> Option<UpdateInfo> {
+    select_update_for_os(releases, current, env::consts::OS)
+}
+
+fn select_update_for_os(
+    releases: Vec<GithubRelease>,
+    current: &Version,
+    operating_system: &str,
+) -> Option<UpdateInfo> {
     releases
         .into_iter()
         .filter(|release| !release.draft)
@@ -268,13 +285,18 @@ fn select_update(releases: Vec<GithubRelease>, current: &Version) -> Option<Upda
             let download_url = release
                 .assets
                 .iter()
-                .find(|asset| windows_portable_asset(&asset.name))
-                .map(|asset| asset.browser_download_url.clone())
-                .unwrap_or_else(|| release.html_url.clone());
+                .find(|asset| portable_asset(&asset.name, operating_system))
+                .or_else(|| {
+                    release
+                        .assets
+                        .iter()
+                        .find(|asset| compatible_update_asset(&asset.name, operating_system))
+                })
+                .map(|asset| asset.browser_download_url.clone())?;
             let executable_url = release
                 .assets
                 .iter()
-                .find(|asset| windows_update_asset(&asset.name))
+                .find(|asset| operating_system == "windows" && windows_update_asset(&asset.name))
                 .map(|asset| asset.browser_download_url.clone());
             let checksum_url = release
                 .assets
@@ -819,6 +841,24 @@ fn windows_portable_asset(name: &str) -> bool {
         && (name.contains("x64") || name.contains("amd64"))
 }
 
+fn macos_portable_asset(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(".dmg") && name.contains("macos") && name.contains("universal")
+}
+
+fn portable_asset(name: &str, operating_system: &str) -> bool {
+    match operating_system {
+        "windows" => windows_portable_asset(name),
+        "macos" => macos_portable_asset(name),
+        _ => false,
+    }
+}
+
+fn compatible_update_asset(name: &str, operating_system: &str) -> bool {
+    portable_asset(name, operating_system)
+        || (operating_system == "windows" && windows_update_asset(name))
+}
+
 fn windows_update_asset(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name.ends_with(".exe")
@@ -848,7 +888,7 @@ mod tests {
 
     #[test]
     fn selects_the_newest_alpha_and_all_windows_assets() {
-        let update = select_update(
+        let update = select_update_for_os(
             releases(
                 r#"[
                     {
@@ -879,6 +919,7 @@ mod tests {
                 ]"#,
             ),
             &Version::parse("0.4.0-alpha.4").unwrap(),
+            "windows",
         )
         .unwrap();
 
@@ -895,8 +936,96 @@ mod tests {
     }
 
     #[test]
+    fn selects_the_universal_dmg_on_macos() {
+        let update = select_update_for_os(
+            releases(
+                r#"[{
+                    "tag_name":"v0.4.0-alpha.6",
+                    "html_url":"https://example.com/release",
+                    "prerelease":true,
+                    "assets":[
+                        {
+                            "name":"LocalCodePilot-0.4.0-alpha.6-windows-x64.zip",
+                            "browser_download_url":"https://example.com/windows.zip"
+                        },
+                        {
+                            "name":"LocalCodePilot-0.4.0-alpha.6-macos-universal.dmg",
+                            "browser_download_url":"https://example.com/macos.dmg"
+                        }
+                    ]
+                }]"#,
+            ),
+            &Version::parse("0.4.0-alpha.5").unwrap(),
+            "macos",
+        )
+        .unwrap();
+
+        assert_eq!(update.download_url, "https://example.com/macos.dmg");
+    }
+
+    #[test]
+    fn only_offers_releases_with_assets_for_the_requested_os() {
+        let json = r#"[
+            {
+                "tag_name":"v0.4.0-alpha.6-rc.1",
+                "html_url":"https://example.com/mac-release",
+                "assets":[{
+                    "name":"LocalCodePilot-0.4.0-alpha.6-rc.1-macos-universal.dmg",
+                    "browser_download_url":"https://example.com/macos.dmg"
+                }]
+            },
+            {
+                "tag_name":"v0.4.0-alpha.5",
+                "html_url":"https://example.com/windows-release",
+                "assets":[{
+                    "name":"LocalCodePilot-0.4.0-alpha.5-windows-x64.zip",
+                    "browser_download_url":"https://example.com/windows.zip"
+                }]
+            },
+            {
+                "tag_name":"v0.4.0-alpha.7",
+                "html_url":"https://example.com/empty-release"
+            }
+        ]"#;
+        let current = Version::parse("0.4.0-alpha.4").unwrap();
+        let windows = select_update_for_os(releases(json), &current, "windows").unwrap();
+        assert_eq!(windows.version, "0.4.0-alpha.5");
+        let macos = select_update_for_os(releases(json), &current, "macos").unwrap();
+        assert_eq!(macos.version, "0.4.0-alpha.6-rc.1");
+        assert!(macos.executable_url.is_none());
+        assert!(
+            select_update_for_os(
+                releases(json),
+                &Version::parse("0.4.0-alpha.5").unwrap(),
+                "windows"
+            )
+            .is_none()
+        );
+        assert!(select_update_for_os(releases(json), &current, "linux").is_none());
+    }
+
+    #[test]
+    fn rejects_incompatible_and_release_page_cached_notifications() {
+        let mut update = UpdateInfo {
+            version: "99.0.0".into(),
+            title: "Update".into(),
+            release_url: "https://example.com/release".into(),
+            download_url: "https://example.com/release".into(),
+            executable_url: None,
+            checksum_url: None,
+        };
+        assert!(!cached_update_is_newer(&update));
+        update.download_url = "https://example.com/LocalCodePilot-windows-x64.zip".into();
+        assert!(cached_update_matches_os(&update, "windows"));
+        assert!(!cached_update_matches_os(&update, "macos"));
+        update.download_url = "https://example.com/LocalCodePilot-macos-universal.dmg".into();
+        assert!(cached_update_matches_os(&update, "macos"));
+        assert!(!cached_update_matches_os(&update, "windows"));
+    }
+
+    #[test]
     fn stable_channel_ignores_prereleases() {
-        let update = select_update(
+        let update = select_update_for_os(
             releases(
                 r#"[
                     {
@@ -907,11 +1036,16 @@ mod tests {
                     {
                         "tag_name":"v0.4.1",
                         "html_url":"https://example.com/stable",
-                        "prerelease":false
+                        "prerelease":false,
+                        "assets":[{
+                            "name":"LocalCodePilot-0.4.1-windows-x64.zip",
+                            "browser_download_url":"https://example.com/windows.zip"
+                        }]
                     }
                 ]"#,
             ),
             &Version::parse("0.4.0").unwrap(),
+            "windows",
         )
         .unwrap();
 
