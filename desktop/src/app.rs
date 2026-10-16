@@ -59,6 +59,8 @@ const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_START_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESS_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const PROCESS_PORT_LOSS_GRACE: Duration = Duration::from_secs(6);
+const HTTP_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+const HTTP_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const INSTALLATION_STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +106,30 @@ struct RunningProcess {
     started_at: Instant,
     last_health_check: Instant,
     port_unavailable_since: Option<Instant>,
+    http_health: Option<HttpHealthCheckResult>,
+    http_health_receiver: Option<Receiver<HttpHealthCheckResult>>,
+    last_http_health_check: Option<Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HttpHealthCheckResult {
+    url: String,
+    status: HttpHealthStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HttpHealthStatus {
+    Healthy {
+        status_code: u16,
+        response_time_ms: u128,
+    },
+    Attention {
+        status_code: u16,
+        response_time_ms: u128,
+    },
+    Unreachable {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1648,6 +1674,9 @@ impl LocalCodePilot {
                         started_at: now,
                         last_health_check: now,
                         port_unavailable_since: None,
+                        http_health: None,
+                        http_health_receiver: None,
+                        last_http_health_check: None,
                     },
                 );
                 self.processes[index].state = if assigned_port.is_some() {
@@ -2959,6 +2988,17 @@ impl LocalCodePilot {
             .iter()
             .map(|process| (process.id.clone(), process.state))
             .collect();
+        let http_process_ids: HashSet<_> = self
+            .processes
+            .iter()
+            .filter(|process| {
+                self.projects
+                    .iter()
+                    .find(|project| project.path == process.project_path)
+                    .is_some_and(|project| process_exposes_application_url(project, process))
+            })
+            .map(|process| process.id.clone())
+            .collect();
         let assigned_ports = self.assigned_ports.clone();
         let mut state_updates = Vec::new();
         let mut ready_updates = Vec::new();
@@ -2966,6 +3006,18 @@ impl LocalCodePilot {
         let mut has_running_process = false;
         let now = Instant::now();
         for (id, running) in &mut self.running_processes {
+            if let Some(receiver) = &running.http_health_receiver {
+                match receiver.try_recv() {
+                    Ok(result) => {
+                        running.http_health = Some(result);
+                        running.http_health_receiver = None;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        running.http_health_receiver = None;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                }
+            }
             while let Ok(line) = running.output.try_recv() {
                 if !history_updates.contains(id) {
                     history_updates.push(id.clone());
@@ -3079,6 +3131,17 @@ impl LocalCodePilot {
             if state == ProcessState::Running {
                 if port_is_listening {
                     running.port_unavailable_since = None;
+                    if http_process_ids.contains(id) {
+                        let target = running
+                            .urls
+                            .iter()
+                            .rev()
+                            .find(|url| url.port() == port)
+                            .or_else(|| running.urls.last())
+                            .map(|url| url.address().to_owned())
+                            .unwrap_or_else(|| format!("http://localhost:{}", port.value()));
+                        schedule_http_health_check(running, target, now);
+                    }
                 } else {
                     let unavailable_since = running.port_unavailable_since.get_or_insert(now);
                     if now.duration_since(*unavailable_since) >= PROCESS_PORT_LOSS_GRACE {
@@ -3446,8 +3509,37 @@ impl LocalCodePilot {
                         } else {
                             None
                         };
+                        let (http_health, http_health_checking) = self
+                            .running_processes
+                            .get(&command.id)
+                            .map(|running| {
+                                let health = server_url.as_ref().and_then(|server_url| {
+                                    running
+                                        .http_health
+                                        .as_ref()
+                                        .filter(|health| health.url == server_url.address())
+                                        .cloned()
+                                });
+                                (health, running.http_health_receiver.is_some())
+                            })
+                            .unwrap_or((None, false));
                         let (state_label, state_color) = if port_conflict.is_some() {
                             ("Porta ocupada", Color32::from_rgb(235, 87, 87))
+                        } else if matches!(
+                            http_health.as_ref().map(|health| &health.status),
+                            Some(HttpHealthStatus::Unreachable { .. })
+                        ) {
+                            ("HTTP sem resposta", Color32::from_rgb(235, 87, 87))
+                        } else if matches!(
+                            http_health.as_ref().map(|health| &health.status),
+                            Some(HttpHealthStatus::Attention { .. })
+                        ) {
+                            ("HTTP com atenção", Color32::from_rgb(255, 205, 75))
+                        } else if matches!(
+                            http_health.as_ref().map(|health| &health.status),
+                            Some(HttpHealthStatus::Healthy { .. })
+                        ) {
+                            ("Saudável", theme::SUCCESS)
                         } else if command.state == ProcessState::Running && server_url.is_some() {
                             ("Disponível", theme::SUCCESS)
                         } else {
@@ -3559,6 +3651,23 @@ impl LocalCodePilot {
                                         action = Some(ProcessAction::OpenUrl(
                                             server_url.address().to_owned(),
                                         ));
+                                    }
+                                    ui.add_space(2.0);
+                                    if let Some(health) = &http_health {
+                                        let (message, color) = http_health_display(&health.status);
+                                        ui.label(RichText::new(message).color(color).size(9.0));
+                                    } else if http_health_checking {
+                                        ui.label(
+                                            RichText::new("Verificando resposta HTTP...")
+                                                .color(theme::MUTED)
+                                                .size(9.0),
+                                        );
+                                    } else {
+                                        ui.label(
+                                            RichText::new("Aguardando verificação HTTP...")
+                                                .color(theme::MUTED)
+                                                .size(9.0),
+                                        );
                                     }
                                     ui.add_space(2.0);
                                     if let (Some(preferred), Some(selected)) =
@@ -4016,7 +4125,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_processes(ctx);
         self.poll_update_check();
         self.poll_update_install(ctx);
-        self.poll_containers();
+        self.poll_containers(ctx);
         self.persist_workspace_state(false);
     }
 
@@ -5502,6 +5611,91 @@ fn terminate_process(child: &mut Child) {
     let _ = child.wait();
 }
 
+fn schedule_http_health_check(running: &mut RunningProcess, url: String, now: Instant) {
+    if running.http_health_receiver.is_some() {
+        return;
+    }
+    let target_changed = running
+        .http_health
+        .as_ref()
+        .is_none_or(|health| health.url != url);
+    let interval_elapsed = running
+        .last_http_health_check
+        .is_none_or(|last_check| now.duration_since(last_check) >= HTTP_HEALTH_CHECK_INTERVAL);
+    if !target_changed && !interval_elapsed {
+        return;
+    }
+    if target_changed {
+        running.http_health = None;
+    }
+    running.last_http_health_check = Some(now);
+    let (sender, receiver) = mpsc::channel();
+    running.http_health_receiver = Some(receiver);
+    std::thread::spawn(move || {
+        let _ = sender.send(probe_http_health(url));
+    });
+}
+
+fn probe_http_health(url: String) -> HttpHealthCheckResult {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_HEALTH_CHECK_TIMEOUT))
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .build();
+    let agent: ureq::Agent = config.into();
+    let started_at = Instant::now();
+    let status = match agent
+        .get(&url)
+        .header("User-Agent", "LocalCodePilot-Health-Check")
+        .call()
+    {
+        Ok(response) => {
+            classify_http_health(response.status().as_u16(), started_at.elapsed().as_millis())
+        }
+        Err(error) => HttpHealthStatus::Unreachable {
+            error: error.to_string(),
+        },
+    };
+    HttpHealthCheckResult { url, status }
+}
+
+fn classify_http_health(status_code: u16, response_time_ms: u128) -> HttpHealthStatus {
+    if (200..400).contains(&status_code) {
+        HttpHealthStatus::Healthy {
+            status_code,
+            response_time_ms,
+        }
+    } else {
+        HttpHealthStatus::Attention {
+            status_code,
+            response_time_ms,
+        }
+    }
+}
+
+fn http_health_display(status: &HttpHealthStatus) -> (String, Color32) {
+    match status {
+        HttpHealthStatus::Healthy {
+            status_code,
+            response_time_ms,
+        } => (
+            format!("HTTP {status_code} · {response_time_ms} ms"),
+            theme::SUCCESS,
+        ),
+        HttpHealthStatus::Attention {
+            status_code,
+            response_time_ms,
+        } => (
+            format!("HTTP {status_code} · {response_time_ms} ms · requer atenção"),
+            Color32::from_rgb(255, 205, 75),
+        ),
+        HttpHealthStatus::Unreachable { error } => (
+            format!("HTTP sem resposta · {error}"),
+            Color32::from_rgb(235, 87, 87),
+        ),
+    }
+}
+
 fn project_process_ids(
     processes: &[ProjectProcess],
     project_path: &Path,
@@ -6470,9 +6664,10 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DependencyInstall, DependencyInstallEvent, ProjectEnvironment, dependency_error_suggestion,
-        executable_available, initials_from_username, inspect_project_environment, laravel_major,
-        lowercase_hex, prepare_laravel_migration_files, process_error_suggestion,
+        DependencyInstall, DependencyInstallEvent, HttpHealthStatus, ProjectEnvironment,
+        classify_http_health, dependency_error_suggestion, executable_available,
+        initials_from_username, inspect_project_environment, laravel_major, lowercase_hex,
+        prepare_laravel_migration_files, probe_http_health, process_error_suggestion,
         process_exposes_application_url, process_matches_search, project_process_ids,
         resolve_environment_plan, resolve_environment_plan_with_tools_directory,
         run_dependency_installs, runtime_requirement_status,
@@ -6489,11 +6684,66 @@ mod tests {
         technologies::TechnologyKind,
     };
     use localcodepilot_platform::installations::ProgramInventory;
-    use std::{ffi::OsStr, fs, path::PathBuf, sync::mpsc, time::SystemTime};
+    use std::{
+        ffi::OsStr,
+        fs,
+        io::{Read, Write},
+        net::TcpListener,
+        path::PathBuf,
+        sync::mpsc,
+        thread,
+        time::SystemTime,
+    };
 
     #[test]
     fn encodes_checksum_bytes_as_lowercase_hex() {
         assert_eq!(lowercase_hex(&[0x00, 0x09, 0xaf, 0xff]), "0009afff");
+    }
+
+    #[test]
+    fn classifies_success_and_error_http_statuses() {
+        assert_eq!(
+            classify_http_health(204, 12),
+            HttpHealthStatus::Healthy {
+                status_code: 204,
+                response_time_ms: 12,
+            }
+        );
+        assert_eq!(
+            classify_http_health(503, 25),
+            HttpHealthStatus::Attention {
+                status_code: 503,
+                response_time_ms: 25,
+            }
+        );
+    }
+
+    #[test]
+    fn probes_a_local_http_service() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1_024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+
+        let result = probe_http_health(format!("http://{address}"));
+        server.join().unwrap();
+
+        assert_eq!(result.url, format!("http://{address}"));
+        assert!(matches!(
+            result.status,
+            HttpHealthStatus::Healthy {
+                status_code: 204,
+                ..
+            }
+        ));
     }
 
     #[test]

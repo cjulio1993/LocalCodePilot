@@ -1,0 +1,67 @@
+name: Validate macOS package
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-macos.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "assets/branding/**"
+      - "core/**"
+      - "desktop/**"
+      - "platform/**"
+      - "runtime/**"
+      - "services/**"
+      - "scripts/package-macos.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Build and verify universal DMG
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests on macOS
+        run: cargo test --workspace --locked
+
+      - name: Build Intel and Apple Silicon binaries
+        run: |
+          cargo build --release --locked -p localcodepilot-desktop --target x86_64-apple-darwin
+          cargo build --release --locked -p localcodepilot-desktop --target aarch64-apple-darwin
+          mkdir -p target/macos-universal
+          lipo -create \
+            target/x86_64-apple-darwin/release/localcodepilot-desktop \
+            target/aarch64-apple-darwin/release/localcodepilot-desktop \
+            -output target/macos-universal/localcodepilot-desktop
+          lipo target/macos-universal/localcodepilot-desktop -verify_arch x86_64 arm64
+
+      - name: Package and verify DMG
+        run: bash scripts/package-macos.sh "0.4.0-alpha.6-validation" target/macos-universal/localcodepilot-desktop
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalCodePilot-macos-universal-validation
+          retention-days: 7
+          path: |
+            dist/LocalCodePilot-0.4.0-alpha.6-validation-macos-universal.dmg
+            dist/SHA256SUMS-macos.txt

@@ -1,0 +1,7 @@
+services:
+  smoke:
+    image: busybox:1.36
+    command:
+      - sh
+      - -c
+      - trap 'exit 0' TERM INT; echo 'LocalCodePilot Docker QA OK'; while true; do sleep 1; done
