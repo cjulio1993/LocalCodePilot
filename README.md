@@ -102,6 +102,8 @@ O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. `up` e `bu
 
 ### Atualização pelo aplicativo (experimental)
 
+As notifica??es de atualiza??o exigem um pacote compat?vel com o sistema em uso: Windows recebe somente pacotes Windows e macOS recebe somente DMGs macOS. Releases sem pacote compat?vel e avisos antigos incompat?veis em cache s?o ignorados.
+
 Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
 
 Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. No macOS, **Baixar atualização** abre o DMG universal correspondente; a troca do aplicativo permanece manual. Builds de desenvolvimento, Linux e pastas protegidas abrem a página oficial da release como alternativa. Quem usa a alpha 4 ou uma versão anterior no Windows precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
@@ -373,6 +375,8 @@ The **Containers** page discovers Dockerfiles, Containerfiles and Compose manife
 LocalCodePilot does not install Docker/Podman or start the engine VM. Confirmed `up` and `build` actions may download or build images. Recognized Compose override files are passed to the provider in the displayed order; the local preview still does not resolve variables, profiles, `include`, `extends`, or external references, so effective validation is delegated to Compose. A standalone Dockerfile only offers image building because the app does not invent an image name, ports, or a run command. CI automatically verifies the Docker and Podman command flows with a minimal project; complete interaction through the application still requires manual validation before alpha 6. For compatibility with earlier `podman-compose` versions, Podman uses `config` without `--quiet` and `ps` without `--all`. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the diagnostic `containers <directory>` CLI command.
 
 ### In-app updates (experimental)
+
+Update notifications require a package compatible with the running operating system: Windows only receives Windows packages, and macOS only receives macOS DMGs. Releases without a compatible package and incompatible cached notifications are ignored.
 
 When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
 

@@ -26,6 +26,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Avisos de atualiza??o agora exigem um pacote para o sistema em uso e descartam notifica??es incompat?veis em cache, evitando oferecer releases exclusivas do macOS no Windows e vice-versa.
+
 - A verificação do binário universal usa a ordem de argumentos aceita pelo `lipo` do Xcode.
 
 ## [0.4.0-alpha.5] - 2026-10-13
