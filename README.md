@@ -12,8 +12,6 @@
 
 **Alpha para Windows:** a versão `0.4.0-alpha.5.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
-**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A alpha 6 só será publicada depois que a instalação e a primeira abertura forem validadas num Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
-
 [Português](#português) · [English](#english)
 
 ---
@@ -102,7 +100,7 @@ O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. `up` e `bu
 
 ### Atualização pelo aplicativo (experimental)
 
-As notifica??es de atualiza??o exigem um pacote compat?vel com o sistema em uso: Windows recebe somente pacotes Windows e macOS recebe somente DMGs macOS. Releases sem pacote compat?vel e avisos antigos incompat?veis em cache s?o ignorados.
+A alpha `0.4.0-alpha.5.1` corrige os avisos de atualiza??o: cada sistema recebe somente releases com pacote compat?vel. Notifica??es incompat?veis em cache s?o descartadas. Quem usa alpha 5 deve instalar este pacote manualmente se o aviso de uma release exclusiva do macOS impedir a atualiza??o integrada.
 
 Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
 
@@ -292,8 +290,6 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 **Windows alpha:** version `0.4.0-alpha.5.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
-**macOS under validation:** the repository now produces a universal Intel and Apple Silicon application in a DMG, but this package is not part of a public release yet. Alpha 6 will only be published after installation and first launch are validated on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
-
 ### What is LocalCodePilot?
 
 LocalCodePilot aims to bring the machine's development projects, runtimes, processes, ports, and services together in one place. Instead of requiring every project to be registered manually, the application automatically searches for projects and identifies their technologies from the files found in each directory.
@@ -376,7 +372,7 @@ LocalCodePilot does not install Docker/Podman or start the engine VM. Confirmed 
 
 ### In-app updates (experimental)
 
-Update notifications require a package compatible with the running operating system: Windows only receives Windows packages, and macOS only receives macOS DMGs. Releases without a compatible package and incompatible cached notifications are ignored.
+Alpha `0.4.0-alpha.5.1` fixes update notifications: each operating system only receives releases with a compatible package. Incompatible cached notifications are discarded. Alpha 5 users should install this package manually if a macOS-only release notification prevents the in-app update.
 
 When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
 
