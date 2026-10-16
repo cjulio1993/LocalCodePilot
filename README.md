@@ -10,7 +10,7 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.4.0-alpha.5` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.5.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
 **macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A alpha 6 só será publicada depois que a instalação e a primeira abertura forem validadas num Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
@@ -101,6 +101,8 @@ A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, list
 O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. `up` e `build` podem baixar ou construir imagens depois da confirmação. Arquivos Compose de override reconhecidos são enviados ao provedor na ordem exibida; a prévia local ainda não resolve variáveis, perfis, `include`, `extends` ou referências externas, portanto a validação efetiva fica a cargo do Compose. Um Dockerfile isolado oferece somente construção de imagem, pois o app não inventa nome, portas ou comando de execução. Os fluxos de comandos Docker e Podman são verificados automaticamente no CI com um projeto mínimo; a interação completa pela interface ainda precisa de validação manual antes da alpha 6. Para compatibilidade com versões anteriores do `podman-compose`, o Podman usa `config` sem `--quiet` e `ps` sem `--all`. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) e a CLI de diagnóstico `containers <pasta>`.
 
 ### Atualização pelo aplicativo (experimental)
+
+As notifica??es de atualiza??o exigem um pacote compat?vel com o sistema em uso: Windows recebe somente pacotes Windows e macOS recebe somente DMGs macOS. Releases sem pacote compat?vel e avisos antigos incompat?veis em cache s?o ignorados.
 
 Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
 
@@ -288,7 +290,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.4.0-alpha.5` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.5.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
 **macOS under validation:** the repository now produces a universal Intel and Apple Silicon application in a DMG, but this package is not part of a public release yet. Alpha 6 will only be published after installation and first launch are validated on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
@@ -373,6 +375,8 @@ The **Containers** page discovers Dockerfiles, Containerfiles and Compose manife
 LocalCodePilot does not install Docker/Podman or start the engine VM. Confirmed `up` and `build` actions may download or build images. Recognized Compose override files are passed to the provider in the displayed order; the local preview still does not resolve variables, profiles, `include`, `extends`, or external references, so effective validation is delegated to Compose. A standalone Dockerfile only offers image building because the app does not invent an image name, ports, or a run command. CI automatically verifies the Docker and Podman command flows with a minimal project; complete interaction through the application still requires manual validation before alpha 6. For compatibility with earlier `podman-compose` versions, Podman uses `config` without `--quiet` and `ps` without `--all`. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the diagnostic `containers <directory>` CLI command.
 
 ### In-app updates (experimental)
+
+Update notifications require a package compatible with the running operating system: Windows only receives Windows packages, and macOS only receives macOS DMGs. Releases without a compatible package and incompatible cached notifications are ignored.
 
 When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
 
