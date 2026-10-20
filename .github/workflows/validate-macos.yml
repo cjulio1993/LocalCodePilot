@@ -75,7 +75,7 @@ jobs:
           plutil -lint "$app/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=2 "$app"
           lipo "$app/Contents/MacOS/LocalCodePilot" -verify_arch x86_64 arm64
-          cmp "$app/Contents/MacOS/LocalCodePilot" target/macos-universal/localcodepilot-desktop
+          cmp "$app/Contents/MacOS/LocalCodePilot" "$mount_point/LocalCodePilot.app/Contents/MacOS/LocalCodePilot"
 
       - name: Upload validation artifact
         uses: actions/upload-artifact@v4
