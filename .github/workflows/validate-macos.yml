@@ -57,6 +57,26 @@ jobs:
       - name: Package and verify DMG
         run: bash scripts/package-macos.sh "0.4.0-alpha.6-validation" target/macos-universal/localcodepilot-desktop
 
+      - name: Mount DMG and verify installed app
+        run: |
+          set -euo pipefail
+          dmg="$PWD/dist/LocalCodePilot-0.4.0-alpha.6-validation-macos-universal.dmg"
+          mount_point="$RUNNER_TEMP/localcodepilot-dmg"
+          install_root="$RUNNER_TEMP/localcodepilot-install"
+          mkdir -p "$mount_point" "$install_root"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_point"
+          trap 'hdiutil detach "$mount_point"' EXIT
+          test -L "$mount_point/Applications"
+          test "$(readlink "$mount_point/Applications")" = /Applications
+          cp -R "$mount_point/LocalCodePilot.app" "$install_root/"
+          app="$install_root/LocalCodePilot.app"
+          test -x "$app/Contents/MacOS/LocalCodePilot"
+          test -f "$app/Contents/Resources/README-MACOS.txt"
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          lipo "$app/Contents/MacOS/LocalCodePilot" -verify_arch x86_64 arm64
+          cmp "$app/Contents/MacOS/LocalCodePilot" target/macos-universal/localcodepilot-desktop
+
       - name: Upload validation artifact
         uses: actions/upload-artifact@v4
         with:
