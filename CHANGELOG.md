@@ -26,6 +26,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- A detecção preserva os runtimes independentes de Node, Dart e Go em repositórios que também contêm Flutter.
 - Serviços só são considerados disponíveis depois que a porta esperada responde; uma URL anunciada nos logs não basta.
 - No Windows, executáveis nativos são iniciados diretamente, scripts BAT/CMD continuam pelo interpretador e a parada de processos gerenciados alcança seus descendentes mesmo quando `taskkill` falha.
 

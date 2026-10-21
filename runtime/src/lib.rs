@@ -565,12 +565,6 @@ fn normalize_node_constraint(value: &str) -> String {
 }
 
 pub fn detect(path: &Path) -> Vec<RuntimeKind> {
-    if fs::read_to_string(path.join("pubspec.yaml"))
-        .ok()
-        .is_some_and(|contents| is_flutter_pubspec(&contents))
-    {
-        return vec![RuntimeKind::Flutter];
-    }
     let mut found = Vec::new();
     detect_in_directory(path, &mut found);
 
@@ -600,9 +594,6 @@ pub fn detect(path: &Path) -> Vec<RuntimeKind> {
                 }
             }
         }
-    }
-    if found.contains(&RuntimeKind::Flutter) {
-        found.retain(|runtime| *runtime != RuntimeKind::Dart);
     }
     found
 }
@@ -1453,8 +1444,10 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
             found.push(runtime);
         }
     }
-    if let Ok(contents) = fs::read_to_string(path.join("pubspec.yaml")) {
-        let runtime = if is_flutter_pubspec(&contents) {
+    let pubspec = fs::read_to_string(path.join("pubspec.yaml")).ok();
+    let is_flutter = pubspec.as_deref().is_some_and(is_flutter_pubspec);
+    if pubspec.is_some() {
+        let runtime = if is_flutter {
             RuntimeKind::Flutter
         } else {
             RuntimeKind::Dart
@@ -1475,6 +1468,7 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
             continue;
         };
         if let Some(runtime) = RuntimeKind::from_source_extension(extension)
+            && !(is_flutter && runtime == RuntimeKind::Dart)
             && !found.contains(&runtime)
         {
             found.push(runtime);
@@ -1610,6 +1604,43 @@ impl RuntimeDetector for ManifestRuntimeDetector {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keeps_independent_runtimes_in_flutter_monorepos() {
+        let root = std::env::temp_dir().join(format!(
+            "localcodepilot-flutter-monorepo-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("tools")).unwrap();
+        fs::create_dir_all(root.join("mobile")).unwrap();
+        fs::create_dir_all(root.join("api")).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join("pubspec.yaml"),
+            "name: root\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        )
+        .unwrap();
+        fs::write(root.join("package.json"), "{}").unwrap();
+        fs::write(
+            root.join("mobile/pubspec.yaml"),
+            "name: mobile\ndependencies:\n  flutter:\n    sdk: flutter\n",
+        )
+        .unwrap();
+        fs::write(root.join("mobile/main.dart"), "void main() {}").unwrap();
+        fs::write(root.join("tools/pubspec.yaml"), "name: tools\n").unwrap();
+        fs::write(root.join("api/go.mod"), "module example.com/api\n").unwrap();
+
+        let detected = detect(&root);
+        assert!(detected.contains(&RuntimeKind::Flutter));
+        assert!(detected.contains(&RuntimeKind::Node));
+        assert!(detected.contains(&RuntimeKind::Dart));
+        assert!(detected.contains(&RuntimeKind::Go));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn ignores_qa_fixtures_in_parent_but_allows_direct_inspection() {
         let root = std::env::temp_dir().join(format!("lcp-ignored-qa-{}", std::process::id()));
