@@ -22,8 +22,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - A matriz de suporte e a documentação de Containers agora distinguem o diagnóstico da execução confirmada e deixam claro que o app não instala nem inicia os motores.
 - Arquivos Compose de override detectados agora são enviados ao provedor junto do manifesto principal.
 - O verificador de atualização seleciona o DMG universal no macOS em vez de oferecer o pacote do Windows.
-- A release por tag só é publicada depois que os artefatos de Windows e macOS terminam com sucesso.
-- A publicação da versão `0.4.0-alpha.6` fica condicionada à validação dos health checks HTTP em projetos reais, da execução integrada com Docker/Podman e da instalação no macOS.
+- A release por tag da Alpha 6 publica somente os artefatos Windows depois dos checks Windows; o DMG macOS permanece em validação separada.
+- A publicação da versão `0.4.0-alpha.6` fica condicionada à validação, no Windows, dos health checks HTTP em projetos reais e da execução integrada com Docker/Podman pela interface.
 
 ### Corrigido
 

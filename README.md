@@ -12,7 +12,7 @@
 
 **Alpha para Windows:** a versão `0.4.0-alpha.5.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
-**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A alpha 6 só será publicada depois que a instalação e a primeira abertura forem validadas num Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A Alpha 6 será lançada somente para Windows; o macOS terá sua própria validação de instalação e primeira abertura em um Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 [Português](#português) · [English](#english)
 
@@ -164,7 +164,7 @@ Serviços com uma URL HTTP local são verificados em segundo plano a cada dez se
 
 ### Em desenvolvimento
 
-A versão `0.4.0-alpha.6` permanecerá sem publicação até que estes três critérios estejam concluídos e validados: health checks HTTP em projetos reais, execução integrada de Docker/Podman e instalação do aplicativo no macOS.
+A versão `0.4.0-alpha.6` será publicada somente para Windows após validar health checks HTTP em projetos reais e a execução integrada de Docker/Podman pela interface no Windows. O pacote macOS continua em validação separada e não bloqueia essa release.
 
 - Detecção de frameworks e metadados mais detalhados.
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
@@ -294,7 +294,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 **Windows alpha:** version `0.4.0-alpha.5.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
-**macOS under validation:** the repository now produces a universal Intel and Apple Silicon application in a DMG, but this package is not part of a public release yet. Alpha 6 will only be published after installation and first launch are validated on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**macOS under validation:** the repository produces a universal Intel and Apple Silicon application in a DMG, but that package is not part of a public release yet. Alpha 6 will ship for Windows only; macOS will require separate installation and first-launch validation on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 ### What is LocalCodePilot?
 
@@ -440,7 +440,7 @@ Services with a local HTTP URL are checked in the background every ten seconds, 
 
 ### Work in progress
 
-Version `0.4.0-alpha.6` will remain unpublished until all three gates are complete and validated: HTTP health checks on real projects, integrated Docker/Podman execution, and application installation on macOS.
+Version `0.4.0-alpha.6` will ship for Windows only after HTTP health checks on real projects and integrated Docker/Podman execution have been validated through the Windows interface. The macOS package remains under separate validation and does not block this release.
 
 - Framework detection and richer project metadata.
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.

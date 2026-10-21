@@ -14,7 +14,8 @@ Instalação
 
 Os artefatos de validação usam assinatura ad hoc. Se o macOS bloquear a primeira
 abertura, clique com o botão direito no aplicativo, escolha Abrir e confirme.
-A alpha 6 só será publicada depois da validação desse fluxo num Mac real.
+A Alpha 6 será publicada somente para Windows. A publicação de um pacote macOS
+depende da validação desse fluxo em um Mac real.
 
 Atualizações
 ------------
