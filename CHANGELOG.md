@@ -26,6 +26,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Serviços só são considerados disponíveis depois que a porta esperada responde; uma URL anunciada nos logs não basta.
+- No Windows, executáveis nativos são iniciados diretamente, scripts BAT/CMD continuam pelo interpretador e a parada de processos gerenciados alcança seus descendentes mesmo quando `taskkill` falha.
+
 - Restauradas a versão de desenvolvimento `0.4.0-alpha.6-rc.1` e a documentação da alpha 6 após a integração do hotfix Windows `0.4.0-alpha.5.1`.
 
 - Avisos de atualização agora exigem um pacote para o sistema em uso e descartam notificações incompatíveis em cache, evitando oferecer releases exclusivas do macOS no Windows e vice-versa.
