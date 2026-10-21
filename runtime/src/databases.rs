@@ -1,3 +1,4 @@
+use rusqlite::{Connection, OpenFlags};
 use std::{
     collections::VecDeque,
     fs,
@@ -81,6 +82,96 @@ pub fn database_preparation(requirement: &DatabaseRequirement) -> DatabasePrepar
         Some(false) => DatabasePreparation::PrepareLocalServer(requirement.engine),
         None => DatabasePreparation::NeedsConfiguration(requirement.engine),
     }
+}
+
+/// Resolves only a project-owned SQLite file. Paths outside the project and
+/// in-memory databases are intentionally left to the application itself.
+fn sqlite_path(requirement: &DatabaseRequirement, project_root: &Path) -> Result<PathBuf, String> {
+    if requirement.engine != DatabaseEngine::Sqlite {
+        return Err("O banco detectado não é SQLite".into());
+    }
+    let root = fs::canonicalize(project_root)
+        .map_err(|error| format!("Não foi possível localizar o projeto: {error}"))?;
+    if !fs::canonicalize(&requirement.source).is_ok_and(|source| source.starts_with(&root)) {
+        return Err("A configuração SQLite está fora do projeto".into());
+    }
+    let contents = fs::read_to_string(&requirement.source)
+        .map_err(|error| format!("Não foi possível ler a configuração do banco: {error}"))?;
+    let name = contents
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.trim().split_once('=')?;
+            (key == "DB_DATABASE").then(|| value.trim().trim_matches(['\'', '"']))
+        })
+        .next_back()
+        .ok_or("DB_DATABASE não foi definido para SQLite")?;
+    if name.is_empty() || name == ":memory:" || name.contains(['$', '{', '}']) {
+        return Err("DB_DATABASE não aponta para um arquivo SQLite local".into());
+    }
+    let configured = Path::new(name);
+    let target = if configured.is_absolute() {
+        configured.to_path_buf()
+    } else {
+        root.join(configured)
+    };
+    if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("Atalhos simbólicos para arquivos SQLite não são preparados".into());
+    }
+    let parent = target.parent().ok_or("Caminho SQLite inválido")?;
+    let mut existing = parent;
+    while !existing.exists() {
+        existing = existing.parent().ok_or("Caminho SQLite inválido")?;
+    }
+    let resolved = fs::canonicalize(existing)
+        .map_err(|error| format!("Não foi possível validar a pasta SQLite: {error}"))?;
+    if !resolved.starts_with(&root) {
+        return Err("O arquivo SQLite está fora do projeto; preparação automática ignorada".into());
+    }
+    Ok(target)
+}
+
+pub fn prepare_sqlite_database(
+    requirement: &DatabaseRequirement,
+    project_root: &Path,
+) -> Result<(), String> {
+    let target = sqlite_path(requirement, project_root)?;
+    let parent = target.parent().ok_or("Caminho SQLite inválido")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Não foi possível criar a pasta SQLite: {error}"))?;
+    let root = fs::canonicalize(project_root)
+        .map_err(|error| format!("Não foi possível localizar o projeto: {error}"))?;
+    if !fs::canonicalize(parent).is_ok_and(|resolved| resolved.starts_with(root)) {
+        return Err("A pasta SQLite está fora do projeto".into());
+    }
+    let connection = Connection::open_with_flags(
+        target,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    )
+    .map_err(|error| format!("Não foi possível abrir SQLite: {error}"))?;
+    let result: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|error| format!("Não foi possível validar SQLite: {error}"))?;
+    if result != "ok" {
+        return Err("O arquivo SQLite não passou na verificação de integridade".into());
+    }
+    Ok(())
+}
+
+pub fn probe_sqlite_database(
+    requirement: &DatabaseRequirement,
+    project_root: &Path,
+) -> Option<bool> {
+    let target = sqlite_path(requirement, project_root).ok()?;
+    if !target.is_file() {
+        return Some(false);
+    }
+    let Ok(connection) = Connection::open_with_flags(target, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return Some(false);
+    };
+    let result: Result<String, _> =
+        connection.query_row("PRAGMA quick_check", [], |row| row.get(0));
+    Some(result.is_ok_and(|value| value == "ok"))
 }
 
 /// Checks only loopback TCP endpoints. `None` means there is no safe local probe to run.
@@ -302,5 +393,43 @@ mod tests {
             database_preparation(&sqlite),
             DatabasePreparation::FileDatabase
         );
+    }
+
+    #[test]
+    fn prepares_project_owned_sqlite_and_rejects_paths_outside_project() {
+        let root = std::env::temp_dir().join(format!(
+            "lcp-sqlite-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join(".env");
+        fs::write(
+            &source,
+            "DB_CONNECTION=sqlite\nDB_DATABASE=database/app.sqlite\n",
+        )
+        .unwrap();
+        let database = detect_database_requirements(&root).remove(0);
+        assert_eq!(probe_sqlite_database(&database, &root), Some(false));
+        prepare_sqlite_database(&database, &root).unwrap();
+        prepare_sqlite_database(&database, &root).unwrap();
+        assert!(root.join("database/app.sqlite").is_file());
+        assert_eq!(probe_sqlite_database(&database, &root), Some(true));
+
+        fs::write(root.join("database/app.sqlite"), "not a sqlite database").unwrap();
+        assert_eq!(probe_sqlite_database(&database, &root), Some(false));
+        assert!(prepare_sqlite_database(&database, &root).is_err());
+
+        fs::write(
+            &source,
+            "DB_CONNECTION=sqlite\nDB_DATABASE=../outside.sqlite\n",
+        )
+        .unwrap();
+        assert!(prepare_sqlite_database(&database, &root).is_err());
+        assert!(!root.parent().unwrap().join("outside.sqlite").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
