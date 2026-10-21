@@ -3097,10 +3097,8 @@ impl LocalCodePilot {
             running.last_health_check = now;
             let port_is_listening =
                 matches!(inspect_tcp_port(port), PortAvailability::Occupied { .. });
-            let url_was_announced = running.urls.iter().any(|url| url.port() == port);
-
             if state == ProcessState::Starting {
-                if port_is_listening || url_was_announced {
+                if port_is_listening {
                     running.port_unavailable_since = None;
                     running.logs.push_back(format!(
                         "[LocalCodePilot] Serviço disponível na porta {}.",
@@ -5508,8 +5506,19 @@ fn process_command_on_port(
         .unwrap_or_else(|| process.args.clone());
     #[cfg(target_os = "windows")]
     {
-        let mut command = Command::new("cmd.exe");
-        command.args(["/D", "/C"]).arg(&process.program).args(&args);
+        let executable = find_executable(&process.program, environment_path)
+            .unwrap_or_else(|| PathBuf::from(&process.program));
+        let is_script = executable.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        });
+        let mut command = if is_script {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/C"]).arg(&executable);
+            command
+        } else {
+            Command::new(&executable)
+        };
+        command.args(&args);
         configure_background_command(&mut command);
         if let Some(path) = environment_path {
             command.env("PATH", path);
@@ -5591,6 +5600,22 @@ fn spawn_output_reader(reader: impl Read + Send + 'static, sender: mpsc::Sender<
 }
 
 fn terminate_process(child: &mut Child) {
+    // Keep the descendants before terminating their parent. Some launchers
+    // exit first, and taskkill can be unavailable in restricted environments.
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+    let root = sysinfo::Pid::from_u32(child.id());
+    let mut tree = vec![root];
+    let mut index = 0;
+    while index < tree.len() {
+        let parent = tree[index];
+        for (pid, process) in system.processes() {
+            if process.parent() == Some(parent) && !tree.contains(pid) {
+                tree.push(*pid);
+            }
+        }
+        index += 1;
+    }
     #[cfg(target_os = "windows")]
     {
         let process_id = child.id().to_string();
@@ -5604,10 +5629,40 @@ fn terminate_process(child: &mut Child) {
             .is_ok_and(|status| status.success())
         {
             let _ = child.wait();
-            return;
         }
     }
     let _ = child.kill();
+    for pid in tree.into_iter().rev().filter(|pid| *pid != root) {
+        if let Some(process) = system.process(pid) {
+            #[cfg(not(windows))]
+            let _ = process.kill();
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::{
+                    Foundation::CloseHandle,
+                    System::Threading::{
+                        OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+                        WaitForSingleObject,
+                    },
+                };
+                // Only PIDs captured as descendants of our own Child are used.
+                // Native termination also works when taskkill's enumeration is denied.
+                unsafe {
+                    let handle = OpenProcess(
+                        PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+                        0,
+                        process.pid().as_u32(),
+                    );
+                    if !handle.is_null() {
+                        if TerminateProcess(handle, 1) != 0 {
+                            WaitForSingleObject(handle, 5_000);
+                        }
+                        CloseHandle(handle);
+                    }
+                }
+            }
+        }
+    }
     let _ = child.wait();
 }
 
