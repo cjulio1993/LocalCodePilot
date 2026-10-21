@@ -47,7 +47,7 @@ O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos
 - Um Dockerfile isolado oferece somente build, sem nomear a imagem nem oferecer `run`.
 - A parada usa `stop`; não há remoção de containers, redes ou volumes.
 - O app não instala Docker/Podman, não inicia Docker Desktop ou máquinas Podman e não aceita entrada interativa no comando.
-- O CI valida os fluxos reais de comandos Docker e Podman (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. Docker Desktop passou pela interface no Windows 11; a interação com Podman no Windows ainda precisa de validação manual antes da alpha 6.
+- O CI valida os fluxos reais de comandos Docker e Podman (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. No Windows 11, Docker Desktop passou pela interface em `config`, `up`, `ps`, logs, `stop`, build e cancelamento. Podman 6.1.4 passou pela interface em `config`, `up`, `ps`, logs e `stop`; o build passou pela CLI.
 
 ## Antes da alpha 6
 
