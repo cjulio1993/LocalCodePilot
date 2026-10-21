@@ -86,6 +86,7 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 ### Classificação e execução
 
 - Manifests e arquivos característicos do framework têm prioridade sobre extensões de arquivos isoladas.
+- Repositórios Git com Flutter e outros projetos preservam os runtimes independentes na classificação, incluindo Dart, Node.js e Go.
 - Um projeto PHP com HTML ou arquivos públicos continua sendo classificado como PHP e deve usar um servidor PHP, não o servidor de site estático.
 - `laravel/framework` identifica Laravel e usa `php artisan serve`; `laravel/lumen-framework` identifica Lumen e usa `php -S localhost:8000 -t public`, pois o Lumen não oferece `artisan serve`.
 - Um site estático só é criado a partir da raiz que contém o documento de entrada e quando não existe um backend ou framework com maior prioridade.
@@ -360,6 +361,7 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 ### Classification and execution
 
 - Framework manifests and characteristic files take precedence over isolated file extensions.
+- Git repositories containing Flutter alongside other projects retain independent runtimes in classification, including Dart, Node.js and Go.
 - A PHP project containing HTML or public files remains a PHP project and should use a PHP server, not the static-site server.
 - `laravel/framework` identifies Laravel and uses `php artisan serve`; `laravel/lumen-framework` identifies Lumen and uses `php -S localhost:8000 -t public`, because Lumen does not provide `artisan serve`.
 - A static site is created only from the root containing its entry document and when no higher-priority backend or framework is present.
