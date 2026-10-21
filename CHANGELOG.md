@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- Diagnóstico inicial de PostgreSQL, MySQL, MariaDB, SQL Server e SQLite em `.env`/`.env.local`, com teste de porta local no desktop e na CLI sem exibir credenciais.
 - Health checks HTTP assíncronos para serviços locais, com código de resposta, tempo de resposta, timeout e estados de saúde exibidos na tela Processos.
 - Execução controlada de Compose com Docker ou Podman para validar, iniciar, parar, consultar estado e ler logs, além da construção de Dockerfiles isolados.
 - Smoke test no CI para validar o fluxo real de Docker Compose e a construção de Dockerfile sem depender da máquina do mantenedor.
@@ -27,6 +28,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 ### Corrigido
 
 - A detecção preserva os runtimes independentes de Node, Dart e Go em repositórios que também contêm Flutter.
+- O botão **Abrir aplicação** desaparece quando o processo do servidor é encerrado; a indicação de banco indisponível tem prioridade sobre **Disponível**.
 - Serviços só são considerados disponíveis depois que a porta esperada responde; uma URL anunciada nos logs não basta.
 - No Windows, executáveis nativos são iniciados diretamente, scripts BAT/CMD continuam pelo interpretador e a parada de processos gerenciados alcança seus descendentes mesmo quando `taskkill` falha.
 
