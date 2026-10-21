@@ -32,3 +32,17 @@ OPEN.md
 
 # Laboratório local de QA; não versionar.
 /qa/
+
+# Planos, roadmaps e evidências de validação mantidos apenas localmente.
+/PLANO-PREPARACAO-AMBIENTES.md
+/ROTEIRO-QA-PREPARACAO-AMBIENTES.md
+/docs/LOCALCODEPILOT_ROADMAP.md
+/docs/LOCALCODEPILOT_ROADMAP_v3.md
+/docs/ALPHA6-VALIDATION.md
+/docs/QA-2026-10-20.md
+
+# Suíte exploratória end-to-end mantida fora dos commits públicos.
+/cli/tests/end_to_end.rs
+/desktop/src/journey_tests.rs
+/docs/END-TO-END.md
+/scripts/test-end-to-end.py
