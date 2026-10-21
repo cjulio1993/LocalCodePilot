@@ -170,7 +170,7 @@ A versão `0.4.0-alpha.6` permanecerá sem publicação até que estes três cri
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
 - Suporte de execução e abertura de ponta a ponta para Go, Dart e Flutter.
 - Mais fixtures e testes de regressão para a classificação de PHP, JavaScript e sites estáticos.
-- Inicialização e controle de serviços como MySQL, PostgreSQL e Redis.
+- Diagnóstico mais preciso das conexões com PostgreSQL, MySQL, MariaDB e SQL Server, com orientação para configuração pelo usuário.
 - Aperfeiçoamento do histórico de instalações e migrações assistidas.
 - Assinatura digital e instalador seguro para reforçar a atualização integrada.
 - Monitoramento contínuo de alterações no filesystem.
@@ -446,7 +446,7 @@ Version `0.4.0-alpha.6` will remain unpublished until all three gates are comple
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.
 - End-to-end execution and opening support for Go, Dart, and Flutter.
 - More fixtures and regression tests for PHP, JavaScript, and static-site classification.
-- Starting and controlling services such as MySQL, PostgreSQL, and Redis.
+- More precise diagnostics for PostgreSQL, MySQL, MariaDB, and SQL Server connections, with guidance for user-managed setup.
 - Improvements to installation and assisted-migration history.
 - Code signing and a secure installer to strengthen the integrated update flow.
 - Continuous filesystem change monitoring.
