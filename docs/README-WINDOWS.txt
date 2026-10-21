@@ -1,5 +1,5 @@
-LocalCodePilot 0.4.0-alpha.5 para Windows x64
-================================================
+LocalCodePilot alpha para Windows x64
+====================================
 
 1. Extraia todos os arquivos do ZIP para uma pasta.
 2. Execute LocalCodePilot.exe.
@@ -24,10 +24,10 @@ Integridade do download
 
 Compare o SHA-256 do ZIP com o arquivo SHA256SUMS.txt publicado na mesma release:
 
-  (Get-FileHash .\LocalCodePilot-0.4.0-alpha.5-windows-x64.zip -Algorithm SHA256).Hash
+  Get-ChildItem .\LocalCodePilot-*-windows-x64.zip | Get-FileHash -Algorithm SHA256
 
-Esta versão alpha ainda não possui assinatura digital. Por isso, o Windows pode
-exibir um aviso do SmartScreen.
+Se o executável não tiver assinatura digital, o Windows pode exibir um aviso
+do SmartScreen.
 
 Site: https://localcodepilot.com.br/
 Problemas: https://github.com/cjulio1993/LocalCodePilot/issues

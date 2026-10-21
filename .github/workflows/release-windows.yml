@@ -111,6 +111,7 @@ jobs:
 
   macos:
     name: Build macOS universal
+    if: github.ref_name == 'v0.4.0-alpha.6-rc.1'
     runs-on: macos-14
 
     steps:
@@ -166,9 +167,11 @@ jobs:
     name: Publish GitHub prerelease
     needs: [windows, macos]
     if: >-
-      always() && !cancelled() && needs.macos.result == 'success' &&
-      (needs.windows.result == 'success' ||
-       (github.ref_name == 'v0.4.0-alpha.6-rc.1' && needs.windows.result == 'skipped'))
+      always() && !cancelled() &&
+      ((github.ref_name == 'v0.4.0-alpha.6-rc.1' &&
+        needs.macos.result == 'success' && needs.windows.result == 'skipped') ||
+       (github.ref_name != 'v0.4.0-alpha.6-rc.1' &&
+        needs.windows.result == 'success' && needs.macos.result == 'skipped'))
     runs-on: ubuntu-latest
 
     steps:
@@ -183,12 +186,13 @@ jobs:
           path: dist/windows
 
       - name: Download macOS assets
+        if: needs.macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: macos-release-assets
           path: dist/macos
 
-      - name: Publish release after required platforms succeed
+      - name: Publish release after required platform succeeds
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,16 +200,18 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
           notes="docs/releases/v$version.md"
-          cp dist/macos/SHA256SUMS-macos.txt dist/SHA256SUMS.txt
-          assets=(
-            "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
-            "dist/SHA256SUMS.txt"
-          )
-          if [[ "$tag" != "v0.4.0-alpha.6-rc.1" ]]; then
-            cat dist/windows/SHA256SUMS.txt >> dist/SHA256SUMS.txt
-            assets+=(
+          if [[ "$tag" == "v0.4.0-alpha.6-rc.1" ]]; then
+            cp dist/macos/SHA256SUMS-macos.txt dist/SHA256SUMS.txt
+            assets=(
+              "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
+              "dist/SHA256SUMS.txt"
+            )
+          else
+            cp dist/windows/SHA256SUMS.txt dist/SHA256SUMS.txt
+            assets=(
               "dist/windows/LocalCodePilot-$version-windows-x64.zip"
               "dist/windows/LocalCodePilot-$version-windows-x64.exe"
+              "dist/SHA256SUMS.txt"
             )
           fi
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
