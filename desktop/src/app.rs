@@ -412,6 +412,12 @@ struct ProjectCardView<'a> {
     width: f32,
 }
 
+struct DiscoverySnapshot {
+    projects: Vec<Project>,
+    processes: Vec<ProjectProcess>,
+    environments: HashMap<PathBuf, ProjectEnvironment>,
+}
+
 pub struct LocalCodePilot {
     page: Page,
     projects: Vec<Project>,
@@ -436,7 +442,7 @@ pub struct LocalCodePilot {
     search: String,
     notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
-    discovery: Option<Receiver<Result<Vec<Project>, String>>>,
+    discovery: Option<Receiver<Result<DiscoverySnapshot, String>>>,
     workspace_state: config::WorkspaceState,
     workspace_dirty: bool,
     last_workspace_save: Instant,
@@ -462,7 +468,8 @@ impl LocalCodePilot {
         let scan_roots =
             config::load_scan_roots().unwrap_or_else(|| default_source.roots().to_vec());
         let source = FilesystemProjectSource::new(scan_roots.clone());
-        let receiver = spawn_discovery(source, cc.egui_ctx.clone());
+        let environment_path = refreshed_environment_path().ok();
+        let receiver = spawn_discovery(source, environment_path.clone(), cc.egui_ctx.clone());
         let logo_texture = load_logo_texture(&cc.egui_ctx);
         let username = current_username();
         let user_initials = initials_from_username(&username);
@@ -502,7 +509,7 @@ impl LocalCodePilot {
             dependency_terminal: None,
             environment_plan_request: None,
             environment_plan_confirmation: None,
-            environment_path: refreshed_environment_path().ok(),
+            environment_path,
             laravel_migration: None,
             platform: NativePlatform::default(),
             logo_texture,
@@ -1123,25 +1130,16 @@ impl LocalCodePilot {
             return;
         };
         match receiver.try_recv() {
-            Ok(Ok(projects)) => {
-                self.notify(format!("{} projeto(s) encontrado(s)", projects.len()));
-                self.processes = projects.iter().flat_map(detect_processes).collect();
+            Ok(Ok(snapshot)) => {
+                self.notify(format!(
+                    "{} projeto(s) encontrado(s)",
+                    snapshot.projects.len()
+                ));
+                self.processes = snapshot.processes;
                 self.assigned_ports.clear();
                 self.port_conflicts.clear();
-                self.project_environments = projects
-                    .iter()
-                    .map(|project| {
-                        (
-                            project.path.clone(),
-                            inspect_project_environment(
-                                project,
-                                &self.processes,
-                                self.environment_path.as_deref(),
-                            ),
-                        )
-                    })
-                    .collect();
-                self.projects = projects;
+                self.project_environments = snapshot.environments;
+                self.projects = snapshot.projects;
                 self.discovery = None;
                 self.refresh_containers(ctx.clone());
             }
@@ -1168,6 +1166,7 @@ impl LocalCodePilot {
         self.notify("Atualizando a lista de projetos...");
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -1189,6 +1188,7 @@ impl LocalCodePilot {
         });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -1205,6 +1205,7 @@ impl LocalCodePilot {
         });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -1221,6 +1222,7 @@ impl LocalCodePilot {
         });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -4226,14 +4228,39 @@ impl Drop for LocalCodePilot {
 
 fn spawn_discovery(
     source: FilesystemProjectSource,
+    environment_path: Option<OsString>,
     repaint: egui::Context,
-) -> Receiver<Result<Vec<Project>, String>> {
+) -> Receiver<Result<DiscoverySnapshot, String>> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let service = DiscoveryService::new(source, ManifestRuntimeDetector);
         let result = service
             .discover()
-            .map(|catalog| catalog.into_projects())
+            .map(|catalog| {
+                let projects = catalog.into_projects();
+                let processes = projects
+                    .iter()
+                    .flat_map(detect_processes)
+                    .collect::<Vec<_>>();
+                let environments = projects
+                    .iter()
+                    .map(|project| {
+                        (
+                            project.path.clone(),
+                            inspect_project_environment(
+                                project,
+                                &processes,
+                                environment_path.as_deref(),
+                            ),
+                        )
+                    })
+                    .collect();
+                DiscoverySnapshot {
+                    projects,
+                    processes,
+                    environments,
+                }
+            })
             .map_err(|error| error.to_string());
         let _ = sender.send(result);
         repaint.request_repaint();
