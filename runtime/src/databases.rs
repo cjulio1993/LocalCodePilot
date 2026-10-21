@@ -56,31 +56,31 @@ pub struct DatabaseRequirement {
     pub port: Option<u16>,
 }
 
-/// The next preparation path for a detected database. This does not imply that
+/// The destination state for a detected database. This does not imply that
 /// authentication or the requested schema has been verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DatabasePreparation {
+pub enum DatabaseRoute {
     LocalServerReachable(DatabaseEngine),
-    PrepareLocalServer(DatabaseEngine),
+    LocalServerUnavailable(DatabaseEngine),
     RemoteServer(DatabaseEngine),
     FileDatabase,
     NeedsConfiguration(DatabaseEngine),
 }
 
-pub fn database_preparation(requirement: &DatabaseRequirement) -> DatabasePreparation {
+pub fn route_database(requirement: &DatabaseRequirement) -> DatabaseRoute {
     if requirement.engine == DatabaseEngine::Sqlite {
-        return DatabasePreparation::FileDatabase;
+        return DatabaseRoute::FileDatabase;
     }
     let Some(host) = requirement.host.as_deref() else {
-        return DatabasePreparation::NeedsConfiguration(requirement.engine);
+        return DatabaseRoute::NeedsConfiguration(requirement.engine);
     };
     if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
-        return DatabasePreparation::RemoteServer(requirement.engine);
+        return DatabaseRoute::RemoteServer(requirement.engine);
     }
     match probe_local_tcp(requirement) {
-        Some(true) => DatabasePreparation::LocalServerReachable(requirement.engine),
-        Some(false) => DatabasePreparation::PrepareLocalServer(requirement.engine),
-        None => DatabasePreparation::NeedsConfiguration(requirement.engine),
+        Some(true) => DatabaseRoute::LocalServerReachable(requirement.engine),
+        Some(false) => DatabaseRoute::LocalServerUnavailable(requirement.engine),
+        None => DatabaseRoute::NeedsConfiguration(requirement.engine),
     }
 }
 
@@ -369,18 +369,18 @@ mod tests {
                 port: None,
             };
             assert_eq!(
-                database_preparation(&requirement),
-                DatabasePreparation::NeedsConfiguration(engine)
+                route_database(&requirement),
+                DatabaseRoute::NeedsConfiguration(engine)
             );
             requirement.host = Some("db.example".into());
             assert_eq!(
-                database_preparation(&requirement),
-                DatabasePreparation::RemoteServer(engine)
+                route_database(&requirement),
+                DatabaseRoute::RemoteServer(engine)
             );
             requirement.host = None;
             assert_eq!(
-                database_preparation(&requirement),
-                DatabasePreparation::NeedsConfiguration(engine)
+                route_database(&requirement),
+                DatabaseRoute::NeedsConfiguration(engine)
             );
         }
         let sqlite = DatabaseRequirement {
@@ -389,10 +389,7 @@ mod tests {
             host: None,
             port: None,
         };
-        assert_eq!(
-            database_preparation(&sqlite),
-            DatabasePreparation::FileDatabase
-        );
+        assert_eq!(route_database(&sqlite), DatabaseRoute::FileDatabase);
     }
 
     #[test]
