@@ -93,6 +93,7 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 - Pastas internas como `public`, `web`, `dist` e `build` não devem virar projetos independentes quando pertencem a outra aplicação.
 - Serviços web exibem uma URL quando ela é confirmada; aplicações de terminal devem permanecer acompanhadas pelos logs.
 - Portas de sites estáticos são derivadas do caminho do projeto para reduzir conflitos e impedir que a URL de outro projeto seja reutilizada.
+- Bancos PostgreSQL, MySQL, MariaDB, SQL Server e SQLite declarados em `.env`/`.env.local` aparecem no diagnóstico; portas locais são testadas sem expor credenciais. Veja [docs/DATABASES.md](docs/DATABASES.md).
 - Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
 
 ### Containers: execução controlada (em validação)
@@ -368,6 +369,7 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 - Internal directories such as `public`, `web`, `dist`, and `build` should not become independent projects when they belong to another application.
 - Web services expose a URL after it is confirmed; terminal applications should remain observable through their logs.
 - Static-site ports are derived from the project path to reduce conflicts and prevent another project's URL from being reused.
+- PostgreSQL, MySQL, MariaDB, SQL Server and SQLite declared in `.env`/`.env.local` appear in diagnostics; local ports are checked without exposing credentials. See [docs/DATABASES.md](docs/DATABASES.md).
 - Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
 
 ### Containers: controlled execution (under validation)

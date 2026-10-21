@@ -10,6 +10,8 @@ use localcodepilot_core::{
 use semver::{Version, VersionReq};
 use std::{collections::VecDeque, fs, path::Path};
 
+pub mod databases;
+
 const CANDIDATES: &[(&str, RuntimeKind)] = &[
     ("Cargo.toml", RuntimeKind::Rust),
     ("package.json", RuntimeKind::Node),

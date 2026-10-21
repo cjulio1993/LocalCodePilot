@@ -9,6 +9,7 @@ fn main() -> ExitCode {
         Some("scan") => scan(),
         Some("inspect") => inspect(env::args_os().nth(2).map(PathBuf::from)),
         Some("containers") => containers(env::args_os().nth(2).map(PathBuf::from)),
+        Some("databases") => databases(env::args_os().nth(2).map(PathBuf::from)),
         Some("--help" | "-h" | "help") => {
             help();
             ExitCode::SUCCESS
@@ -78,8 +79,47 @@ fn scan() -> ExitCode {
 
 fn help() {
     println!(
-        "LocalCodePilot CLI\n\n  localcodepilot status\n  localcodepilot scan\n  localcodepilot inspect <pasta>\n  localcodepilot containers <pasta>"
+        "LocalCodePilot CLI\n\n  localcodepilot status\n  localcodepilot scan\n  localcodepilot inspect <pasta>\n  localcodepilot containers <pasta>\n  localcodepilot databases <pasta>"
     );
+}
+
+fn databases(path: Option<PathBuf>) -> ExitCode {
+    let Some(path) = path.filter(|path| path.is_dir()) else {
+        eprintln!("Uso: localcodepilot databases <pasta existente>");
+        return ExitCode::FAILURE;
+    };
+    let requirements = localcodepilot_runtime::databases::detect_database_requirements(&path);
+    if requirements.is_empty() {
+        println!("Nenhuma configuração DB_CONNECTION ativa encontrada em .env ou .env.local.");
+        return ExitCode::SUCCESS;
+    }
+    let mut unavailable = false;
+    for database in requirements {
+        println!("{}: {}", database.source.display(), database.engine.label());
+        if let (Some(host), Some(port)) = (&database.host, database.port) {
+            println!("  Destino: {host}:{port}");
+        }
+        match localcodepilot_runtime::databases::probe_local_tcp(&database) {
+            Some(true) => {
+                println!("  TCP local: disponível; autenticação e schema não verificados")
+            }
+            Some(false) => {
+                println!("  TCP local: indisponível; verifique se o servidor está iniciado");
+                unavailable = true;
+            }
+            None if database.engine
+                == localcodepilot_runtime::databases::DatabaseEngine::Sqlite =>
+            {
+                println!("  SQLite: arquivo e schema não verificados");
+            }
+            None => println!("  Destino não testado automaticamente"),
+        }
+    }
+    if unavailable {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn containers(path: Option<PathBuf>) -> ExitCode {

@@ -31,6 +31,9 @@ use localcodepilot_platform::{
     },
     ports::{PortAvailability, PortOwner, inspect_tcp_port, terminate_process_tree},
 };
+use localcodepilot_runtime::databases::{
+    DatabaseRequirement, detect_database_requirements, probe_local_tcp,
+};
 use localcodepilot_runtime::{
     ManifestRuntimeDetector, detect_dart_requirement, detect_go_requirement,
     detect_java_requirement, detect_node_requirement, detect_php_extensions,
@@ -173,6 +176,7 @@ struct ProjectEnvironment {
     runtime_requirements: Vec<RuntimeRequirement>,
     missing_php_extensions: Vec<String>,
     laravel_constraint: Option<String>,
+    databases: Vec<(DatabaseRequirement, Option<bool>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +289,12 @@ impl ProjectEnvironment {
             ("Extensões PHP ausentes", Color32::from_rgb(255, 205, 75))
         } else if !self.missing_dependencies.is_empty() {
             ("Dependências ausentes", Color32::from_rgb(255, 205, 75))
+        } else if self
+            .databases
+            .iter()
+            .any(|(_, available)| *available == Some(false))
+        {
+            ("Banco indisponível", Color32::from_rgb(255, 205, 75))
         } else {
             ("Pronto", theme::SUCCESS)
         }
@@ -323,6 +333,17 @@ impl ProjectEnvironment {
             Some(format!(
                 "Instale as dependências de: {}",
                 self.missing_dependencies.join(", ")
+            ))
+        } else if let Some((database, _)) = self
+            .databases
+            .iter()
+            .find(|(_, available)| *available == Some(false))
+        {
+            Some(format!(
+                "{} local em {}:{} não responde; inicie o servidor de banco",
+                database.engine.label(),
+                database.host.as_deref().unwrap_or("localhost"),
+                database.port.unwrap_or_default()
             ))
         } else {
             None
@@ -1372,9 +1393,13 @@ impl LocalCodePilot {
                         .processes
                         .iter()
                         .filter(|process| process.project_path == project.path)
+                        .filter(|process| process.state == ProcessState::Running)
                         .filter(|process| process_exposes_application_url(project, process))
                         .filter_map(|process| {
                             let running = self.running_processes.get(&process.id)?;
+                            if running.finished {
+                                return None;
+                            }
                             running
                                 .urls
                                 .last()
@@ -3447,6 +3472,14 @@ impl LocalCodePilot {
                                 .color(Color32::from_rgb(255, 205, 75))
                                 .size(10.0),
                         );
+                    }
+                    for (database, available) in &environment.databases {
+                        let state = match available {
+                            Some(true) => "TCP acessível; login não verificado",
+                            Some(false) => "servidor local indisponível",
+                            None => "conexão não testada",
+                        };
+                        ui.label(RichText::new(format!("Banco: {} · {state}", database.engine.label())).color(theme::MUTED).size(10.0));
                     }
                     if has_dependency_logs
                         && ui
@@ -6219,6 +6252,13 @@ fn inspect_project_environment(
 
     missing_programs.sort();
     missing_dependencies.sort();
+    let databases = detect_database_requirements(&project.path)
+        .into_iter()
+        .map(|database| {
+            let available = probe_local_tcp(&database);
+            (database, available)
+        })
+        .collect();
     ProjectEnvironment {
         command_count: project_processes.len(),
         missing_programs,
@@ -6227,6 +6267,7 @@ fn inspect_project_environment(
         runtime_requirements,
         missing_php_extensions,
         laravel_constraint,
+        databases,
     }
 }
 
@@ -6444,6 +6485,12 @@ fn project_card(
                 ("Preparando ambiente", theme::PRIMARY)
             } else if dependency_install_failed {
                 ("Falha na instalação", Color32::from_rgb(235, 87, 87))
+            } else if environment
+                .databases
+                .iter()
+                .any(|(_, available)| *available == Some(false))
+            {
+                ("Banco indisponível", Color32::from_rgb(255, 205, 75))
             } else if application_url.is_some() {
                 ("Disponível", theme::SUCCESS)
             } else if active_processes > 0 {
@@ -6473,6 +6520,18 @@ fn project_card(
             });
             if !installing_dependencies && let Some(details) = environment.problem_details() {
                 ui.label(RichText::new(details).color(theme::MUTED).size(9.0));
+            }
+            for (database, available) in &environment.databases {
+                let state = match available {
+                    Some(true) => "TCP acessível; login não verificado",
+                    Some(false) => "servidor local indisponível",
+                    None => "conexão não testada",
+                };
+                ui.label(
+                    RichText::new(format!("Banco: {} · {state}", database.engine.label()))
+                        .color(theme::MUTED)
+                        .size(9.0),
+                );
             }
             if active_processes == 0
                 && let Some(history) = history
