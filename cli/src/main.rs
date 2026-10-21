@@ -99,20 +99,28 @@ fn databases(path: Option<PathBuf>) -> ExitCode {
         if let (Some(host), Some(port)) = (&database.host, database.port) {
             println!("  Destino: {host}:{port}");
         }
-        match localcodepilot_runtime::databases::probe_local_tcp(&database) {
-            Some(true) => {
+        use localcodepilot_runtime::databases::DatabasePreparation;
+        match localcodepilot_runtime::databases::database_preparation(&database) {
+            DatabasePreparation::LocalServerReachable(_) => {
                 println!("  TCP local: disponível; autenticação e schema não verificados")
             }
-            Some(false) => {
-                println!("  TCP local: indisponível; verifique se o servidor está iniciado");
+            DatabasePreparation::PrepareLocalServer(engine) => {
+                println!(
+                    "  Próxima etapa: preparar servidor local de {}",
+                    engine.label()
+                );
                 unavailable = true;
             }
-            None if database.engine
-                == localcodepilot_runtime::databases::DatabaseEngine::Sqlite =>
-            {
+            DatabasePreparation::RemoteServer(_) => {
+                println!("  Servidor remoto: nenhuma instalação local planejada");
+            }
+            DatabasePreparation::FileDatabase => {
                 println!("  SQLite: arquivo e schema não verificados");
             }
-            None => println!("  Destino não testado automaticamente"),
+            DatabasePreparation::NeedsConfiguration(_) => {
+                println!("  Configuração incompleta: host ou porta local não definido");
+                unavailable = true;
+            }
         }
     }
     if unavailable {

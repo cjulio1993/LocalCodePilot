@@ -55,6 +55,34 @@ pub struct DatabaseRequirement {
     pub port: Option<u16>,
 }
 
+/// The next preparation path for a detected database. This does not imply that
+/// authentication or the requested schema has been verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabasePreparation {
+    LocalServerReachable(DatabaseEngine),
+    PrepareLocalServer(DatabaseEngine),
+    RemoteServer(DatabaseEngine),
+    FileDatabase,
+    NeedsConfiguration(DatabaseEngine),
+}
+
+pub fn database_preparation(requirement: &DatabaseRequirement) -> DatabasePreparation {
+    if requirement.engine == DatabaseEngine::Sqlite {
+        return DatabasePreparation::FileDatabase;
+    }
+    let Some(host) = requirement.host.as_deref() else {
+        return DatabasePreparation::NeedsConfiguration(requirement.engine);
+    };
+    if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return DatabasePreparation::RemoteServer(requirement.engine);
+    }
+    match probe_local_tcp(requirement) {
+        Some(true) => DatabasePreparation::LocalServerReachable(requirement.engine),
+        Some(false) => DatabasePreparation::PrepareLocalServer(requirement.engine),
+        None => DatabasePreparation::NeedsConfiguration(requirement.engine),
+    }
+}
+
 /// Checks only loopback TCP endpoints. `None` means there is no safe local probe to run.
 /// A successful TCP connection does not validate credentials or database existence.
 pub fn probe_local_tcp(requirement: &DatabaseRequirement) -> Option<bool> {
@@ -233,5 +261,46 @@ mod tests {
         );
         assert!(!format!("{found:?}").contains("private-test-value"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn routes_each_engine_without_treating_remote_or_file_as_local_server() {
+        for engine in [
+            DatabaseEngine::PostgreSql,
+            DatabaseEngine::MySql,
+            DatabaseEngine::MariaDb,
+            DatabaseEngine::SqlServer,
+        ] {
+            let mut requirement = DatabaseRequirement {
+                source: PathBuf::from(".env"),
+                engine,
+                host: Some("127.0.0.1".into()),
+                port: None,
+            };
+            assert_eq!(
+                database_preparation(&requirement),
+                DatabasePreparation::NeedsConfiguration(engine)
+            );
+            requirement.host = Some("db.example".into());
+            assert_eq!(
+                database_preparation(&requirement),
+                DatabasePreparation::RemoteServer(engine)
+            );
+            requirement.host = None;
+            assert_eq!(
+                database_preparation(&requirement),
+                DatabasePreparation::NeedsConfiguration(engine)
+            );
+        }
+        let sqlite = DatabaseRequirement {
+            source: PathBuf::from(".env"),
+            engine: DatabaseEngine::Sqlite,
+            host: None,
+            port: None,
+        };
+        assert_eq!(
+            database_preparation(&sqlite),
+            DatabasePreparation::FileDatabase
+        );
     }
 }
