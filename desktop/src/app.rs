@@ -6531,7 +6531,13 @@ fn project_card(
         .inner_margin(Margin::same(18))
         .show(ui, |ui| {
             ui.set_width(width);
-            ui.set_min_height(126.0);
+            let card_top = ui.cursor().top();
+            let (card_height, actions_top) = if is_recent_card {
+                (238.0, 142.0)
+            } else {
+                (268.0, 172.0)
+            };
+            ui.set_min_height(card_height);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&project.name).strong().size(15.0))
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -6633,37 +6639,39 @@ fn project_card(
                 );
             }
             if !is_recent_card && (!environment.databases.is_empty() || history.is_some()) {
-                ui.collapsing("Detalhes do ambiente", |ui| {
-                    for (database, available) in &environment.databases {
-                        let detail = match (database.engine, available) {
-                            (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
-                            (DatabaseEngine::Sqlite, Some(false)) => {
-                                "arquivo será preparado ao iniciar"
-                            }
-                            (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
-                            (_, Some(true)) => "TCP acessível; login não verificado",
-                            (_, Some(false)) => "servidor local indisponível",
-                            (_, None) => "conexão não testada",
-                        };
-                        ui.label(format!("{}: {detail}", database.engine.label()));
-                    }
-                    if let Some(history) = history.filter(|entry| entry.last_activity > 0) {
-                        if history.services.is_empty() {
-                            ui.label(format!(
-                                "Último acesso: {}",
-                                relative_time(history.last_activity)
-                            ));
-                        } else {
-                            ui.label(format!(
-                                "Última sessão: {} · {}",
-                                relative_time(history.last_activity),
-                                project_history_status(history)
-                            ));
+                ui.push_id(&project.path, |ui| {
+                    ui.collapsing("Detalhes do ambiente", |ui| {
+                        for (database, available) in &environment.databases {
+                            let detail = match (database.engine, available) {
+                                (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
+                                (DatabaseEngine::Sqlite, Some(false)) => {
+                                    "arquivo será preparado ao iniciar"
+                                }
+                                (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
+                                (_, Some(true)) => "TCP acessível; login não verificado",
+                                (_, Some(false)) => "servidor local indisponível",
+                                (_, None) => "conexão não testada",
+                            };
+                            ui.label(format!("{}: {detail}", database.engine.label()));
                         }
-                    }
+                        if let Some(history) = history.filter(|entry| entry.last_activity > 0) {
+                            if history.services.is_empty() {
+                                ui.label(format!(
+                                    "Último acesso: {}",
+                                    relative_time(history.last_activity)
+                                ));
+                            } else {
+                                ui.label(format!(
+                                    "Última sessão: {} · {}",
+                                    relative_time(history.last_activity),
+                                    project_history_status(history)
+                                ));
+                            }
+                        }
+                    });
                 });
             }
-            ui.add_space(10.0);
+            ui.add_space((card_top + actions_top - ui.cursor().top()).max(10.0));
             if let Some(url) = application_url
                 && ui
                     .add_sized(
