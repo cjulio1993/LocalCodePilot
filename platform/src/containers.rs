@@ -77,6 +77,14 @@ pub fn execute_container_command(
     command: ContainerCommand,
     path: Option<&OsStr>,
 ) -> Result<ContainerExecution, String> {
+    execute_container_command_with_timeout(command, path, EXECUTION_TIMEOUT)
+}
+
+fn execute_container_command_with_timeout(
+    command: ContainerCommand,
+    path: Option<&OsStr>,
+    timeout: Duration,
+) -> Result<ContainerExecution, String> {
     if !matches!(command.program, "docker" | "podman") {
         return Err("Comando de container não permitido".into());
     }
@@ -130,7 +138,7 @@ pub fn execute_container_command(
                 terminate_container_process(&mut child);
                 break ContainerExecutionOutcome::Cancelled;
             }
-            if started_at.elapsed() >= EXECUTION_TIMEOUT {
+            if started_at.elapsed() >= timeout {
                 terminate_container_process(&mut child);
                 break ContainerExecutionOutcome::TimedOut;
             }
@@ -341,5 +349,89 @@ mod tests {
             working_directory: std::env::temp_dir().join("localcodepilot-missing-container-dir"),
         };
         assert!(execute_container_command(missing, None).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancelled_and_timed_out_commands_stop_the_child_process() {
+        use localcodepilot_core::containers::ContainerAction;
+        use std::{fs, path::Path, sync::mpsc::RecvTimeoutError};
+
+        let directory = std::env::temp_dir().join(format!(
+            "localcodepilot-container-lifecycle-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        // A long-running Windows executable under the Docker name exercises the
+        // exact runner without requiring a container engine in the test host.
+        let fake_docker = directory.join("docker.exe");
+        fs::copy(
+            Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/ping.exe"),
+            &fake_docker,
+        )
+        .unwrap();
+        let command = ContainerCommand {
+            action: ContainerAction::Status,
+            label: "Consultar estado",
+            program: "docker",
+            args: vec!["-n".into(), "30".into(), "127.0.0.1".into()],
+            working_directory: directory.clone(),
+        };
+
+        let cancelled = execute_container_command_with_timeout(
+            command.clone(),
+            Some(directory.as_os_str()),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        cancelled.cancel();
+        assert_eq!(
+            receive_outcome(&cancelled.events),
+            ContainerExecutionOutcome::Cancelled
+        );
+        drop(cancelled);
+
+        let timed_out = execute_container_command_with_timeout(
+            command,
+            Some(directory.as_os_str()),
+            Duration::from_millis(250),
+        )
+        .unwrap();
+        assert_eq!(
+            receive_outcome(&timed_out.events),
+            ContainerExecutionOutcome::TimedOut
+        );
+        drop(timed_out);
+
+        let closing = execute_container_command_with_timeout(
+            ContainerCommand {
+                action: ContainerAction::Status,
+                label: "Consultar estado",
+                program: "docker",
+                args: vec!["-n".into(), "30".into(), "127.0.0.1".into()],
+                working_directory: directory.clone(),
+            },
+            Some(directory.as_os_str()),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let close_started = Instant::now();
+        drop(closing);
+        assert!(close_started.elapsed() < Duration::from_secs(10));
+        fs::remove_dir_all(directory).unwrap();
+
+        fn receive_outcome(
+            events: &Receiver<ContainerExecutionEvent>,
+        ) -> ContainerExecutionOutcome {
+            loop {
+                match events.recv_timeout(Duration::from_secs(10)) {
+                    Ok(ContainerExecutionEvent::Finished(outcome)) => return outcome,
+                    Ok(ContainerExecutionEvent::Output(_)) => {}
+                    Err(RecvTimeoutError::Timeout) => panic!("container command did not finish"),
+                    Err(RecvTimeoutError::Disconnected) => panic!("container worker disconnected"),
+                }
+            }
+        }
     }
 }
