@@ -32,7 +32,8 @@ use localcodepilot_platform::{
     ports::{PortAvailability, PortOwner, inspect_tcp_port, terminate_process_tree},
 };
 use localcodepilot_runtime::databases::{
-    DatabaseRequirement, detect_database_requirements, probe_local_tcp,
+    DatabaseEngine, DatabaseRequirement, detect_database_requirements, prepare_sqlite_database,
+    probe_local_tcp, probe_sqlite_database,
 };
 use localcodepilot_runtime::{
     ManifestRuntimeDetector, detect_dart_requirement, detect_go_requirement,
@@ -339,12 +340,16 @@ impl ProjectEnvironment {
             .iter()
             .find(|(_, available)| *available == Some(false))
         {
-            Some(format!(
-                "{} local em {}:{} não responde; inicie o servidor de banco",
-                database.engine.label(),
-                database.host.as_deref().unwrap_or("localhost"),
-                database.port.unwrap_or_default()
-            ))
+            if database.engine == DatabaseEngine::Sqlite {
+                Some("Arquivo SQLite será preparado ao iniciar o ambiente".into())
+            } else {
+                Some(format!(
+                    "{} local em {}:{} não responde; inicie o servidor de banco",
+                    database.engine.label(),
+                    database.host.as_deref().unwrap_or("localhost"),
+                    database.port.unwrap_or_default()
+                ))
+            }
         } else {
             None
         }
@@ -1789,6 +1794,21 @@ impl LocalCodePilot {
                     .unwrap_or_else(|| "Nenhum serviço executável foi detectado".into()),
             );
             return;
+        }
+        for database in detect_database_requirements(project_path) {
+            if database.engine == DatabaseEngine::Sqlite {
+                if let Err(error) = prepare_sqlite_database(&database, project_path) {
+                    self.notify(format!("Não foi possível preparar SQLite: {error}"));
+                    return;
+                }
+                if let Some(environment) = self.project_environments.get_mut(project_path) {
+                    for (existing, available) in &mut environment.databases {
+                        if existing.source == database.source {
+                            *available = Some(true);
+                        }
+                    }
+                }
+            }
         }
         let process_ids = project_process_ids(&self.processes, project_path, false);
         let pending_processes: Vec<_> = process_ids
@@ -3474,10 +3494,13 @@ impl LocalCodePilot {
                         );
                     }
                     for (database, available) in &environment.databases {
-                        let state = match available {
-                            Some(true) => "TCP acessível; login não verificado",
-                            Some(false) => "servidor local indisponível",
-                            None => "conexão não testada",
+                        let state = match (database.engine, available) {
+                            (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
+                            (DatabaseEngine::Sqlite, Some(false)) => "arquivo será preparado ao iniciar",
+                            (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
+                            (_, Some(true)) => "TCP acessível; login não verificado",
+                            (_, Some(false)) => "servidor local indisponível",
+                            (_, None) => "conexão não testada",
                         };
                         ui.label(RichText::new(format!("Banco: {} · {state}", database.engine.label())).color(theme::MUTED).size(10.0));
                     }
@@ -6255,7 +6278,11 @@ fn inspect_project_environment(
     let databases = detect_database_requirements(&project.path)
         .into_iter()
         .map(|database| {
-            let available = probe_local_tcp(&database);
+            let available = if database.engine == DatabaseEngine::Sqlite {
+                probe_sqlite_database(&database, &project.path)
+            } else {
+                probe_local_tcp(&database)
+            };
             (database, available)
         })
         .collect();
@@ -6522,10 +6549,13 @@ fn project_card(
                 ui.label(RichText::new(details).color(theme::MUTED).size(9.0));
             }
             for (database, available) in &environment.databases {
-                let state = match available {
-                    Some(true) => "TCP acessível; login não verificado",
-                    Some(false) => "servidor local indisponível",
-                    None => "conexão não testada",
+                let state = match (database.engine, available) {
+                    (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
+                    (DatabaseEngine::Sqlite, Some(false)) => "arquivo será preparado ao iniciar",
+                    (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
+                    (_, Some(true)) => "TCP acessível; login não verificado",
+                    (_, Some(false)) => "servidor local indisponível",
+                    (_, None) => "conexão não testada",
                 };
                 ui.label(
                     RichText::new(format!("Banco: {} · {state}", database.engine.label()))
