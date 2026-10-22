@@ -482,7 +482,14 @@ impl LocalCodePilot {
     pub fn new(cc: &eframe::CreationContext<'_>, startup_notification: Option<String>) -> Self {
         theme::configure(&cc.egui_ctx);
         let mut fonts = eframe::egui::FontDefinitions::default();
-        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        let icon_font = "phosphor";
+        fonts.font_data.insert(
+            icon_font.into(),
+            egui::FontData::from_static(egui_phosphor::Variant::Regular.font_bytes()).into(),
+        );
+        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            family.insert(family.len().min(1), icon_font.into());
+        }
         cc.egui_ctx.set_fonts(fonts);
         let default_source = FilesystemProjectSource::common_locations();
         let configured_roots =
@@ -941,7 +948,7 @@ impl LocalCodePilot {
             .ctx()
             .request_repaint_after(Duration::from_millis(50));
 
-        egui::Area::new("notification".into())
+        egui::Area::new(egui::Id::unique("notification"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::RIGHT_BOTTOM, [-24.0, -24.0])
             .show(root_ui, |ui| {
@@ -1145,7 +1152,7 @@ impl LocalCodePilot {
                                 [220.0, 32.0],
                                 egui::TextEdit::singleline(&mut self.search)
                                     .hint_text(search_hint)
-                                    .horizontal_align(Align::Center),
+                                    .align(egui::Align2::CENTER_CENTER),
                             );
                         }
                     });
@@ -2348,7 +2355,7 @@ impl LocalCodePilot {
         let mut confirm = false;
 
         egui::Window::new("Liberar porta ocupada")
-            .id(egui::Id::new("port-termination-confirmation"))
+            .id(egui::Id::unique("port-termination-confirmation"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -2458,7 +2465,7 @@ impl LocalCodePilot {
         let mut restart_process = false;
 
         egui::Window::new(format!("{TERMINAL}  Terminal · {}", process.name))
-            .id(egui::Id::new("process-terminal"))
+            .id(egui::Id::unique("process-terminal"))
             .open(&mut open)
             .default_size([820.0, 520.0])
             .min_size([480.0, 300.0])
@@ -2607,7 +2614,7 @@ impl LocalCodePilot {
         let mut cancel = false;
         let window_height = (root_ui.max_rect().height() - 64.0).max(120.0);
         egui::Window::new("Preparar ambiente")
-            .id(egui::Id::new(("environment-plan", &plan.project_path)))
+            .id(egui::Id::unique(("environment-plan", &plan.project_path)))
             .open(&mut open)
             .default_width(620.0)
             .default_height(window_height.min(640.0))
@@ -2740,7 +2747,7 @@ impl LocalCodePilot {
         let mut prepare_migration = false;
 
         egui::Window::new(format!("{TERMINAL}  Preparação · {project_name}"))
-            .id(egui::Id::new(("dependency-terminal", &project_path)))
+            .id(egui::Id::unique(("dependency-terminal", &project_path)))
             .open(&mut open)
             .default_size([860.0, 560.0])
             .min_size([500.0, 340.0])
@@ -2902,7 +2909,7 @@ impl LocalCodePilot {
         let mut close = false;
 
         egui::Window::new("Migração segura do Laravel")
-            .id(egui::Id::new("laravel-migration"))
+            .id(egui::Id::unique("laravel-migration"))
             .open(&mut open)
             .default_size([720.0, 520.0])
             .min_size([500.0, 360.0])

@@ -424,7 +424,11 @@ fn download_executable(
         .sync_all()
         .map_err(|error| format!("não foi possível concluir o download: {error}"))?;
     drop(output);
-    let actual_sha256 = format!("{:x}", hasher.finalize());
+    let actual_sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
         let _ = fs::remove_file(&partial_path);
         return Err("o SHA-256 do executável baixado não corresponde ao publicado".into());
@@ -791,7 +795,11 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn file_starts_with_mz(path: &Path) -> Result<bool, String> {
