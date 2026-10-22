@@ -13,7 +13,7 @@ localcodepilot-core = { path = "core" }
 localcodepilot-platform = { path = "platform" }
 localcodepilot-runtime = { path = "runtime" }
 localcodepilot-services = { path = "services" }
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "x11"] }
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "x11"] }
 rfd = "0.17.2"
 sysinfo = "0.39.6"
 egui-phosphor = "0.14"
@@ -22,7 +22,7 @@ serde = { version = "1", features = ["derive"] }
 semver = "1"
 toml = "1"
 ureq = { version = "3", features = ["json"] }
-sha2 = "0.10"
+sha2 = "0.11"
 serde_yaml_ng = "0.10.0"
 
 [profile.release]

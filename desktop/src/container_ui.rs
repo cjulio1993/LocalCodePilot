@@ -453,7 +453,7 @@ impl LocalCodePilot {
         let mut confirm = false;
         let mut cancel = false;
         egui::Window::new("Confirmar ação de container")
-            .id(egui::Id::new("container-command-confirmation"))
+            .id(egui::Id::unique("container-command-confirmation"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
