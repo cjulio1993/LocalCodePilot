@@ -14,8 +14,8 @@ Instalação
 
 Os artefatos de validação usam assinatura ad hoc. Se o macOS bloquear a primeira
 abertura, clique com o botão direito no aplicativo, escolha Abrir e confirme.
-A Alpha 6 será publicada somente para Windows. A publicação de um pacote macOS
-depende da validação desse fluxo em um Mac real.
+O DMG da Alpha 6 é um pacote experimental para validação em Macs reais. Ele não
+possui notarização da Apple e ainda não representa suporte estável ao macOS.
 
 Atualizações
 ------------
@@ -26,6 +26,17 @@ Containers
 ----------
 Docker Desktop ou Podman e um provedor Compose precisam estar instalados e em
 execução. O LocalCodePilot não instala nem inicia o motor.
+
+Roteiro de validação
+---------------------
+1. Informe o modelo do Mac, processador Intel/Apple Silicon e versão do macOS.
+2. Confira o SHA-256 do DMG, monte o arquivo e arraste o app para Applications.
+3. Registre se a primeira abertura foi direta ou exigiu botão direito > Abrir.
+4. Confirme que a janela aparece, permite navegar e encontra os projetos esperados.
+5. Adicione e remova uma pasta de busca descartável.
+6. Feche e abra o app novamente; confirme que projetos e preferências persistem.
+7. Se houver um projeto seguro para teste, inicie e pare o ambiente e confira os logs.
+8. Envie a descrição do resultado e capturas de tela sem senhas ou dados privados.
 
 Dados locais
 ------------

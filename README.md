@@ -12,7 +12,7 @@
 
 **Alpha para Windows:** a versão `0.4.0-alpha.6` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
-**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A Alpha 6 é publicada somente para Windows; o macOS terá sua própria validação de instalação e primeira abertura em um Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**macOS experimental:** a Alpha 6 inclui um DMG universal para Intel e Apple Silicon destinado a testes em Macs reais. O aplicativo usa assinatura ad hoc, não é notarizado e pode exigir a abertura pelo menu de contexto do Finder. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 [Português](#português) · [English](#english)
 
@@ -164,7 +164,7 @@ Serviços com uma URL HTTP local são verificados em segundo plano a cada dez se
 
 ### Em desenvolvimento
 
-A versão `0.4.0-alpha.6` é publicada somente para Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11. O pacote macOS continua em validação separada.
+A versão `0.4.0-alpha.6` tem suporte principal no Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11. O DMG universal do macOS é distribuído como pacote experimental para validação em Macs reais.
 
 - Detecção de frameworks e metadados mais detalhados.
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
@@ -293,7 +293,7 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 **Windows alpha:** version `0.4.0-alpha.6` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
-**macOS under validation:** the repository produces a universal Intel and Apple Silicon application in a DMG, but that package is not part of a public release yet. Alpha 6 ships for Windows only; macOS requires separate installation and first-launch validation on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**Experimental macOS package:** Alpha 6 includes a universal DMG for Intel and Apple Silicon intended for testing on real Macs. The application uses an ad hoc signature, is not notarized, and may need to be opened from Finder's context menu. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 ### What is LocalCodePilot?
 
@@ -439,7 +439,7 @@ Services with a local HTTP URL are checked in the background every ten seconds, 
 
 ### Work in progress
 
-Version `0.4.0-alpha.6` ships for Windows only. HTTP health checks and integrated Docker/Podman execution were validated through the interface on Windows 11. The macOS package remains under separate validation.
+Version `0.4.0-alpha.6` has primary support on Windows. HTTP health checks and integrated Docker/Podman execution were validated through the interface on Windows 11. The universal macOS DMG is distributed as an experimental package for validation on real Macs.
 
 - Framework detection and richer project metadata.
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.

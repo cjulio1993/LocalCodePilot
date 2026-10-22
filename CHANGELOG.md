@@ -24,8 +24,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - A matriz de suporte e a documentação de Containers agora distinguem o diagnóstico da execução confirmada e deixam claro que o app não instala nem inicia os motores.
 - Arquivos Compose de override detectados agora são enviados ao provedor junto do manifesto principal.
 - O verificador de atualização seleciona o DMG universal no macOS em vez de oferecer o pacote do Windows.
-- A release por tag da Alpha 6 publica somente os artefatos Windows depois dos checks Windows; o DMG macOS permanece em validação separada.
-- A Alpha 6 é publicada somente para Windows; o DMG macOS permanece em validação separada.
+- A release por tag da Alpha 6 publica os artefatos Windows e o DMG macOS experimental somente depois que os checks das duas plataformas passam.
+- A Alpha 6 tem suporte principal no Windows e inclui um DMG macOS universal experimental para validação em Macs reais.
 - A visão geral usa cartões com altura e posição de ações consistentes, reduzindo mudanças visuais entre projetos.
 - Projetos salvos aparecem a partir do cache na abertura, enquanto descoberta, processos e diagnósticos são atualizados em segundo plano.
 
