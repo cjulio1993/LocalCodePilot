@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.6] - 2026-10-21
+
 ### Adicionado
 
 - Diagnóstico inicial de PostgreSQL, MySQL, MariaDB, SQL Server e SQLite em `.env`/`.env.local`, com teste de porta local no desktop e na CLI sem exibir credenciais.
@@ -23,7 +25,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Arquivos Compose de override detectados agora são enviados ao provedor junto do manifesto principal.
 - O verificador de atualização seleciona o DMG universal no macOS em vez de oferecer o pacote do Windows.
 - A release por tag da Alpha 6 publica somente os artefatos Windows depois dos checks Windows; o DMG macOS permanece em validação separada.
-- A publicação da versão `0.4.0-alpha.6` fica condicionada à validação, no Windows, dos health checks HTTP em projetos reais e da execução integrada com Docker/Podman pela interface.
+- A Alpha 6 é publicada somente para Windows; o DMG macOS permanece em validação separada.
+- A visão geral usa cartões com altura e posição de ações consistentes, reduzindo mudanças visuais entre projetos.
+- Projetos salvos aparecem a partir do cache na abertura, enquanto descoberta, processos e diagnósticos são atualizados em segundo plano.
 
 ### Corrigido
 
@@ -31,8 +35,6 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - O botão **Abrir aplicação** desaparece quando o processo do servidor é encerrado; a indicação de banco indisponível tem prioridade sobre **Disponível**.
 - Serviços só são considerados disponíveis depois que a porta esperada responde; uma URL anunciada nos logs não basta.
 - No Windows, executáveis nativos são iniciados diretamente, scripts BAT/CMD continuam pelo interpretador e a parada de processos gerenciados alcança seus descendentes mesmo quando `taskkill` falha.
-
-- Restauradas a versão de desenvolvimento `0.4.0-alpha.6-rc.1` e a documentação da alpha 6 após a integração do hotfix Windows `0.4.0-alpha.5.1`.
 
 - Avisos de atualização agora exigem um pacote para o sistema em uso e descartam notificações incompatíveis em cache, evitando oferecer releases exclusivas do macOS no Windows e vice-versa.
 

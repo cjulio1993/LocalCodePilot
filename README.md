@@ -10,9 +10,9 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.4.0-alpha.5.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.6` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
-**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A Alpha 6 será lançada somente para Windows; o macOS terá sua própria validação de instalação e primeira abertura em um Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A Alpha 6 é publicada somente para Windows; o macOS terá sua própria validação de instalação e primeira abertura em um Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 [Português](#português) · [English](#english)
 
@@ -164,7 +164,7 @@ Serviços com uma URL HTTP local são verificados em segundo plano a cada dez se
 
 ### Em desenvolvimento
 
-A versão `0.4.0-alpha.6` será publicada somente para Windows após validar health checks HTTP em projetos reais e a execução integrada de Docker/Podman pela interface no Windows. O pacote macOS continua em validação separada e não bloqueia essa release.
+A versão `0.4.0-alpha.6` é publicada somente para Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11. O pacote macOS continua em validação separada.
 
 - Detecção de frameworks e metadados mais detalhados.
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
@@ -176,7 +176,6 @@ A versão `0.4.0-alpha.6` será publicada somente para Windows após validar hea
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade e experiência de uso.
-- Validação de ponta a ponta da execução integrada com Docker e Podman reais.
 - Validação manual do DMG universal, da instalação e da primeira abertura em Macs Intel e Apple Silicon.
 
 ### Regra de documentação
@@ -292,9 +291,9 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.4.0-alpha.5.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.6` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
-**macOS under validation:** the repository produces a universal Intel and Apple Silicon application in a DMG, but that package is not part of a public release yet. Alpha 6 will ship for Windows only; macOS will require separate installation and first-launch validation on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**macOS under validation:** the repository produces a universal Intel and Apple Silicon application in a DMG, but that package is not part of a public release yet. Alpha 6 ships for Windows only; macOS requires separate installation and first-launch validation on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 ### What is LocalCodePilot?
 
@@ -440,7 +439,7 @@ Services with a local HTTP URL are checked in the background every ten seconds, 
 
 ### Work in progress
 
-Version `0.4.0-alpha.6` will ship for Windows only after HTTP health checks on real projects and integrated Docker/Podman execution have been validated through the Windows interface. The macOS package remains under separate validation and does not block this release.
+Version `0.4.0-alpha.6` ships for Windows only. HTTP health checks and integrated Docker/Podman execution were validated through the interface on Windows 11. The macOS package remains under separate validation.
 
 - Framework detection and richer project metadata.
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.
@@ -452,7 +451,6 @@ Version `0.4.0-alpha.6` will ship for Windows only after HTTP health checks on r
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility and user-experience improvements.
-- End-to-end validation of integrated execution with real Docker and Podman engines.
 - Manual validation of the universal DMG, installation, and first launch on Intel and Apple Silicon Macs.
 
 ### Documentation rule
