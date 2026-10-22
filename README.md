@@ -62,6 +62,7 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Cartões de projeto responsivos ao espaço disponível na janela.
 - CLI com comandos `status`, `scan`, `inspect` e `containers`.
 - Interface com ícones Phosphor.
+- Página de ajuda integrada com tutorial de primeiros passos e orientações para diagnóstico.
 - Estrutura modular baseada em Cargo workspace.
 
 ### Matriz de suporte atual
@@ -337,6 +338,7 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Project cards that adapt to the available window space.
 - CLI commands for `status`, `scan`, `inspect`, and `containers`.
 - Phosphor icons in the desktop interface.
+- Built-in help page with a quick-start tutorial and troubleshooting guidance.
 - Modular Cargo workspace architecture.
 
 ### Current support matrix
