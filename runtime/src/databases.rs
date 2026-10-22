@@ -202,6 +202,12 @@ pub fn detect_database_requirements(project_root: &Path) -> Vec<DatabaseRequirem
     let mut queue = VecDeque::from([(project_root.to_path_buf(), 0_usize)]);
     let scan_children = project_root.join(".git").exists();
     while let Some((directory, depth)) = queue.pop_front() {
+        let wordpress_config = directory.join("wp-config.php");
+        if let Ok(contents) = fs::read_to_string(&wordpress_config)
+            && let Some(requirement) = parse_wordpress_config(&wordpress_config, &contents)
+        {
+            found.push(requirement);
+        }
         for name in [".env", ".env.local"] {
             let path = directory.join(name);
             if let Ok(contents) = fs::read_to_string(&path)
@@ -241,6 +247,45 @@ pub fn detect_database_requirements(project_root: &Path) -> Vec<DatabaseRequirem
         }
     }
     found
+}
+
+/// Reads only literal WordPress DB_HOST values. PHP expressions are left unresolved.
+/// Database names and credentials are never retained or returned.
+fn parse_wordpress_config(path: &Path, contents: &str) -> Option<DatabaseRequirement> {
+    let host = contents.lines().find_map(|line| {
+        let line = line.trim();
+        if line.starts_with("//") || line.starts_with('#') || !line.starts_with("define(") {
+            return None;
+        }
+        let body = line.strip_prefix("define(")?.trim_start();
+        let quote = body.chars().next()?;
+        if !matches!(quote, '\'' | '"') {
+            return None;
+        }
+        let body = body
+            .strip_prefix(quote)?
+            .strip_prefix("DB_HOST")?
+            .strip_prefix(quote)?;
+        let body = body.trim_start().strip_prefix(',')?.trim_start();
+        let value_quote = body.chars().next()?;
+        if !matches!(value_quote, '\'' | '"') {
+            return None;
+        }
+        let value = body.strip_prefix(value_quote)?.split_once(value_quote)?.0;
+        (!value.is_empty() && !value.contains(['$', '{', '}'])).then(|| value.to_owned())
+    })?;
+    let (host, port) = match host.rsplit_once(':') {
+        Some((name, port)) if port.parse::<u16>().is_ok_and(|port| port > 0) => {
+            (name.to_owned(), port.parse::<u16>().ok())
+        }
+        _ => (host, DatabaseEngine::MySql.default_port()),
+    };
+    Some(DatabaseRequirement {
+        source: path.to_path_buf(),
+        engine: DatabaseEngine::MySql,
+        host: Some(host),
+        port,
+    })
 }
 
 fn parse_dotenv(path: &Path, contents: &str) -> Option<DatabaseRequirement> {
@@ -289,6 +334,21 @@ fn parse_dotenv(path: &Path, contents: &str) -> Option<DatabaseRequirement> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wordpress_database_detection_keeps_credentials_private() {
+        let path = Path::new("/tmp/wordpress/wp-config.php");
+        let contents = "define( 'DB_NAME', 'private_db' );\n\
+            define( 'DB_USER', 'private_user' );\n\
+            define( 'DB_PASSWORD', 'private_password' );\n\
+            define( 'DB_HOST', '127.0.0.1:3307' );";
+        let requirement = parse_wordpress_config(path, contents).unwrap();
+        assert_eq!(requirement.engine, DatabaseEngine::MySql);
+        assert_eq!(requirement.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(requirement.port, Some(3307));
+        assert!(!format!("{requirement:?}").contains("private"));
+        assert!(parse_wordpress_config(path, "define( 'DB_HOST', getenv('DB_HOST') );").is_none());
+    }
 
     #[test]
     fn ignores_example_files_and_does_not_probe_invalid_or_remote_targets() {

@@ -10,6 +10,8 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
+Este README descreve o código atual da branch. Alguns recursos abaixo ainda não estão no pacote `0.4.0-alpha.6` publicado.
+
 **Alpha para Windows:** a versão `0.4.0-alpha.6` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
 **macOS experimental:** a Alpha 6 inclui um DMG universal para Intel e Apple Silicon destinado a testes em Macs reais. O aplicativo usa assinatura ad hoc, não é notarizado e pode exigir a abertura pelo menu de contexto do Finder. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
@@ -65,6 +67,16 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 - Página de ajuda integrada com tutorial de primeiros passos e orientações para diagnóstico.
 - Estrutura modular baseada em Cargo workspace.
 
+### Usar o desktop
+
+1. Em **Projetos**, revise as pastas examinadas, adicione outras se necessário e use **Atualizar** para refazer a descoberta. A busca no topo filtra o catálogo.
+2. Cada cartão mostra as tecnologias, o estado e a próxima ação: preparar o ambiente, instalar dependências, iniciar um serviço local ou abrir **Containers**. **Ver diagnóstico e logs** abre **Processos** filtrado para aquele projeto. Favoritos, VS Code e outras opções ficam em **Mais ações**.
+3. Em **Processos**, acompanhe comandos, portas, resposta HTTP e logs; inicie, pare ou reinicie um processo. **Ver todos os processos** remove o filtro do projeto. A lista de containers reais também está disponível nessa página.
+4. Em **Containers**, escolha Docker ou Podman, confira os serviços e o comando proposto, e confirme a execução. É possível validar Compose, iniciar ou parar o ambiente, consultar estado e logs, construir uma imagem a partir de Dockerfile isolado e controlar containers existentes. A página abre filtrada quando acessada por um projeto.
+5. **Abrir aplicação** aparece quando existe uma URL local candidata. **Aplicação respondendo** requer uma resposta HTTP saudável; **serviços ativos** ou **containers ativos** não garantem que o site esteja funcionando.
+
+O aplicativo salva localmente pastas de busca, favoritos, recentes, histórico dos serviços e logs recentes. Ele não reinicia processos automaticamente ao abrir novamente. Atualizações do aplicativo são verificadas periodicamente; no Windows, um pacote compatível pode ser baixado e aplicado após validação de SHA-256.
+
 ### Matriz de suporte atual
 
 Reconhecer um projeto não significa que todo o fluxo de preparação, execução e abertura já esteja concluído. A matriz abaixo descreve o estado real da versão alpha:
@@ -74,6 +86,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Rust / Cargo | Sim | Não | Experimental |
 | Node.js / JavaScript | Sim | Experimental | Experimental |
 | PHP / Laravel / Lumen | Sim | Experimental | Experimental com `php -S` ou Artisan, conforme o framework |
+| WordPress | Sim | PHP local experimental; Docker/Podman instalados pelo usuário | Com Compose, iniciar os serviços em Containers; sem Compose, PHP local e banco configurado pelo usuário |
 | Python / Django | Sim | Experimental | Experimental |
 | Java / Spring Boot | Sim | Experimental | Experimental |
 | Go | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
@@ -95,11 +108,14 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 - Serviços web exibem uma URL quando ela é confirmada; aplicações de terminal devem permanecer acompanhadas pelos logs.
 - Portas de sites estáticos são derivadas do caminho do projeto para reduzir conflitos e impedir que a URL de outro projeto seja reutilizada.
 - Bancos PostgreSQL, MySQL, MariaDB, SQL Server e SQLite declarados em `.env`/`.env.local` aparecem no diagnóstico; portas locais são testadas sem expor credenciais. Veja [docs/DATABASES.md](docs/DATABASES.md).
+- WordPress é reconhecido por `wp-config.php`, arquivo de exemplo ou dependência Composer. O `DB_HOST` literal em `wp-config.php` indica o destino MySQL. Quando há Compose, o aplicativo direciona o início aos containers: um nome como `db` só é resolvido na rede deles. A verificação de porta não confirma credenciais nem a existência do banco.
 - Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
 
 ### Containers: execução controlada (em validação)
 
 A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Quando o motor selecionado está disponível, o app pode validar a configuração, executar `up --detach`, `stop`, consultar o estado com `ps --all` no Docker ou `ps` no Podman, ler as 200 linhas mais recentes dos logs e construir um Dockerfile isolado. Cada ação mostra o comando e a pasta antes da confirmação, executa sem abrir console externo, mantém a saída numa área rolável e permite cancelamento; o limite por execução é de 30 minutos.
+
+**Processos** também lista containers existentes, em execução ou parados, com ações para iniciar, parar, reiniciar e consultar logs. A lista é atualizada periodicamente enquanto Processos ou Containers está aberto. Portas web publicadas no Compose ou no container geram URLs candidatas para o navegador; uma porta publicada não confirma a resposta da aplicação.
 
 O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. `up` e `build` podem baixar ou construir imagens depois da confirmação. Arquivos Compose de override reconhecidos são enviados ao provedor na ordem exibida; a prévia local ainda não resolve variáveis, perfis, `include`, `extends` ou referências externas, portanto a validação efetiva fica a cargo do Compose. Um Dockerfile isolado oferece somente construção de imagem, pois o app não inventa nome, portas ou comando de execução. Os fluxos de comandos Docker e Podman são verificados automaticamente no CI com um projeto mínimo. No Windows 11, Docker Desktop passou pela interface com `config`, `up`, `ps`, logs, `stop`, build e cancelamento; Podman passou com `config`, `up`, `ps`, logs e `stop`, e o build passou pela CLI. Para compatibilidade com versões anteriores do `podman-compose`, o Podman usa `config` sem `--quiet` e `ps` sem `--all`. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) e a CLI de diagnóstico `containers <pasta>`.
 
@@ -292,6 +308,8 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
+This README describes the current branch. Some features below are not yet included in the published `0.4.0-alpha.6` package.
+
 **Windows alpha:** version `0.4.0-alpha.6` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
 **Experimental macOS package:** Alpha 6 includes a universal DMG for Intel and Apple Silicon intended for testing on real Macs. The application uses an ad hoc signature, is not notarized, and may need to be opened from Finder's context menu. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
@@ -341,6 +359,16 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 - Built-in help page with a quick-start tutorial and troubleshooting guidance.
 - Modular Cargo workspace architecture.
 
+### Using the desktop app
+
+1. In **Projects**, review the scanned folders, add more if needed, and use **Refresh** to discover projects again. The top search field filters the catalog.
+2. Each card shows technologies, status, and a next step: prepare the environment, install dependencies, start a local service, or open **Containers**. **View diagnostics and logs** opens **Processes** filtered to that project. Favorites, VS Code, and other options are under **More actions**.
+3. In **Processes**, inspect commands, ports, HTTP responses, and logs; start, stop, or restart a process. **View all processes** clears the project filter. Actual runtime containers are listed here too.
+4. In **Containers**, choose Docker or Podman, inspect services and the proposed command, then confirm execution. You can validate Compose, start or stop the environment, inspect status and logs, build a standalone Dockerfile image, and control existing containers. Opening the page from a project filters its list.
+5. **Open application** appears when a candidate local URL exists. **Application responding** requires a healthy HTTP result; **services active** or **containers active** does not mean the site works.
+
+The app locally stores scan folders, favorites, recent projects, service history, and recent logs. It does not automatically restart processes on launch. It checks for updates periodically; on Windows, a compatible package can be downloaded and applied after SHA-256 verification.
+
 ### Current support matrix
 
 Recognizing a project does not mean that its preparation, execution, and browser-opening workflow is complete. This matrix describes the actual alpha status:
@@ -350,6 +378,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Rust / Cargo | Yes | No | Experimental |
 | Node.js / JavaScript | Yes | Experimental | Experimental |
 | PHP / Laravel / Lumen | Yes | Experimental | Experimental with `php -S` or Artisan, depending on the framework |
+| WordPress | Yes | Experimental local PHP; user-provided Docker/Podman | With Compose, start services in Containers; without Compose, local PHP and a user-configured database |
 | Python / Django | Yes | Experimental | Experimental |
 | Java / Spring Boot | Yes | Experimental | Experimental |
 | Go | Experimental | Initial implementation, not validated | Not yet supported end to end |
@@ -371,11 +400,14 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 - Web services expose a URL after it is confirmed; terminal applications should remain observable through their logs.
 - Static-site ports are derived from the project path to reduce conflicts and prevent another project's URL from being reused.
 - PostgreSQL, MySQL, MariaDB, SQL Server and SQLite declared in `.env`/`.env.local` appear in diagnostics; local ports are checked without exposing credentials. See [docs/DATABASES.md](docs/DATABASES.md).
+- WordPress is recognized from `wp-config.php`, its sample file, or a Composer dependency. A literal `DB_HOST` in `wp-config.php` identifies the MySQL destination. With Compose, the app routes startup to Containers: a name such as `db` only resolves inside its network. A port check does not verify credentials or database existence.
 - Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
 
 ### Containers: controlled execution (under validation)
 
 The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services, and checks Docker/Podman and Compose availability in the background. When the selected engine is ready, the app can validate the configuration, run `up --detach`, `stop`, query status with `ps --all` on Docker or `ps` on Podman, retrieve the latest 200 log lines, and build a standalone Dockerfile. Every action shows its command and working directory for confirmation, runs without an external console, keeps output in a scrollable area, and supports cancellation; each execution has a 30-minute limit.
+
+**Processes** also lists existing running or stopped containers, with actions to start, stop, restart, and read logs. The list refreshes periodically while Processes or Containers is open. Web ports published by Compose or a container provide candidate browser URLs; a published port does not confirm an application response.
 
 LocalCodePilot does not install Docker/Podman or start the engine VM. Confirmed `up` and `build` actions may download or build images. Recognized Compose override files are passed to the provider in the displayed order; the local preview still does not resolve variables, profiles, `include`, `extends`, or external references, so effective validation is delegated to Compose. A standalone Dockerfile only offers image building because the app does not invent an image name, ports, or a run command. CI automatically verifies the Docker and Podman command flows with a minimal project. On Windows 11, Docker Desktop passed UI validation for `config`, `up`, `ps`, logs, `stop`, build, and cancellation; Podman passed `config`, `up`, `ps`, logs, and `stop`, while its build passed through the CLI. For compatibility with earlier `podman-compose` versions, Podman uses `config` without `--quiet` and `ps` without `--all`. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the diagnostic `containers <directory>` CLI command.
 

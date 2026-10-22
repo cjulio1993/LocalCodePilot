@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 localcodepilot-core.workspace = true
 sysinfo.workspace = true
+serde_json.workspace = true

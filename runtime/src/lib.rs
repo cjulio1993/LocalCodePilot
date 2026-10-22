@@ -18,6 +18,7 @@ const CANDIDATES: &[(&str, RuntimeKind)] = &[
     ("composer.json", RuntimeKind::Php),
     ("index.php", RuntimeKind::Php),
     ("wp-config.php", RuntimeKind::Php),
+    ("wp-config-sample.php", RuntimeKind::Php),
     ("pyproject.toml", RuntimeKind::Python),
     ("requirements.txt", RuntimeKind::Python),
     ("pom.xml", RuntimeKind::Java),
@@ -236,9 +237,15 @@ pub fn detect_python_requirement(
 }
 
 pub fn detect_php_requirement(directory: &Path, project_root: &Path) -> Option<RuntimeRequirement> {
-    let marker = ["composer.json", "artisan", "index.php", "wp-config.php"]
-        .iter()
-        .find_map(|name| find_in_project_ancestors(directory, project_root, name))?;
+    let marker = [
+        "composer.json",
+        "artisan",
+        "index.php",
+        "wp-config.php",
+        "wp-config-sample.php",
+    ]
+    .iter()
+    .find_map(|name| find_in_project_ancestors(directory, project_root, name))?;
     let composer = find_in_project_ancestors(directory, project_root, "composer.json");
     let declared = composer.as_ref().and_then(|path| {
         fs::read_to_string(path)
@@ -279,22 +286,28 @@ pub fn detect_php_requirement(directory: &Path, project_root: &Path) -> Option<R
 }
 
 pub fn detect_php_extensions(directory: &Path, project_root: &Path) -> Vec<String> {
-    let Some(path) = find_in_project_ancestors(directory, project_root, "composer.json") else {
-        return Vec::new();
-    };
-    let Some(requirements) = fs::read_to_string(path)
-        .ok()
+    let mut extensions = find_in_project_ancestors(directory, project_root, "composer.json")
+        .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
-        .and_then(|document| document.get("require").cloned())
-        .and_then(|requirements| requirements.as_object().cloned())
-    else {
-        return Vec::new();
-    };
-    let mut extensions = requirements
-        .keys()
-        .filter_map(|name| name.strip_prefix("ext-"))
-        .map(|name| name.to_ascii_lowercase().replace('-', "_"))
-        .collect::<Vec<_>>();
+        .and_then(|document| {
+            document
+                .get("require")
+                .and_then(|value| value.as_object())
+                .cloned()
+        })
+        .map(|requirements| {
+            requirements
+                .keys()
+                .filter_map(|name| name.strip_prefix("ext-"))
+                .map(|name| name.to_ascii_lowercase().replace('-', "_"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if find_in_project_ancestors(directory, project_root, "wp-config.php").is_some()
+        && !containers::has_container_markers(project_root)
+    {
+        extensions.push("mysqli".into());
+    }
     extensions.sort();
     extensions.dedup();
     extensions
@@ -742,8 +755,13 @@ fn detect_processes_in_directory(
             );
         }
     } else if !belongs_to_artisan_app
+        && !(project.technologies.contains(&TechnologyKind::WordPress)
+            && containers::COMPOSE_FILES
+                .iter()
+                .any(|file| directory.join(file).is_file()))
         && (directory.join("index.php").is_file()
             || directory.join("wp-config.php").is_file()
+            || directory.join("wp-config-sample.php").is_file()
             || (directory == project.path
                 && project.runtimes.contains(&RuntimeKind::Php)
                 && directory.join("index.html").is_file()))
@@ -1479,6 +1497,25 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
 }
 
 fn detect_technologies_in_directory(path: &Path, found: &mut Vec<TechnologyKind>) {
+    if path.join("wp-config.php").is_file()
+        || path.join("wp-config-sample.php").is_file()
+        || (path.join("wp-content").is_dir() && path.join("wp-includes").is_dir())
+        || fs::read_to_string(path.join("composer.json"))
+            .ok()
+            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+            .and_then(|document| document.get("require").cloned())
+            .and_then(|requirements| requirements.as_object().cloned())
+            .is_some_and(|requirements| {
+                requirements.keys().any(|package| {
+                    matches!(
+                        package.as_str(),
+                        "johnpbloch/wordpress" | "roots/wordpress" | "wordpress/wordpress"
+                    )
+                })
+            })
+    {
+        push_unique(found, TechnologyKind::WordPress);
+    }
     if containers::has_container_markers(path) {
         push_unique(found, TechnologyKind::Containers);
     }
@@ -1581,6 +1618,7 @@ fn technology_priority(technology: TechnologyKind) -> usize {
     match technology {
         TechnologyKind::Laravel => 0,
         TechnologyKind::Lumen => 1,
+        TechnologyKind::WordPress => 2,
         TechnologyKind::Flutter => 2,
         TechnologyKind::StaticSite => 3,
         TechnologyKind::Vue => 4,
@@ -1676,6 +1714,58 @@ version = "0.1.0"
 
     use super::*;
     use std::{fs, time::SystemTime};
+
+    #[test]
+    fn recognizes_wordpress_from_config_or_composer() {
+        let path = std::env::temp_dir().join(format!(
+            "lcp-wordpress-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("wp-config-sample.php"), "<?php").unwrap();
+        let mut found = vec![];
+        detect_technologies_in_directory(&path, &mut found);
+        assert!(found.contains(&TechnologyKind::WordPress));
+        fs::remove_file(path.join("wp-config-sample.php")).unwrap();
+        fs::write(
+            path.join("composer.json"),
+            r#"{"require":{"roots/wordpress":"*"}}"#,
+        )
+        .unwrap();
+        found.clear();
+        detect_technologies_in_directory(&path, &mut found);
+        assert!(found.contains(&TechnologyKind::WordPress));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn wordpress_compose_does_not_start_php_outside_its_database_network() {
+        let path = std::env::temp_dir().join(format!(
+            "lcp-wordpress-compose-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("index.php"), "<?php").unwrap();
+        fs::write(path.join("wp-config.php"), "<?php").unwrap();
+        let project = Project::new(path.clone(), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::WordPress, TechnologyKind::Containers]);
+        assert_eq!(detect_processes(&project).len(), 1);
+        fs::write(
+            path.join("docker-compose.yml"),
+            "services:\n  db:\n    image: mysql:8\n",
+        )
+        .unwrap();
+        assert!(detect_processes(&project).is_empty());
+        fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn detects_node_requirement_from_version_files_and_manifest() {

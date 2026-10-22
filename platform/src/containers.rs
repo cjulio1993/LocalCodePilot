@@ -1,6 +1,6 @@
 use crate::installations::{configure_background_command, find_executable};
 use localcodepilot_core::containers::{
-    ContainerCommand, ContainerEngine, EngineDiagnosis, EngineState,
+    ContainerCommand, ContainerEngine, EngineDiagnosis, EngineState, RuntimeContainer,
 };
 use localcodepilot_core::ports::strip_terminal_sequences;
 use std::{
@@ -14,6 +14,107 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+const LIST_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Queries real containers without starting or changing them. Each engine is isolated so an
+/// unavailable daemon cannot hide containers from the other engine.
+pub fn list_runtime_containers(path: Option<&OsStr>) -> Vec<RuntimeContainer> {
+    [ContainerEngine::Docker, ContainerEngine::Podman]
+        .into_iter()
+        .flat_map(|engine| list_engine_containers(engine, path).unwrap_or_default())
+        .collect()
+}
+
+fn list_engine_containers(
+    engine: ContainerEngine,
+    path: Option<&OsStr>,
+) -> Result<Vec<RuntimeContainer>, String> {
+    let executable = find_executable(engine.program(), path).ok_or("CLI indisponível")?;
+    let mut command = Command::new(executable);
+    command
+        .args(["ps", "--all", "--format", "{{json .}}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    configure_background_command(&mut command);
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdout = child.stdout.take().ok_or("Saída indisponível")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(1_048_576)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < LIST_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                terminate_container_process(&mut child);
+                let _ = reader.join();
+                return Err("Consulta de containers excedeu o tempo limite".into());
+            }
+        }
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| "Leitura interrompida")?
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err("Motor indisponível".into());
+    }
+    let output = String::from_utf8(bytes).map_err(|error| error.to_string())?;
+    Ok(parse_container_rows(engine, &output))
+}
+
+fn parse_container_rows(engine: ContainerEngine, output: &str) -> Vec<RuntimeContainer> {
+    output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|row| {
+            let field = |name| row.get(name).and_then(serde_json::Value::as_str);
+            let id = field("ID").or_else(|| field("Id"))?.to_owned();
+            let name = field("Names")
+                .or_else(|| field("Name"))
+                .unwrap_or(&id)
+                .to_owned();
+            let label = |name: &str| {
+                row.get("Labels")
+                    .and_then(|labels| labels.get(name))
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| {
+                        field("Labels")?
+                            .split(',')
+                            .find_map(|label| label.trim().strip_prefix(name)?.strip_prefix('='))
+                    })
+                    .map(str::to_owned)
+            };
+            Some(RuntimeContainer {
+                engine,
+                id,
+                name,
+                image: field("Image").unwrap_or_default().to_owned(),
+                state: field("State").unwrap_or_default().to_owned(),
+                status: field("Status").unwrap_or_default().to_owned(),
+                ports: field("Ports").unwrap_or_default().to_owned(),
+                service: label("com.docker.compose.service")
+                    .or_else(|| label("io.podman.compose.service")),
+                project_directory: label("com.docker.compose.project.working_dir")
+                    .or_else(|| label("io.podman.compose.project.working_dir"))
+                    .map(Into::into),
+                running_for: field("RunningFor").map(str::to_owned),
+            })
+        })
+        .collect()
+}
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -275,6 +376,23 @@ fn probe(program: &str, args: &[&str], path: Option<&OsStr>) -> ProbeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_real_container_rows_and_compose_project_labels() {
+        let output = r#"{"ID":"abc123","Names":"wordpress-web-1","Image":"wordpress:latest","State":"running","Status":"Up 2 minutes","Ports":"0.0.0.0:8080->80/tcp","Labels":"com.docker.compose.service=web,com.docker.compose.project.working_dir=/projects/wordpress"}"#;
+        let rows = parse_container_rows(ContainerEngine::Docker, output);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].service.as_deref(), Some("web"));
+        assert_eq!(
+            rows[0].project_directory.as_deref(),
+            Some(std::path::Path::new("/projects/wordpress"))
+        );
+        assert_eq!(rows[0].state, "running");
+        let podman = r#"{"Id":"abcdef987654","Names":"db-1","Image":"mariadb","State":"exited","Labels":{"io.podman.compose.service":"db","io.podman.compose.project.working_dir":"/projects/wordpress"}}"#;
+        let rows = parse_container_rows(ContainerEngine::Podman, podman);
+        assert_eq!(rows[0].service.as_deref(), Some("db"));
+        assert_eq!(rows[0].state, "exited");
+    }
 
     #[test]
     fn missing_cli_never_queries_daemon_or_compose() {
