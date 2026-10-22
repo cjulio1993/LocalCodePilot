@@ -55,12 +55,12 @@ jobs:
           lipo target/macos-universal/localcodepilot-desktop -verify_arch x86_64 arm64
 
       - name: Package and verify DMG
-        run: bash scripts/package-macos.sh "0.4.0-alpha.6-validation" target/macos-universal/localcodepilot-desktop
+        run: bash scripts/package-macos.sh "0.4.0-alpha.7-validation" target/macos-universal/localcodepilot-desktop
 
       - name: Mount DMG and verify installed app
         run: |
           set -euo pipefail
-          dmg="$PWD/dist/LocalCodePilot-0.4.0-alpha.6-validation-macos-universal.dmg"
+          dmg="$PWD/dist/LocalCodePilot-0.4.0-alpha.7-validation-macos-universal.dmg"
           mount_point="$RUNNER_TEMP/localcodepilot-dmg"
           install_root="$RUNNER_TEMP/localcodepilot-install"
           mkdir -p "$mount_point" "$install_root"
@@ -83,5 +83,5 @@ jobs:
           name: LocalCodePilot-macos-universal-validation
           retention-days: 7
           path: |
-            dist/LocalCodePilot-0.4.0-alpha.6-validation-macos-universal.dmg
+            dist/LocalCodePilot-0.4.0-alpha.7-validation-macos-universal.dmg
             dist/SHA256SUMS-macos.txt

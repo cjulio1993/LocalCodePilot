@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.7] - 2026-10-22
+
 ### Adicionado
 
 - Reconhecimento de WordPress e leitura segura do `DB_HOST` literal para diagnóstico MySQL.
