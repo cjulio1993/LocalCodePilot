@@ -7,8 +7,8 @@ use crate::{
 };
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
-    ARROW_SQUARE_OUT, BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, PLAY,
-    PLUS, TERMINAL,
+    ARROW_SQUARE_OUT, BELL, BOOK_OPEN, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT,
+    PLAY, PLUS, TERMINAL,
 };
 use localcodepilot_core::{
     discovery::DiscoveryService,
@@ -73,6 +73,7 @@ enum Page {
     Processes,
     Containers,
     Plugins,
+    Help,
     Settings,
 }
 
@@ -84,6 +85,7 @@ impl Page {
             Self::Processes => "processes",
             Self::Containers => "containers",
             Self::Plugins => "plugins",
+            Self::Help => "help",
             Self::Settings => "settings",
         }
     }
@@ -94,6 +96,7 @@ impl Page {
             "processes" => Self::Processes,
             "containers" => Self::Containers,
             "plugins" => Self::Plugins,
+            "help" => Self::Help,
             "settings" => Self::Settings,
             _ => Self::Overview,
         }
@@ -1023,6 +1026,7 @@ impl LocalCodePilot {
                 );
                 ui.add_space(4.0);
                 self.nav_button(ui, Page::Plugins, CODE_SIMPLE, "Plugins", None);
+                self.nav_button(ui, Page::Help, BOOK_OPEN, "Ajuda", None);
                 self.nav_button(ui, Page::Settings, GEAR, "Configurações", None);
 
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
@@ -1134,7 +1138,7 @@ impl LocalCodePilot {
                         let search_hint = match self.page {
                             Page::Overview | Page::Projects => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
-                            Page::Plugins | Page::Settings | Page::Containers => None,
+                            Page::Plugins | Page::Help | Page::Settings | Page::Containers => None,
                         };
                         if let Some(search_hint) = search_hint {
                             ui.add_sized(
@@ -1156,6 +1160,7 @@ impl LocalCodePilot {
             Page::Processes => "Processos",
             Page::Containers => "Containers",
             Page::Plugins => "Plugins",
+            Page::Help => "Ajuda",
             Page::Settings => "Configurações",
         }
     }
@@ -3986,6 +3991,179 @@ impl LocalCodePilot {
         }
     }
 
+    fn help_page(&self, ui: &mut egui::Ui) {
+        ui.heading("Como usar o LocalCodePilot");
+        ui.label(
+            RichText::new("Do projeto encontrado à aplicação aberta em poucos passos.")
+                .color(theme::MUTED),
+        );
+        ui.add_space(16.0);
+
+        Frame::new()
+            .fill(theme::PRIMARY.gamma_multiply(0.10))
+            .stroke(Stroke::new(1.0, theme::PRIMARY.gamma_multiply(0.45)))
+            .corner_radius(10)
+            .inner_margin(Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Primeiro uso").strong().size(14.0));
+                ui.label(
+                    RichText::new(
+                        "O LocalCodePilot encontra projetos nas pastas configuradas, identifica tecnologias e mostra o que está pronto ou precisa de atenção.",
+                    )
+                    .color(theme::MUTED)
+                    .size(11.0),
+                );
+            });
+
+        ui.add_space(22.0);
+        ui.heading("Primeiros passos");
+        ui.add_space(10.0);
+
+        let step_card = |ui: &mut egui::Ui, number: u8, title: &str, description: &str| {
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0, theme::BORDER))
+                .corner_radius(10)
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        Frame::new()
+                            .fill(theme::PRIMARY.gamma_multiply(0.22))
+                            .corner_radius(8)
+                            .inner_margin(Margin::symmetric(11, 8))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(number.to_string())
+                                        .color(theme::PRIMARY)
+                                        .strong(),
+                                );
+                            });
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(title).strong().size(13.0));
+                            ui.label(RichText::new(description).color(theme::MUTED).size(11.0));
+                        });
+                    });
+                });
+            ui.add_space(8.0);
+        };
+
+        step_card(
+            ui,
+            1,
+            "Confira as pastas de projetos",
+            "Abra Projetos para ver o catálogo e adicionar ou remover as pastas que devem ser pesquisadas.",
+        );
+        step_card(
+            ui,
+            2,
+            "Leia o diagnóstico",
+            "Cada cartão informa tecnologias, runtimes, banco de dados e pendências encontradas no projeto.",
+        );
+        step_card(
+            ui,
+            3,
+            "Prepare e inicie o ambiente",
+            "Quando houver uma pendência, revise o plano apresentado. Depois use Iniciar ambiente ou Retomar ambiente.",
+        );
+        step_card(
+            ui,
+            4,
+            "Abra e acompanhe a aplicação",
+            "Use Abrir aplicação quando o endereço estiver disponível. Veja Processos para portas, saúde HTTP e logs.",
+        );
+
+        let status_card = |ui: &mut egui::Ui| {
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0, theme::BORDER))
+                .corner_radius(10)
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Entenda os estados").strong().size(14.0));
+                    ui.add_space(6.0);
+                    ui.colored_label(theme::SUCCESS, "● Pronto — o projeto pode ser iniciado");
+                    ui.colored_label(theme::PRIMARY, "● Em execução — há serviços ativos");
+                    ui.colored_label(theme::MUTED, "● Verificando — diagnóstico em andamento");
+                    ui.colored_label(
+                        Color32::from_rgb(255, 176, 76),
+                        "● Atenção — existe uma pendência para revisar",
+                    );
+                });
+        };
+
+        let services_card = |ui: &mut egui::Ui| {
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0, theme::BORDER))
+                .corner_radius(10)
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Bancos e containers").strong().size(14.0));
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("Bancos")
+                            .color(theme::PRIMARY)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "O app identifica a configuração do projeto e verifica a disponibilidade local sem mostrar credenciais.",
+                        )
+                        .color(theme::MUTED)
+                        .size(11.0),
+                    );
+                    ui.label(
+                        RichText::new("Containers")
+                            .color(theme::PRIMARY)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "Docker ou Podman deve estar instalado e em execução. Confirme sempre o comando exibido antes de executá-lo.",
+                        )
+                        .color(theme::MUTED)
+                        .size(11.0),
+                    );
+                });
+        };
+
+        ui.add_space(16.0);
+        if ui.available_width() >= 720.0 {
+            ui.columns(2, |columns| {
+                status_card(&mut columns[0]);
+                services_card(&mut columns[1]);
+            });
+        } else {
+            status_card(ui);
+            ui.add_space(8.0);
+            services_card(ui);
+        }
+
+        ui.add_space(18.0);
+        Frame::new()
+            .fill(theme::SURFACE)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(10)
+            .inner_margin(Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Se algo não abrir").strong().size(14.0));
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "1. Confira a mensagem do cartão.  2. Abra Processos e leia os logs.  3. Verifique a porta e o banco.  4. Corrija a pendência e tente iniciar novamente.",
+                    )
+                    .color(theme::MUTED)
+                    .size(11.0),
+                );
+            });
+        ui.add_space(16.0);
+    }
+
     fn settings_page(&mut self, ui: &mut egui::Ui) {
         let available_update = self.available_update.clone();
         let automatic_update = available_update
@@ -4217,6 +4395,7 @@ impl LocalCodePilot {
                     Page::Processes => self.processes_page(ui),
                     Page::Settings => self.settings_page(ui),
                     Page::Containers => self.containers_page(ui),
+                    Page::Help => self.help_page(ui),
                     Page::Plugins => {
                         ui.heading(self.page_title());
                         ui.add_space(8.0);
@@ -6987,7 +7166,7 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DependencyInstall, DependencyInstallEvent, HttpHealthStatus, ProjectEnvironment,
+        DependencyInstall, DependencyInstallEvent, HttpHealthStatus, Page, ProjectEnvironment,
         classify_http_health, dependency_error_suggestion, executable_available,
         initials_from_username, inspect_project_environment, is_localcodepilot_qa_project,
         laravel_major, lowercase_hex, prepare_laravel_migration_files, probe_http_health,
@@ -7018,6 +7197,11 @@ mod tests {
         thread,
         time::SystemTime,
     };
+
+    #[test]
+    fn restores_help_page_from_workspace_key() {
+        assert_eq!(Page::from_key(Page::Help.key()), Page::Help);
+    }
 
     #[test]
     fn excludes_only_localcodepilot_test_projects_from_recents() {
