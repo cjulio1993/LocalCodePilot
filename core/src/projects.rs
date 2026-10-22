@@ -1,26 +1,12 @@
 use crate::{runtimes::RuntimeKind, technologies::TechnologyKind};
+use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
     fs,
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
-const IGNORED_DIRECTORIES: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    "vendor",
-    "dist",
-    "build",
-    ".venv",
-    "venv",
-    "_macosx",
-    "__macosx",
-    "ephemeral",
-];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
     pub path: PathBuf,
@@ -94,31 +80,17 @@ fn latest_modified_at(root: &Path) -> Option<SystemTime> {
         .metadata()
         .and_then(|metadata| metadata.modified())
         .ok();
-    let mut queue = VecDeque::from([(root.to_path_buf(), 0_usize)]);
-
-    while let Some((directory, depth)) = queue.pop_front() {
-        let Ok(entries) = fs::read_dir(directory) else {
+    let Ok(entries) = fs::read_dir(root) else {
+        return latest;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                if depth < 8
-                    && !name.starts_with('.')
-                    && !IGNORED_DIRECTORIES.contains(&name.as_ref())
-                {
-                    queue.push_back((entry.path(), depth + 1));
-                }
-            } else if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
-                latest = Some(latest.map_or(modified, |current| current.max(modified)));
-            }
+        if file_type.is_file()
+            && let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified())
+        {
+            latest = Some(latest.map_or(modified, |current| current.max(modified)));
         }
     }
 

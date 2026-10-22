@@ -7,8 +7,8 @@ use crate::{
 };
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
-    ARROW_SQUARE_OUT, BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, MEMORY,
-    PLAY, PLUS, TERMINAL,
+    ARROW_SQUARE_OUT, BELL, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT, PLAY,
+    PLUS, TERMINAL,
 };
 use localcodepilot_core::{
     discovery::DiscoveryService,
@@ -23,7 +23,6 @@ use localcodepilot_core::{
     technologies::TechnologyKind,
 };
 use localcodepilot_platform::{
-    NativePlatform, Platform,
     filesystem::FilesystemProjectSource,
     installations::{
         ProgramInventory, WindowsWingetProvider, configure_background_command, find_executable,
@@ -180,6 +179,17 @@ struct ProjectEnvironment {
     databases: Vec<(DatabaseRequirement, Option<bool>)>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct RuntimeInventory {
+    node: Option<ProgramInventory>,
+    python: Option<ProgramInventory>,
+    php: Option<ProgramInventory>,
+    java: Option<ProgramInventory>,
+    go: Option<ProgramInventory>,
+    dart: Option<ProgramInventory>,
+    php_extensions: HashSet<String>,
+}
+
 #[derive(Debug, Clone)]
 struct DependencyInstall {
     label: String,
@@ -296,6 +306,8 @@ impl ProjectEnvironment {
             .any(|(_, available)| *available == Some(false))
         {
             ("Banco indisponível", Color32::from_rgb(255, 205, 75))
+        } else if !self.is_ready() {
+            ("Requisitos pendentes", Color32::from_rgb(255, 205, 75))
         } else {
             ("Pronto", theme::SUCCESS)
         }
@@ -388,17 +400,19 @@ impl ProjectEnvironment {
 }
 
 enum ProjectCardAction {
-    ViewContainers,
+    ViewContainers(PathBuf),
     Open(PathBuf),
     OpenUrl(String),
     Start(PathBuf),
     Stop(PathBuf),
     ViewLogs(PathBuf),
+    ViewRequirements(PathBuf),
     PrepareEnvironment(PathBuf),
     InstallDependencies(PathBuf),
     ViewDependencyLogs(PathBuf),
     PrepareLaravelMigration(PathBuf),
     ToggleFavorite(PathBuf),
+    ToggleRecentVisibility(PathBuf),
 }
 
 struct ProjectCardView<'a> {
@@ -408,8 +422,18 @@ struct ProjectCardView<'a> {
     application_url: Option<&'a str>,
     history: Option<&'a config::ProjectHistory>,
     favorite: bool,
+    hidden_from_recent: bool,
+    is_recent_card: bool,
+    environment_pending: bool,
     resolving_plan: bool,
     width: f32,
+}
+
+enum DiscoveryEvent {
+    Projects(Vec<Project>),
+    Processes(Vec<ProjectProcess>),
+    Environments(HashMap<PathBuf, ProjectEnvironment>),
+    Failed(String),
 }
 
 pub struct LocalCodePilot {
@@ -429,14 +453,13 @@ pub struct LocalCodePilot {
     environment_plan_confirmation: Option<InstallationPlan>,
     environment_path: Option<OsString>,
     laravel_migration: Option<LaravelMigration>,
-    platform: NativePlatform,
     logo_texture: egui::TextureHandle,
     username: String,
     user_initials: String,
     search: String,
     notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
-    discovery: Option<Receiver<Result<Vec<Project>, String>>>,
+    discovery: Option<Receiver<DiscoveryEvent>>,
     workspace_state: config::WorkspaceState,
     workspace_dirty: bool,
     last_workspace_save: Instant,
@@ -459,10 +482,13 @@ impl LocalCodePilot {
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
         let default_source = FilesystemProjectSource::common_locations();
-        let scan_roots =
+        let configured_roots =
             config::load_scan_roots().unwrap_or_else(|| default_source.roots().to_vec());
-        let source = FilesystemProjectSource::new(scan_roots.clone());
-        let receiver = spawn_discovery(source, cc.egui_ctx.clone());
+        let source = FilesystemProjectSource::new(configured_roots);
+        let scan_roots = source.roots().to_vec();
+        let cached_projects = config::load_project_cache();
+        let environment_path = refreshed_environment_path().ok();
+        let receiver = spawn_discovery(source, environment_path.clone(), cc.egui_ctx.clone());
         let logo_texture = load_logo_texture(&cc.egui_ctx);
         let username = current_username();
         let user_initials = initials_from_username(&username);
@@ -489,7 +515,7 @@ impl LocalCodePilot {
             .then(|| updates::spawn_update_check(cc.egui_ctx.clone()));
         Self {
             page,
-            projects: Vec::new(),
+            projects: cached_projects,
             processes: Vec::new(),
             running_processes: HashMap::new(),
             assigned_ports: HashMap::new(),
@@ -502,9 +528,8 @@ impl LocalCodePilot {
             dependency_terminal: None,
             environment_plan_request: None,
             environment_plan_confirmation: None,
-            environment_path: refreshed_environment_path().ok(),
+            environment_path,
             laravel_migration: None,
-            platform: NativePlatform::default(),
             logo_texture,
             username,
             user_initials,
@@ -560,6 +585,23 @@ impl LocalCodePilot {
                 .favorite_projects
                 .push(path.to_path_buf());
             self.notify("Projeto adicionado aos favoritos");
+        }
+        self.workspace_dirty = true;
+    }
+
+    fn touch_project(&mut self, path: &Path) {
+        self.workspace_state.touch_project(path, unix_timestamp());
+        self.workspace_dirty = true;
+    }
+
+    fn toggle_recent_visibility(&mut self, path: &Path) {
+        let hidden = &mut self.workspace_state.hidden_recent_projects;
+        if let Some(index) = hidden.iter().position(|entry| entry == path) {
+            hidden.remove(index);
+            self.notify("Projeto visível nos recentes");
+        } else {
+            hidden.push(path.to_path_buf());
+            self.notify("Projeto ocultado dos recentes");
         }
         self.workspace_dirty = true;
     }
@@ -1123,29 +1165,26 @@ impl LocalCodePilot {
             return;
         };
         match receiver.try_recv() {
-            Ok(Ok(projects)) => {
-                self.notify(format!("{} projeto(s) encontrado(s)", projects.len()));
-                self.processes = projects.iter().flat_map(detect_processes).collect();
-                self.assigned_ports.clear();
-                self.port_conflicts.clear();
-                self.project_environments = projects
-                    .iter()
-                    .map(|project| {
-                        (
-                            project.path.clone(),
-                            inspect_project_environment(
-                                project,
-                                &self.processes,
-                                self.environment_path.as_deref(),
-                            ),
-                        )
-                    })
-                    .collect();
+            Ok(DiscoveryEvent::Projects(projects)) => {
+                self.notify(format!(
+                    "{} projeto(s) encontrado(s) · atualizando diagnósticos...",
+                    projects.len()
+                ));
                 self.projects = projects;
-                self.discovery = None;
+                let _ = config::save_project_cache(&self.projects);
                 self.refresh_containers(ctx.clone());
             }
-            Ok(Err(error)) => {
+            Ok(DiscoveryEvent::Processes(processes)) => {
+                self.processes = processes;
+                self.assigned_ports.clear();
+                self.port_conflicts.clear();
+            }
+            Ok(DiscoveryEvent::Environments(environments)) => {
+                self.project_environments = environments;
+                self.discovery = None;
+                self.notify("Projetos e ambientes atualizados");
+            }
+            Ok(DiscoveryEvent::Failed(error)) => {
                 self.notify(format!("Não foi possível concluir a varredura: {error}"));
                 self.discovery = None;
             }
@@ -1168,6 +1207,7 @@ impl LocalCodePilot {
         self.notify("Atualizando a lista de projetos...");
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -1189,6 +1229,7 @@ impl LocalCodePilot {
         });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -1205,6 +1246,7 @@ impl LocalCodePilot {
         });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -1221,6 +1263,7 @@ impl LocalCodePilot {
         });
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
+            self.environment_path.clone(),
             ctx.clone(),
         ));
     }
@@ -1245,7 +1288,7 @@ impl LocalCodePilot {
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new(format!("{PLUS}  Novo projeto"))
+                            RichText::new(format!("{FOLDER_OPEN}  Ver projetos"))
                                 .color(Color32::WHITE)
                                 .strong(),
                         )
@@ -1254,19 +1297,17 @@ impl LocalCodePilot {
                     )
                     .clicked()
                 {
-                    self.notify("O assistente de criação de projetos será adicionado futuramente");
+                    self.page = Page::Projects;
                 }
             });
         });
         ui.add_space(22.0);
-        let snapshot = self.platform.snapshot();
-        let used_gb = snapshot.used_memory_bytes as f64 / 1_073_741_824.0;
-        let active_processes = self
-            .running_processes
-            .values()
-            .filter(|process| !process.finished)
+        let active_projects = self
+            .projects
+            .iter()
+            .filter(|project| !project_process_ids(&self.processes, &project.path, true).is_empty())
             .count();
-        ui.columns(3, |columns| {
+        ui.columns(2, |columns| {
             stat_card(
                 &mut columns[0],
                 FOLDER_OPEN,
@@ -1278,44 +1319,25 @@ impl LocalCodePilot {
             stat_card(
                 &mut columns[1],
                 PLAY,
-                "Processos ativos",
-                &active_processes.to_string(),
+                "Ambientes ativos",
+                &active_projects.to_string(),
                 "em execução",
                 theme::SUCCESS,
             );
-            stat_card(
-                &mut columns[2],
-                MEMORY,
-                "Uso de memória",
-                &format!("{used_gb:.1} GB"),
-                "no sistema",
-                Color32::from_rgb(170, 132, 255),
-            );
         });
         ui.add_space(26.0);
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new("Projetos recentes").strong().size(16.0));
-                ui.label(
-                    RichText::new("Continue de onde parou")
-                        .color(theme::MUTED)
-                        .size(11.0),
-                );
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let link_ver_todos =
-                    format!("{} Ver todos os projetos", egui_phosphor::regular::LIST);
-
-                if ui.link(link_ver_todos).clicked() {
-                    self.page = Page::Projects;
-                }
-            });
-        });
+        ui.label(RichText::new("Projetos recentes").strong().size(16.0));
+        ui.label(
+            RichText::new("Continue de onde parou")
+                .color(theme::MUTED)
+                .size(11.0),
+        );
         ui.add_space(8.0);
         self.project_grid(ui, Some(3));
     }
 
     fn project_grid(&mut self, ui: &mut egui::Ui, max_projects: Option<usize>) {
+        let recent = max_projects.is_some();
         let query = self.search.trim().to_lowercase();
         let mut projects: Vec<_> = self
             .projects
@@ -1324,6 +1346,18 @@ impl LocalCodePilot {
                 query.is_empty()
                     || p.name.to_lowercase().contains(&query)
                     || p.path.to_string_lossy().to_lowercase().contains(&query)
+            })
+            .filter(|project| {
+                !recent
+                    || (self
+                        .workspace_state
+                        .project(&project.path)
+                        .is_some_and(|history| history.last_activity > 0)
+                        && !self
+                            .workspace_state
+                            .hidden_recent_projects
+                            .contains(&project.path)
+                        && !is_localcodepilot_qa_project(&project.path))
             })
             .cloned()
             .collect();
@@ -1334,7 +1368,11 @@ impl LocalCodePilot {
                 .project(&project.path)
                 .map(|history| history.last_activity)
                 .unwrap_or_else(|| system_time_timestamp(project.modified_at));
-            std::cmp::Reverse((self.is_favorite(&project.path), last_activity))
+            if recent {
+                std::cmp::Reverse((false, last_activity))
+            } else {
+                std::cmp::Reverse((self.is_favorite(&project.path), last_activity))
+            }
         });
         if let Some(max_projects) = max_projects {
             projects.truncate(max_projects);
@@ -1350,6 +1388,11 @@ impl LocalCodePilot {
                 (
                     "Nenhum resultado para esta busca",
                     "Tente buscar pelo nome do projeto ou por parte do caminho.",
+                )
+            } else if recent {
+                (
+                    "Nenhum projeto recente",
+                    "Abra um projeto pela lista para encontrá-lo aqui depois.",
                 )
             } else {
                 (
@@ -1388,6 +1431,8 @@ impl LocalCodePilot {
                         .get(&project.path)
                         .cloned()
                         .unwrap_or_default();
+                    let environment_pending = self.discovery.is_some()
+                        && !self.project_environments.contains_key(&project.path);
                     let active_processes =
                         project_process_ids(&self.processes, &project.path, true).len();
                     let dependency_install = self
@@ -1432,17 +1477,27 @@ impl LocalCodePilot {
                             application_url: application_url.as_deref(),
                             history: project_history.as_ref(),
                             favorite,
+                            hidden_from_recent: self
+                                .workspace_state
+                                .hidden_recent_projects
+                                .contains(&project.path),
+                            is_recent_card: recent,
+                            environment_pending,
                             resolving_plan,
                             width: card_width,
                         },
                     ) {
-                        Some(ProjectCardAction::ViewContainers) => self.page = Page::Containers,
-                        Some(ProjectCardAction::Open(path)) => {
-                            self.notify(match open_in_vscode(&path) {
-                                Ok(()) => format!("Abrindo {} no VS Code...", project.name),
-                                Err(error) => error,
-                            });
+                        Some(ProjectCardAction::ViewContainers(path)) => {
+                            self.touch_project(&path);
+                            self.page = Page::Containers;
                         }
+                        Some(ProjectCardAction::Open(path)) => match open_in_vscode(&path) {
+                            Ok(()) => {
+                                self.touch_project(&path);
+                                self.notify(format!("Abrindo {} no VS Code...", project.name));
+                            }
+                            Err(error) => self.notify(error),
+                        },
                         Some(ProjectCardAction::OpenUrl(url)) => {
                             column_ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
                             self.notify(format!("Abrindo {url}"));
@@ -1460,6 +1515,11 @@ impl LocalCodePilot {
                                 self.page = Page::Processes;
                             }
                         }
+                        Some(ProjectCardAction::ViewRequirements(path)) => {
+                            self.focused_project = Some(path);
+                            self.search.clear();
+                            self.page = Page::Processes;
+                        }
                         Some(ProjectCardAction::PrepareEnvironment(path)) => {
                             self.request_environment_plan(&path, column_ui.ctx().clone());
                         }
@@ -1474,6 +1534,9 @@ impl LocalCodePilot {
                         }
                         Some(ProjectCardAction::ToggleFavorite(path)) => {
                             self.toggle_favorite(&path);
+                        }
+                        Some(ProjectCardAction::ToggleRecentVisibility(path)) => {
+                            self.toggle_recent_visibility(&path);
                         }
                         None => {}
                     }
@@ -4226,16 +4289,55 @@ impl Drop for LocalCodePilot {
 
 fn spawn_discovery(
     source: FilesystemProjectSource,
+    environment_path: Option<OsString>,
     repaint: egui::Context,
-) -> Receiver<Result<Vec<Project>, String>> {
+) -> Receiver<DiscoveryEvent> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let service = DiscoveryService::new(source, ManifestRuntimeDetector);
-        let result = service
-            .discover()
-            .map(|catalog| catalog.into_projects())
-            .map_err(|error| error.to_string());
-        let _ = sender.send(result);
+        let catalog = match service.discover() {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                let _ = sender.send(DiscoveryEvent::Failed(error.to_string()));
+                repaint.request_repaint();
+                return;
+            }
+        };
+        let projects = catalog.into_projects();
+        if sender
+            .send(DiscoveryEvent::Projects(projects.clone()))
+            .is_err()
+        {
+            return;
+        }
+        repaint.request_repaint();
+        let processes = projects
+            .iter()
+            .flat_map(detect_processes)
+            .collect::<Vec<_>>();
+        if sender
+            .send(DiscoveryEvent::Processes(processes.clone()))
+            .is_err()
+        {
+            return;
+        }
+        repaint.request_repaint();
+        let runtime_inventory = inspect_runtime_inventory(environment_path.as_deref());
+        let environments = projects
+            .iter()
+            .map(|project| {
+                (
+                    project.path.clone(),
+                    inspect_project_environment_with_inventory(
+                        project,
+                        &processes,
+                        environment_path.as_deref(),
+                        &runtime_inventory,
+                    ),
+                )
+            })
+            .collect();
+        let _ = sender.send(DiscoveryEvent::Environments(environments));
         repaint.request_repaint();
     });
     receiver
@@ -6024,6 +6126,37 @@ fn inspect_project_environment(
     processes: &[ProjectProcess],
     environment_path: Option<&OsStr>,
 ) -> ProjectEnvironment {
+    let runtime_inventory = inspect_runtime_inventory(environment_path);
+    inspect_project_environment_with_inventory(
+        project,
+        processes,
+        environment_path,
+        &runtime_inventory,
+    )
+}
+
+fn inspect_runtime_inventory(environment_path: Option<&OsStr>) -> RuntimeInventory {
+    RuntimeInventory {
+        node: inspect_program("node", &["--version"], environment_path),
+        python: inspect_program("python", &["--version"], environment_path),
+        php: inspect_program(
+            "php",
+            &["-r", "echo PHP_VERSION, PHP_EOL;"],
+            environment_path,
+        ),
+        java: inspect_program("java", &["-version"], environment_path),
+        go: inspect_program("go", &["version"], environment_path),
+        dart: inspect_program("dart", &["--version"], environment_path),
+        php_extensions: inspect_php_extensions(environment_path),
+    }
+}
+
+fn inspect_project_environment_with_inventory(
+    project: &Project,
+    processes: &[ProjectProcess],
+    environment_path: Option<&OsStr>,
+    runtime_inventory: &RuntimeInventory,
+) -> ProjectEnvironment {
     let project_processes: Vec<_> = processes
         .iter()
         .filter(|process| process.project_path == project.path)
@@ -6031,17 +6164,6 @@ fn inspect_project_environment(
     let mut missing_programs = Vec::new();
     let mut missing_dependencies = Vec::new();
     let mut install_steps = Vec::new();
-    let node_inventory = inspect_program("node", &["--version"], environment_path);
-    let python_inventory = inspect_program("python", &["--version"], environment_path);
-    let php_inventory = inspect_program(
-        "php",
-        &["-r", "echo PHP_VERSION, PHP_EOL;"],
-        environment_path,
-    );
-    let java_inventory = inspect_program("java", &["-version"], environment_path);
-    let go_inventory = inspect_program("go", &["version"], environment_path);
-    let dart_inventory = inspect_program("dart", &["--version"], environment_path);
-    let installed_php_extensions = inspect_php_extensions(environment_path);
     let mut required_php_extensions = project_processes
         .iter()
         .map(|process| process.working_directory.as_path())
@@ -6052,7 +6174,7 @@ fn inspect_project_environment(
     required_php_extensions.dedup();
     let missing_php_extensions = required_php_extensions
         .into_iter()
-        .filter(|extension| !installed_php_extensions.contains(extension))
+        .filter(|extension| !runtime_inventory.php_extensions.contains(extension))
         .collect::<Vec<_>>();
     let mut runtime_requirements = Vec::new();
     for directory in project_processes
@@ -6071,7 +6193,8 @@ fn inspect_project_environment(
         {
             continue;
         }
-        requirement.status = runtime_requirement_status(&requirement, node_inventory.as_ref());
+        requirement.status =
+            runtime_requirement_status(&requirement, runtime_inventory.node.as_ref());
         runtime_requirements.push(requirement);
     }
     for directory in project_processes
@@ -6082,23 +6205,23 @@ fn inspect_project_environment(
         for (detected, inventory) in [
             (
                 detect_python_requirement(directory, &project.path),
-                python_inventory.as_ref(),
+                runtime_inventory.python.as_ref(),
             ),
             (
                 detect_php_requirement(directory, &project.path),
-                php_inventory.as_ref(),
+                runtime_inventory.php.as_ref(),
             ),
             (
                 detect_java_requirement(directory, &project.path),
-                java_inventory.as_ref(),
+                runtime_inventory.java.as_ref(),
             ),
             (
                 detect_go_requirement(directory, &project.path),
-                go_inventory.as_ref(),
+                runtime_inventory.go.as_ref(),
             ),
             (
                 detect_dart_requirement(directory, &project.path),
-                dart_inventory.as_ref(),
+                runtime_inventory.dart.as_ref(),
             ),
         ] {
             let Some(mut requirement) = detected else {
@@ -6422,6 +6545,15 @@ fn has_project_ancestor_entry(
     false
 }
 
+fn is_localcodepilot_qa_project(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    normalized.contains("/localcodepilot/qa/")
+        || normalized.contains("/localcodepilot/tests/fixtures/")
+}
+
 fn project_card(
     ui: &mut egui::Ui,
     project: &Project,
@@ -6434,9 +6566,14 @@ fn project_card(
         application_url,
         history,
         favorite,
+        hidden_from_recent,
+        is_recent_card,
+        environment_pending,
         resolving_plan,
         width,
     } = view;
+    let has_containers = project.technologies.contains(&TechnologyKind::Containers);
+    let container_only = has_containers && environment.command_count == 0;
     let mut action = None;
     let installing_dependencies = matches!(
         &dependency_install,
@@ -6454,7 +6591,13 @@ fn project_card(
         .inner_margin(Margin::same(18))
         .show(ui, |ui| {
             ui.set_width(width);
-            ui.set_min_height(126.0);
+            let card_top = ui.cursor().top();
+            let (card_height, actions_top) = if is_recent_card {
+                (238.0, 142.0)
+            } else {
+                (268.0, 172.0)
+            };
+            ui.set_min_height(card_height);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&project.name).strong().size(15.0))
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -6500,32 +6643,27 @@ fn project_card(
                     }
                 }
             });
-            if project.technologies.contains(&TechnologyKind::Containers)
-                && ui.button("Ver ambiente de containers").clicked()
-            {
-                action = Some(ProjectCardAction::ViewContainers);
-            }
             ui.add_space(10.0);
-            let (status, status_color) = if resolving_plan {
+            let (status, status_color) = if environment_pending {
+                ("Atualizando diagnóstico", theme::PRIMARY)
+            } else if resolving_plan {
                 ("Preparando plano", theme::PRIMARY)
             } else if installing_dependencies {
                 ("Preparando ambiente", theme::PRIMARY)
             } else if dependency_install_failed {
                 ("Falha na instalação", Color32::from_rgb(235, 87, 87))
+            } else if active_processes > 0 {
+                ("Ambiente em execução", theme::SUCCESS)
+            } else if container_only {
+                ("Configuração de containers", theme::PRIMARY)
             } else if environment
                 .databases
                 .iter()
                 .any(|(_, available)| *available == Some(false))
             {
-                ("Banco indisponível", Color32::from_rgb(255, 205, 75))
-            } else if application_url.is_some() {
-                ("Disponível", theme::SUCCESS)
-            } else if active_processes > 0 {
-                ("Em execução", theme::SUCCESS)
-            } else if environment.command_count == 0
-                && project.technologies.contains(&TechnologyKind::Containers)
-            {
-                ("Ambiente de containers detectado", theme::PRIMARY)
+                ("Banco precisa de atenção", Color32::from_rgb(255, 205, 75))
+            } else if environment.is_ready() {
+                ("Parado · pode iniciar", theme::MUTED)
             } else {
                 environment.status()
             };
@@ -6548,14 +6686,13 @@ fn project_card(
             if !installing_dependencies && let Some(details) = environment.problem_details() {
                 ui.label(RichText::new(details).color(theme::MUTED).size(9.0));
             }
-            for (database, available) in &environment.databases {
+            if let Some((database, available)) = environment.databases.first() {
                 let state = match (database.engine, available) {
-                    (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
-                    (DatabaseEngine::Sqlite, Some(false)) => "arquivo será preparado ao iniciar",
-                    (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
-                    (_, Some(true)) => "TCP acessível; login não verificado",
-                    (_, Some(false)) => "servidor local indisponível",
-                    (_, None) => "conexão não testada",
+                    (DatabaseEngine::Sqlite, Some(true)) => "arquivo disponível",
+                    (DatabaseEngine::Sqlite, Some(false)) => "precisa ser preparado",
+                    (_, Some(true)) => "servidor acessível",
+                    (_, Some(false)) => "precisa de atenção",
+                    (_, None) => "não verificado",
                 };
                 ui.label(
                     RichText::new(format!("Banco: {} · {state}", database.engine.label()))
@@ -6563,21 +6700,40 @@ fn project_card(
                         .size(9.0),
                 );
             }
-            if active_processes == 0
-                && let Some(history) = history
-                && history.last_activity > 0
-            {
-                let last_status = project_history_status(history);
-                ui.label(
-                    RichText::new(format!(
-                        "Última sessão: {} · {last_status}",
-                        relative_time(history.last_activity)
-                    ))
-                    .color(theme::MUTED)
-                    .size(9.0),
-                );
+            if !is_recent_card && (!environment.databases.is_empty() || history.is_some()) {
+                ui.push_id(&project.path, |ui| {
+                    ui.collapsing("Detalhes do ambiente", |ui| {
+                        for (database, available) in &environment.databases {
+                            let detail = match (database.engine, available) {
+                                (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
+                                (DatabaseEngine::Sqlite, Some(false)) => {
+                                    "arquivo será preparado ao iniciar"
+                                }
+                                (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
+                                (_, Some(true)) => "TCP acessível; login não verificado",
+                                (_, Some(false)) => "servidor local indisponível",
+                                (_, None) => "conexão não testada",
+                            };
+                            ui.label(format!("{}: {detail}", database.engine.label()));
+                        }
+                        if let Some(history) = history.filter(|entry| entry.last_activity > 0) {
+                            if history.services.is_empty() {
+                                ui.label(format!(
+                                    "Último acesso: {}",
+                                    relative_time(history.last_activity)
+                                ));
+                            } else {
+                                ui.label(format!(
+                                    "Última sessão: {} · {}",
+                                    relative_time(history.last_activity),
+                                    project_history_status(history)
+                                ));
+                            }
+                        }
+                    });
+                });
             }
-            ui.add_space(10.0);
+            ui.add_space((card_top + actions_top - ui.cursor().top()).max(10.0));
             if let Some(url) = application_url
                 && ui
                     .add_sized(
@@ -6638,28 +6794,37 @@ fn project_card(
                 {
                     action = Some(ProjectCardAction::InstallDependencies(project.path.clone()));
                 }
-            } else {
-                let start = ui.add_enabled(
-                    environment.is_ready(),
-                    egui::Button::new(RichText::new(format!(
-                        "{PLAY}  {}",
-                        if history.is_some() {
-                            "Retomar ambiente"
-                        } else {
-                            "Iniciar ambiente"
-                        }
-                    )))
-                    .min_size(egui::vec2(ui.available_width(), 30.0))
-                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+            } else if container_only {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::Button::new("Abrir containers")
+                            .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                    )
+                    .clicked()
+                {
+                    action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
+                }
+            } else if environment.is_ready() {
+                let start = ui.add_sized(
+                    [ui.available_width(), 30.0],
+                    egui::Button::new(format!("{PLAY}  Iniciar ambiente"))
+                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
                 );
-                let start = if let Some(details) = environment.problem_details() {
-                    start.on_hover_text(details)
-                } else {
-                    start
-                };
                 if start.clicked() {
                     action = Some(ProjectCardAction::Start(project.path.clone()));
                 }
+            } else if environment.command_count > 0 {
+                let requirements = ui.add_sized(
+                    [ui.available_width(), 30.0],
+                    egui::Button::new("Ver requisitos"),
+                );
+                if requirements.clicked() {
+                    action = Some(ProjectCardAction::ViewRequirements(project.path.clone()));
+                }
+            }
+            if has_containers && !container_only && ui.link("Abrir containers").clicked() {
+                action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
             }
             if active_processes > 0
                 && ui
@@ -6696,6 +6861,20 @@ fn project_card(
                 .clicked()
             {
                 action = Some(ProjectCardAction::Open(project.path.clone()));
+            }
+            if (is_recent_card || hidden_from_recent)
+                && !is_localcodepilot_qa_project(&project.path)
+                && ui
+                    .link(if hidden_from_recent {
+                        "Mostrar nos recentes"
+                    } else {
+                        "Ocultar dos recentes"
+                    })
+                    .clicked()
+            {
+                action = Some(ProjectCardAction::ToggleRecentVisibility(
+                    project.path.clone(),
+                ));
             }
         });
     action
@@ -6810,11 +6989,12 @@ mod tests {
     use super::{
         DependencyInstall, DependencyInstallEvent, HttpHealthStatus, ProjectEnvironment,
         classify_http_health, dependency_error_suggestion, executable_available,
-        initials_from_username, inspect_project_environment, laravel_major, lowercase_hex,
-        prepare_laravel_migration_files, probe_http_health, process_error_suggestion,
-        process_exposes_application_url, process_matches_search, project_process_ids,
-        resolve_environment_plan, resolve_environment_plan_with_tools_directory,
-        run_dependency_installs, runtime_requirement_status,
+        initials_from_username, inspect_project_environment, is_localcodepilot_qa_project,
+        laravel_major, lowercase_hex, prepare_laravel_migration_files, probe_http_health,
+        process_error_suggestion, process_exposes_application_url, process_matches_search,
+        project_process_ids, resolve_environment_plan,
+        resolve_environment_plan_with_tools_directory, run_dependency_installs,
+        runtime_requirement_status,
     };
     use localcodepilot_core::{
         environments::{
@@ -6838,6 +7018,19 @@ mod tests {
         thread,
         time::SystemTime,
     };
+
+    #[test]
+    fn excludes_only_localcodepilot_test_projects_from_recents() {
+        assert!(is_localcodepilot_qa_project(&PathBuf::from(
+            r"C:\projects\LocalCodePilot\qa\manual-container-build"
+        )));
+        assert!(is_localcodepilot_qa_project(&PathBuf::from(
+            r"C:\projects\LocalCodePilot\tests\fixtures\containers-smoke"
+        )));
+        assert!(!is_localcodepilot_qa_project(&PathBuf::from(
+            r"C:\projects\client\qa\dashboard"
+        )));
+    }
 
     #[test]
     fn encodes_checksum_bytes_as_lowercase_hex() {

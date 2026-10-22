@@ -106,76 +106,85 @@ impl ProjectSource for FilesystemProjectSource {
             if !visited.insert(canonical) || !path.is_dir() {
                 continue;
             }
-            if path.join(".git").exists()
-                || PROJECT_MARKERS
-                    .iter()
-                    .any(|marker| path.join(marker).is_file())
-                || contains_loose_source_project(&path)
-            {
-                projects.push(path.clone());
-                continue;
-            }
-            if depth >= self.max_depth {
-                continue;
-            }
             let entries = match fs::read_dir(&path) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == io::ErrorKind::PermissionDenied => continue,
                 Err(error) => return Err(error),
             };
+            let mut is_project = false;
+            let mut is_ignored = false;
+            let mut source_counts = [0_u8; 7];
+            let mut child_directories = Vec::new();
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name.starts_with('.')
-                    || entry.path().join(".localcodepilot-ignore").is_file()
-                    || IGNORED_DIRECTORIES
-                        .iter()
-                        .any(|ignored| name.eq_ignore_ascii_case(ignored))
-                {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_symlink() {
                     continue;
                 }
-                if entry
-                    .file_type()
-                    .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
-                {
-                    queue.push_back((entry.path(), depth + 1));
+                if file_type.is_dir() {
+                    if name == ".git" {
+                        is_project = true;
+                    } else if depth < self.max_depth
+                        && !name.starts_with('.')
+                        && !IGNORED_DIRECTORIES
+                            .iter()
+                            .any(|ignored| name.eq_ignore_ascii_case(ignored))
+                    {
+                        child_directories.push(entry.path());
+                    }
+                    continue;
                 }
+                if !file_type.is_file() {
+                    continue;
+                }
+                if name == ".localcodepilot-ignore" {
+                    is_ignored = true;
+                    break;
+                }
+                if PROJECT_MARKERS
+                    .iter()
+                    .any(|marker| name.eq_ignore_ascii_case(marker))
+                {
+                    is_project = true;
+                }
+                let entry_path = entry.path();
+                let Some(extension) = entry_path.extension().and_then(|value| value.to_str())
+                else {
+                    continue;
+                };
+                let index = match RuntimeKind::from_source_extension(extension) {
+                    Some(RuntimeKind::Rust) => 0,
+                    Some(RuntimeKind::Node) => 1,
+                    Some(RuntimeKind::Php) => 2,
+                    Some(RuntimeKind::Python) => 3,
+                    Some(RuntimeKind::Java) => 4,
+                    Some(RuntimeKind::Go) => 5,
+                    Some(RuntimeKind::Dart) => 6,
+                    Some(RuntimeKind::Flutter) | None => continue,
+                };
+                source_counts[index] = source_counts[index].saturating_add(1);
+                if source_counts[index] >= 2 {
+                    is_project = true;
+                }
+            }
+            if is_ignored {
+                continue;
+            }
+            if is_project {
+                projects.push(path);
+            } else {
+                queue.extend(
+                    child_directories
+                        .into_iter()
+                        .map(|directory| (directory, depth + 1)),
+                );
             }
         }
         Ok(projects)
     }
-}
-
-fn contains_loose_source_project(path: &PathBuf) -> bool {
-    let Ok(entries) = fs::read_dir(path) else {
-        return false;
-    };
-    let mut counts = [0_u8; 7];
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            continue;
-        }
-        let entry_path = entry.path();
-        let Some(extension) = entry_path.extension().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        let index = match RuntimeKind::from_source_extension(extension) {
-            Some(RuntimeKind::Rust) => 0,
-            Some(RuntimeKind::Node) => 1,
-            Some(RuntimeKind::Php) => 2,
-            Some(RuntimeKind::Python) => 3,
-            Some(RuntimeKind::Java) => 4,
-            Some(RuntimeKind::Go) => 5,
-            Some(RuntimeKind::Dart) => 6,
-            Some(RuntimeKind::Flutter) => continue,
-            None => continue,
-        };
-        counts[index] = counts[index].saturating_add(1);
-        if counts[index] >= 2 {
-            return true;
-        }
-    }
-    false
 }
 
 fn unique_existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -183,6 +192,16 @@ fn unique_existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths
         .into_iter()
         .filter(|path| path.is_dir())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_none_or(|name| {
+                    !IGNORED_DIRECTORIES
+                        .iter()
+                        .any(|ignored| name.eq_ignore_ascii_case(ignored))
+                })
+        })
+        .filter(|path| !path.join(".localcodepilot-ignore").is_file())
         .filter(|path| seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())))
         .collect()
 }
@@ -263,6 +282,27 @@ mod tests {
             .unwrap();
         assert_eq!(paths.len(), 1);
         assert!(paths[0].ends_with("app"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ignores_build_or_dependency_directory_used_as_a_scan_root() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-ignored-root-{nonce}"));
+        let target = root.join("target");
+        let dependency = root.join("node_modules");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&dependency).unwrap();
+        fs::write(target.join("Cargo.toml"), "").unwrap();
+        fs::write(dependency.join("package.json"), "{}").unwrap();
+
+        let source = FilesystemProjectSource::new(vec![target, dependency]);
+
+        assert!(source.roots().is_empty());
+        assert!(source.candidate_paths().unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 

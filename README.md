@@ -10,9 +10,9 @@
 
 **Status: alpha pública / public alpha.** O LocalCodePilot ainda está em desenvolvimento. Funcionalidades, interfaces e formatos internos podem mudar antes da primeira versão estável.
 
-**Alpha para Windows:** a versão `0.4.0-alpha.5.1` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
+**Alpha para Windows:** a versão `0.4.0-alpha.6` é distribuída como ZIP portátil para Windows 10/11 x64 na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases). Extraia o arquivo e execute `LocalCodePilot.exe`. A versão ainda não possui assinatura digital; confira o SHA-256 publicado junto ao download.
 
-**macOS em validação:** o repositório já produz um aplicativo universal para Intel e Apple Silicon dentro de um DMG, mas esse pacote ainda não faz parte de uma release pública. A Alpha 6 será lançada somente para Windows; o macOS terá sua própria validação de instalação e primeira abertura em um Mac real. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**macOS experimental:** a Alpha 6 inclui um DMG universal para Intel e Apple Silicon destinado a testes em Macs reais. O aplicativo usa assinatura ad hoc, não é notarizado e pode exigir a abertura pelo menu de contexto do Finder. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 [Português](#português) · [English](#english)
 
@@ -79,7 +79,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Dart | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
 | Flutter | Experimental | Não | Ainda não suportada de ponta a ponta |
 | Site estático / JavaScript sem framework | Experimental | Requer um servidor local disponível | Experimental |
-| Containers / Docker / Podman | Experimental | Não instala o motor | Fluxos Docker e Podman verificados no CI; interface aguarda validação manual |
+| Containers / Docker / Podman | Experimental | Não instala o motor | Docker e Podman validados pela interface no Windows 11 |
 
 Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já podem ser reconhecidos. Isso ainda não deve ser interpretado como suporte funcional para iniciar e abrir esses aplicativos.
 
@@ -100,7 +100,7 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 
 A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose, lista serviços e verifica Docker/Podman e o provedor Compose em segundo plano. Quando o motor selecionado está disponível, o app pode validar a configuração, executar `up --detach`, `stop`, consultar o estado com `ps --all` no Docker ou `ps` no Podman, ler as 200 linhas mais recentes dos logs e construir um Dockerfile isolado. Cada ação mostra o comando e a pasta antes da confirmação, executa sem abrir console externo, mantém a saída numa área rolável e permite cancelamento; o limite por execução é de 30 minutos.
 
-O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. `up` e `build` podem baixar ou construir imagens depois da confirmação. Arquivos Compose de override reconhecidos são enviados ao provedor na ordem exibida; a prévia local ainda não resolve variáveis, perfis, `include`, `extends` ou referências externas, portanto a validação efetiva fica a cargo do Compose. Um Dockerfile isolado oferece somente construção de imagem, pois o app não inventa nome, portas ou comando de execução. Os fluxos de comandos Docker e Podman são verificados automaticamente no CI com um projeto mínimo; a interação completa pela interface ainda precisa de validação manual antes da alpha 6. Para compatibilidade com versões anteriores do `podman-compose`, o Podman usa `config` sem `--quiet` e `ps` sem `--all`. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) e a CLI de diagnóstico `containers <pasta>`.
+O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. `up` e `build` podem baixar ou construir imagens depois da confirmação. Arquivos Compose de override reconhecidos são enviados ao provedor na ordem exibida; a prévia local ainda não resolve variáveis, perfis, `include`, `extends` ou referências externas, portanto a validação efetiva fica a cargo do Compose. Um Dockerfile isolado oferece somente construção de imagem, pois o app não inventa nome, portas ou comando de execução. Os fluxos de comandos Docker e Podman são verificados automaticamente no CI com um projeto mínimo. No Windows 11, Docker Desktop passou pela interface com `config`, `up`, `ps`, logs, `stop`, build e cancelamento; Podman passou com `config`, `up`, `ps`, logs e `stop`, e o build passou pela CLI. Para compatibilidade com versões anteriores do `podman-compose`, o Podman usa `config` sem `--quiet` e `ps` sem `--all`. Confira [docs/CONTAINERS.md](docs/CONTAINERS.md) e a CLI de diagnóstico `containers <pasta>`.
 
 ### Atualização pelo aplicativo (experimental)
 
@@ -164,7 +164,7 @@ Serviços com uma URL HTTP local são verificados em segundo plano a cada dez se
 
 ### Em desenvolvimento
 
-A versão `0.4.0-alpha.6` será publicada somente para Windows após validar health checks HTTP em projetos reais e a execução integrada de Docker/Podman pela interface no Windows. O pacote macOS continua em validação separada e não bloqueia essa release.
+A versão `0.4.0-alpha.6` tem suporte principal no Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11. O DMG universal do macOS é distribuído como pacote experimental para validação em Macs reais.
 
 - Detecção de frameworks e metadados mais detalhados.
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
@@ -176,7 +176,6 @@ A versão `0.4.0-alpha.6` será publicada somente para Windows após validar hea
 - Monitoramento contínuo de alterações no filesystem.
 - Assistente para criar novos projetos.
 - Melhorias de acessibilidade e experiência de uso.
-- Validação de ponta a ponta da execução integrada com Docker e Podman reais.
 - Validação manual do DMG universal, da instalação e da primeira abertura em Macs Intel e Apple Silicon.
 
 ### Regra de documentação
@@ -292,9 +291,9 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-**Windows alpha:** version `0.4.0-alpha.5.1` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
+**Windows alpha:** version `0.4.0-alpha.6` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. This alpha is not digitally signed yet; verify the SHA-256 published with the download.
 
-**macOS under validation:** the repository produces a universal Intel and Apple Silicon application in a DMG, but that package is not part of a public release yet. Alpha 6 will ship for Windows only; macOS will require separate installation and first-launch validation on a real Mac. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
+**Experimental macOS package:** Alpha 6 includes a universal DMG for Intel and Apple Silicon intended for testing on real Macs. The application uses an ad hoc signature, is not notarized, and may need to be opened from Finder's context menu. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
 ### What is LocalCodePilot?
 
@@ -355,7 +354,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Dart | Experimental | Initial implementation, not validated | Not yet supported end to end |
 | Flutter | Experimental | No | Not yet supported end to end |
 | Static site / frameworkless JavaScript | Experimental | Requires an available local server | Experimental |
-| Containers / Docker / Podman | Experimental | Does not install the engine | Docker and Podman flows covered by CI; UI awaits manual validation |
+| Containers / Docker / Podman | Experimental | Does not install the engine | Docker and Podman validated in the Windows 11 UI |
 
 Go, Dart, and Flutter appear in diagnostics because their files and manifests can already be recognized. This must not be interpreted as functional support for starting and opening those applications.
 
@@ -376,7 +375,7 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 
 The **Containers** page discovers Dockerfiles, Containerfiles and Compose manifests, lists declared services, and checks Docker/Podman and Compose availability in the background. When the selected engine is ready, the app can validate the configuration, run `up --detach`, `stop`, query status with `ps --all` on Docker or `ps` on Podman, retrieve the latest 200 log lines, and build a standalone Dockerfile. Every action shows its command and working directory for confirmation, runs without an external console, keeps output in a scrollable area, and supports cancellation; each execution has a 30-minute limit.
 
-LocalCodePilot does not install Docker/Podman or start the engine VM. Confirmed `up` and `build` actions may download or build images. Recognized Compose override files are passed to the provider in the displayed order; the local preview still does not resolve variables, profiles, `include`, `extends`, or external references, so effective validation is delegated to Compose. A standalone Dockerfile only offers image building because the app does not invent an image name, ports, or a run command. CI automatically verifies the Docker and Podman command flows with a minimal project; complete interaction through the application still requires manual validation before alpha 6. For compatibility with earlier `podman-compose` versions, Podman uses `config` without `--quiet` and `ps` without `--all`. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the diagnostic `containers <directory>` CLI command.
+LocalCodePilot does not install Docker/Podman or start the engine VM. Confirmed `up` and `build` actions may download or build images. Recognized Compose override files are passed to the provider in the displayed order; the local preview still does not resolve variables, profiles, `include`, `extends`, or external references, so effective validation is delegated to Compose. A standalone Dockerfile only offers image building because the app does not invent an image name, ports, or a run command. CI automatically verifies the Docker and Podman command flows with a minimal project. On Windows 11, Docker Desktop passed UI validation for `config`, `up`, `ps`, logs, `stop`, build, and cancellation; Podman passed `config`, `up`, `ps`, logs, and `stop`, while its build passed through the CLI. For compatibility with earlier `podman-compose` versions, Podman uses `config` without `--quiet` and `ps` without `--all`. See [docs/CONTAINERS.md](docs/CONTAINERS.md) and the diagnostic `containers <directory>` CLI command.
 
 ### In-app updates (experimental)
 
@@ -440,7 +439,7 @@ Services with a local HTTP URL are checked in the background every ten seconds, 
 
 ### Work in progress
 
-Version `0.4.0-alpha.6` will ship for Windows only after HTTP health checks on real projects and integrated Docker/Podman execution have been validated through the Windows interface. The macOS package remains under separate validation and does not block this release.
+Version `0.4.0-alpha.6` has primary support on Windows. HTTP health checks and integrated Docker/Podman execution were validated through the interface on Windows 11. The universal macOS DMG is distributed as an experimental package for validation on real Macs.
 
 - Framework detection and richer project metadata.
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.
@@ -452,7 +451,6 @@ Version `0.4.0-alpha.6` will ship for Windows only after HTTP health checks on r
 - Continuous filesystem change monitoring.
 - New-project creation assistant.
 - Accessibility and user-experience improvements.
-- End-to-end validation of integrated execution with real Docker and Podman engines.
 - Manual validation of the universal DMG, installation, and first launch on Intel and Apple Silicon Macs.
 
 ### Documentation rule

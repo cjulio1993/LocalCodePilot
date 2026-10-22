@@ -111,7 +111,7 @@ jobs:
 
   macos:
     name: Build macOS universal
-    if: github.ref_name == 'v0.4.0-alpha.6-rc.1'
+    if: github.ref_name == 'v0.4.0-alpha.6-rc.1' || github.ref_name == 'v0.4.0-alpha.6'
     runs-on: macos-14
 
     steps:
@@ -170,7 +170,10 @@ jobs:
       always() && !cancelled() &&
       ((github.ref_name == 'v0.4.0-alpha.6-rc.1' &&
         needs.macos.result == 'success' && needs.windows.result == 'skipped') ||
+       (github.ref_name == 'v0.4.0-alpha.6' &&
+        needs.windows.result == 'success' && needs.macos.result == 'success') ||
        (github.ref_name != 'v0.4.0-alpha.6-rc.1' &&
+        github.ref_name != 'v0.4.0-alpha.6' &&
         needs.windows.result == 'success' && needs.macos.result == 'skipped'))
     runs-on: ubuntu-latest
 
@@ -203,6 +206,14 @@ jobs:
           if [[ "$tag" == "v0.4.0-alpha.6-rc.1" ]]; then
             cp dist/macos/SHA256SUMS-macos.txt dist/SHA256SUMS.txt
             assets=(
+              "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
+              "dist/SHA256SUMS.txt"
+            )
+          elif [[ "$tag" == "v0.4.0-alpha.6" ]]; then
+            cat dist/windows/SHA256SUMS.txt dist/macos/SHA256SUMS-macos.txt > dist/SHA256SUMS.txt
+            assets=(
+              "dist/windows/LocalCodePilot-$version-windows-x64.zip"
+              "dist/windows/LocalCodePilot-$version-windows-x64.exe"
               "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
               "dist/SHA256SUMS.txt"
             )
