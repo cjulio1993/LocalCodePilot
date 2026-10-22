@@ -111,7 +111,7 @@ jobs:
 
   macos:
     name: Build macOS universal
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
