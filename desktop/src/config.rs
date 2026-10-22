@@ -1,4 +1,5 @@
 use crate::updates::UpdateInfo;
+use localcodepilot_core::projects::Project;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -8,6 +9,7 @@ use std::{
 
 const APPLICATION_DIRECTORY: &str = "LocalCodePilot";
 const SCAN_ROOTS_FILE: &str = "scan-roots.txt";
+const PROJECT_CACHE_FILE: &str = "project-cache.json";
 const WORKSPACE_STATE_FILE: &str = "workspace-state.json";
 const WORKSPACE_SCHEMA_VERSION: u32 = 3;
 
@@ -174,6 +176,33 @@ pub fn save_scan_roots(roots: &[PathBuf]) -> io::Result<()> {
     fs::write(path, serialize_roots(roots))
 }
 
+pub fn load_project_cache() -> Vec<Project> {
+    project_cache_file_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|contents| serde_json::from_str::<Vec<Project>>(&contents).ok())
+        .map(|projects| {
+            projects
+                .into_iter()
+                .filter(|project| project.path.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn save_project_cache(projects: &[Project]) -> io::Result<()> {
+    let path = project_cache_file_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "diretório de configurações do usuário não encontrado",
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let contents = serde_json::to_string(projects).map_err(io::Error::other)?;
+    fs::write(path, contents)
+}
+
 pub fn load_workspace_state() -> WorkspaceState {
     let mut state = workspace_state_file_path()
         .and_then(|path| fs::read_to_string(path).ok())
@@ -224,6 +253,10 @@ fn config_file_path() -> Option<PathBuf> {
 
 fn workspace_state_file_path() -> Option<PathBuf> {
     config_directory().map(|path| path.join(WORKSPACE_STATE_FILE))
+}
+
+fn project_cache_file_path() -> Option<PathBuf> {
+    config_directory().map(|path| path.join(PROJECT_CACHE_FILE))
 }
 
 fn config_directory() -> Option<PathBuf> {

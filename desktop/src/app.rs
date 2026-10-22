@@ -179,6 +179,17 @@ struct ProjectEnvironment {
     databases: Vec<(DatabaseRequirement, Option<bool>)>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct RuntimeInventory {
+    node: Option<ProgramInventory>,
+    python: Option<ProgramInventory>,
+    php: Option<ProgramInventory>,
+    java: Option<ProgramInventory>,
+    go: Option<ProgramInventory>,
+    dart: Option<ProgramInventory>,
+    php_extensions: HashSet<String>,
+}
+
 #[derive(Debug, Clone)]
 struct DependencyInstall {
     label: String,
@@ -413,14 +424,16 @@ struct ProjectCardView<'a> {
     favorite: bool,
     hidden_from_recent: bool,
     is_recent_card: bool,
+    environment_pending: bool,
     resolving_plan: bool,
     width: f32,
 }
 
-struct DiscoverySnapshot {
-    projects: Vec<Project>,
-    processes: Vec<ProjectProcess>,
-    environments: HashMap<PathBuf, ProjectEnvironment>,
+enum DiscoveryEvent {
+    Projects(Vec<Project>),
+    Processes(Vec<ProjectProcess>),
+    Environments(HashMap<PathBuf, ProjectEnvironment>),
+    Failed(String),
 }
 
 pub struct LocalCodePilot {
@@ -446,7 +459,7 @@ pub struct LocalCodePilot {
     search: String,
     notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
-    discovery: Option<Receiver<Result<DiscoverySnapshot, String>>>,
+    discovery: Option<Receiver<DiscoveryEvent>>,
     workspace_state: config::WorkspaceState,
     workspace_dirty: bool,
     last_workspace_save: Instant,
@@ -469,9 +482,11 @@ impl LocalCodePilot {
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
         let default_source = FilesystemProjectSource::common_locations();
-        let scan_roots =
+        let configured_roots =
             config::load_scan_roots().unwrap_or_else(|| default_source.roots().to_vec());
-        let source = FilesystemProjectSource::new(scan_roots.clone());
+        let source = FilesystemProjectSource::new(configured_roots);
+        let scan_roots = source.roots().to_vec();
+        let cached_projects = config::load_project_cache();
         let environment_path = refreshed_environment_path().ok();
         let receiver = spawn_discovery(source, environment_path.clone(), cc.egui_ctx.clone());
         let logo_texture = load_logo_texture(&cc.egui_ctx);
@@ -500,7 +515,7 @@ impl LocalCodePilot {
             .then(|| updates::spawn_update_check(cc.egui_ctx.clone()));
         Self {
             page,
-            projects: Vec::new(),
+            projects: cached_projects,
             processes: Vec::new(),
             running_processes: HashMap::new(),
             assigned_ports: HashMap::new(),
@@ -1150,20 +1165,26 @@ impl LocalCodePilot {
             return;
         };
         match receiver.try_recv() {
-            Ok(Ok(snapshot)) => {
+            Ok(DiscoveryEvent::Projects(projects)) => {
                 self.notify(format!(
-                    "{} projeto(s) encontrado(s)",
-                    snapshot.projects.len()
+                    "{} projeto(s) encontrado(s) · atualizando diagnósticos...",
+                    projects.len()
                 ));
-                self.processes = snapshot.processes;
-                self.assigned_ports.clear();
-                self.port_conflicts.clear();
-                self.project_environments = snapshot.environments;
-                self.projects = snapshot.projects;
-                self.discovery = None;
+                self.projects = projects;
+                let _ = config::save_project_cache(&self.projects);
                 self.refresh_containers(ctx.clone());
             }
-            Ok(Err(error)) => {
+            Ok(DiscoveryEvent::Processes(processes)) => {
+                self.processes = processes;
+                self.assigned_ports.clear();
+                self.port_conflicts.clear();
+            }
+            Ok(DiscoveryEvent::Environments(environments)) => {
+                self.project_environments = environments;
+                self.discovery = None;
+                self.notify("Projetos e ambientes atualizados");
+            }
+            Ok(DiscoveryEvent::Failed(error)) => {
                 self.notify(format!("Não foi possível concluir a varredura: {error}"));
                 self.discovery = None;
             }
@@ -1410,6 +1431,8 @@ impl LocalCodePilot {
                         .get(&project.path)
                         .cloned()
                         .unwrap_or_default();
+                    let environment_pending = self.discovery.is_some()
+                        && !self.project_environments.contains_key(&project.path);
                     let active_processes =
                         project_process_ids(&self.processes, &project.path, true).len();
                     let dependency_install = self
@@ -1459,6 +1482,7 @@ impl LocalCodePilot {
                                 .hidden_recent_projects
                                 .contains(&project.path),
                             is_recent_card: recent,
+                            environment_pending,
                             resolving_plan,
                             width: card_width,
                         },
@@ -4267,39 +4291,53 @@ fn spawn_discovery(
     source: FilesystemProjectSource,
     environment_path: Option<OsString>,
     repaint: egui::Context,
-) -> Receiver<Result<DiscoverySnapshot, String>> {
+) -> Receiver<DiscoveryEvent> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let service = DiscoveryService::new(source, ManifestRuntimeDetector);
-        let result = service
-            .discover()
-            .map(|catalog| {
-                let projects = catalog.into_projects();
-                let processes = projects
-                    .iter()
-                    .flat_map(detect_processes)
-                    .collect::<Vec<_>>();
-                let environments = projects
-                    .iter()
-                    .map(|project| {
-                        (
-                            project.path.clone(),
-                            inspect_project_environment(
-                                project,
-                                &processes,
-                                environment_path.as_deref(),
-                            ),
-                        )
-                    })
-                    .collect();
-                DiscoverySnapshot {
-                    projects,
-                    processes,
-                    environments,
-                }
+        let catalog = match service.discover() {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                let _ = sender.send(DiscoveryEvent::Failed(error.to_string()));
+                repaint.request_repaint();
+                return;
+            }
+        };
+        let projects = catalog.into_projects();
+        if sender
+            .send(DiscoveryEvent::Projects(projects.clone()))
+            .is_err()
+        {
+            return;
+        }
+        repaint.request_repaint();
+        let processes = projects
+            .iter()
+            .flat_map(detect_processes)
+            .collect::<Vec<_>>();
+        if sender
+            .send(DiscoveryEvent::Processes(processes.clone()))
+            .is_err()
+        {
+            return;
+        }
+        repaint.request_repaint();
+        let runtime_inventory = inspect_runtime_inventory(environment_path.as_deref());
+        let environments = projects
+            .iter()
+            .map(|project| {
+                (
+                    project.path.clone(),
+                    inspect_project_environment_with_inventory(
+                        project,
+                        &processes,
+                        environment_path.as_deref(),
+                        &runtime_inventory,
+                    ),
+                )
             })
-            .map_err(|error| error.to_string());
-        let _ = sender.send(result);
+            .collect();
+        let _ = sender.send(DiscoveryEvent::Environments(environments));
         repaint.request_repaint();
     });
     receiver
@@ -6088,6 +6126,37 @@ fn inspect_project_environment(
     processes: &[ProjectProcess],
     environment_path: Option<&OsStr>,
 ) -> ProjectEnvironment {
+    let runtime_inventory = inspect_runtime_inventory(environment_path);
+    inspect_project_environment_with_inventory(
+        project,
+        processes,
+        environment_path,
+        &runtime_inventory,
+    )
+}
+
+fn inspect_runtime_inventory(environment_path: Option<&OsStr>) -> RuntimeInventory {
+    RuntimeInventory {
+        node: inspect_program("node", &["--version"], environment_path),
+        python: inspect_program("python", &["--version"], environment_path),
+        php: inspect_program(
+            "php",
+            &["-r", "echo PHP_VERSION, PHP_EOL;"],
+            environment_path,
+        ),
+        java: inspect_program("java", &["-version"], environment_path),
+        go: inspect_program("go", &["version"], environment_path),
+        dart: inspect_program("dart", &["--version"], environment_path),
+        php_extensions: inspect_php_extensions(environment_path),
+    }
+}
+
+fn inspect_project_environment_with_inventory(
+    project: &Project,
+    processes: &[ProjectProcess],
+    environment_path: Option<&OsStr>,
+    runtime_inventory: &RuntimeInventory,
+) -> ProjectEnvironment {
     let project_processes: Vec<_> = processes
         .iter()
         .filter(|process| process.project_path == project.path)
@@ -6095,17 +6164,6 @@ fn inspect_project_environment(
     let mut missing_programs = Vec::new();
     let mut missing_dependencies = Vec::new();
     let mut install_steps = Vec::new();
-    let node_inventory = inspect_program("node", &["--version"], environment_path);
-    let python_inventory = inspect_program("python", &["--version"], environment_path);
-    let php_inventory = inspect_program(
-        "php",
-        &["-r", "echo PHP_VERSION, PHP_EOL;"],
-        environment_path,
-    );
-    let java_inventory = inspect_program("java", &["-version"], environment_path);
-    let go_inventory = inspect_program("go", &["version"], environment_path);
-    let dart_inventory = inspect_program("dart", &["--version"], environment_path);
-    let installed_php_extensions = inspect_php_extensions(environment_path);
     let mut required_php_extensions = project_processes
         .iter()
         .map(|process| process.working_directory.as_path())
@@ -6116,7 +6174,7 @@ fn inspect_project_environment(
     required_php_extensions.dedup();
     let missing_php_extensions = required_php_extensions
         .into_iter()
-        .filter(|extension| !installed_php_extensions.contains(extension))
+        .filter(|extension| !runtime_inventory.php_extensions.contains(extension))
         .collect::<Vec<_>>();
     let mut runtime_requirements = Vec::new();
     for directory in project_processes
@@ -6135,7 +6193,8 @@ fn inspect_project_environment(
         {
             continue;
         }
-        requirement.status = runtime_requirement_status(&requirement, node_inventory.as_ref());
+        requirement.status =
+            runtime_requirement_status(&requirement, runtime_inventory.node.as_ref());
         runtime_requirements.push(requirement);
     }
     for directory in project_processes
@@ -6146,23 +6205,23 @@ fn inspect_project_environment(
         for (detected, inventory) in [
             (
                 detect_python_requirement(directory, &project.path),
-                python_inventory.as_ref(),
+                runtime_inventory.python.as_ref(),
             ),
             (
                 detect_php_requirement(directory, &project.path),
-                php_inventory.as_ref(),
+                runtime_inventory.php.as_ref(),
             ),
             (
                 detect_java_requirement(directory, &project.path),
-                java_inventory.as_ref(),
+                runtime_inventory.java.as_ref(),
             ),
             (
                 detect_go_requirement(directory, &project.path),
-                go_inventory.as_ref(),
+                runtime_inventory.go.as_ref(),
             ),
             (
                 detect_dart_requirement(directory, &project.path),
-                dart_inventory.as_ref(),
+                runtime_inventory.dart.as_ref(),
             ),
         ] {
             let Some(mut requirement) = detected else {
@@ -6509,6 +6568,7 @@ fn project_card(
         favorite,
         hidden_from_recent,
         is_recent_card,
+        environment_pending,
         resolving_plan,
         width,
     } = view;
@@ -6584,7 +6644,9 @@ fn project_card(
                 }
             });
             ui.add_space(10.0);
-            let (status, status_color) = if resolving_plan {
+            let (status, status_color) = if environment_pending {
+                ("Atualizando diagnóstico", theme::PRIMARY)
+            } else if resolving_plan {
                 ("Preparando plano", theme::PRIMARY)
             } else if installing_dependencies {
                 ("Preparando ambiente", theme::PRIMARY)
