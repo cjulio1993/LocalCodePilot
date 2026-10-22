@@ -5,6 +5,7 @@ use std::fmt;
 pub enum TechnologyKind {
     Laravel,
     Lumen,
+    WordPress,
     Vue,
     React,
     TypeScript,
@@ -28,6 +29,7 @@ impl fmt::Display for TechnologyKind {
         formatter.write_str(match self {
             Self::Laravel => "Laravel",
             Self::Lumen => "Lumen",
+            Self::WordPress => "WordPress",
             Self::Vue => "Vue",
             Self::React => "React",
             Self::TypeScript => "TypeScript",

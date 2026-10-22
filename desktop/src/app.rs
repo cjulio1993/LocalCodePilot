@@ -8,7 +8,7 @@ use crate::{
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
     ARROW_SQUARE_OUT, BELL, BOOK_OPEN, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT,
-    PLAY, PLUS, TERMINAL,
+    PLAY, PLUS, STAR, TERMINAL,
 };
 use localcodepilot_core::{
     discovery::DiscoveryService,
@@ -403,12 +403,12 @@ impl ProjectEnvironment {
 }
 
 enum ProjectCardAction {
+    ViewDetails(PathBuf),
     ViewContainers(PathBuf),
     Open(PathBuf),
     OpenUrl(String),
     Start(PathBuf),
     Stop(PathBuf),
-    ViewLogs(PathBuf),
     ViewRequirements(PathBuf),
     PrepareEnvironment(PathBuf),
     InstallDependencies(PathBuf),
@@ -423,7 +423,9 @@ struct ProjectCardView<'a> {
     active_processes: usize,
     dependency_install: Option<DependencyInstallStatus>,
     application_url: Option<&'a str>,
-    history: Option<&'a config::ProjectHistory>,
+    application_healthy: bool,
+    container_running: bool,
+    container_url: Option<&'a str>,
     favorite: bool,
     hidden_from_recent: bool,
     is_recent_card: bool,
@@ -1108,6 +1110,15 @@ impl LocalCodePilot {
             .interact(Sense::click());
         if response.clicked() {
             self.page = page;
+            if matches!(page, Page::Processes | Page::Containers) {
+                self.focused_project = None;
+                self.search.clear();
+            }
+            if matches!(page, Page::Processes | Page::Containers)
+                && !self.container_refresh_pending()
+            {
+                self.refresh_containers(ui.ctx().clone());
+            }
         }
     }
 
@@ -1425,133 +1436,154 @@ impl LocalCodePilot {
             return;
         }
 
-        let available_width = ui.available_width().max(220.0);
-        let columns: usize = if available_width > 900.0 {
+        let available_width = ui.available_width();
+        let columns: usize = if available_width >= 900.0 {
             3
-        } else if available_width > 560.0 {
+        } else if available_width >= 600.0 {
             2
         } else {
             1
         };
+        let gap = 14.0;
+        let card_outer_width =
+            ((available_width - gap * (columns - 1) as f32) / columns as f32).floor();
+        let card_width = (card_outer_width - 36.0).max(1.0);
         for row in projects.chunks(columns) {
-            ui.columns(columns, |column_uis| {
-                for (column, project) in row.iter().enumerate() {
-                    let column_ui = &mut column_uis[column];
-                    let card_width = (column_ui.available_width() - 36.0).max(180.0);
-                    let environment = self
-                        .project_environments
-                        .get(&project.path)
-                        .cloned()
-                        .unwrap_or_default();
-                    let environment_pending = self.discovery.is_some()
-                        && !self.project_environments.contains_key(&project.path);
-                    let active_processes =
-                        project_process_ids(&self.processes, &project.path, true).len();
-                    let dependency_install = self
-                        .dependency_installs
-                        .get(&project.path)
-                        .map(|session| session.status.clone());
-                    let application_url = self
-                        .processes
-                        .iter()
-                        .filter(|process| process.project_path == project.path)
-                        .filter(|process| process.state == ProcessState::Running)
-                        .filter(|process| process_exposes_application_url(project, process))
-                        .filter_map(|process| {
-                            let running = self.running_processes.get(&process.id)?;
-                            if running.finished {
-                                return None;
-                            }
-                            running
-                                .urls
-                                .last()
-                                .map(|url| url.address().to_owned())
-                                .or_else(|| {
-                                    self.assigned_ports
-                                        .get(&process.id)
-                                        .map(|port| format!("http://localhost:{}", port.value()))
-                                })
-                        })
-                        .next();
-                    let project_history = self.workspace_state.project(&project.path).cloned();
-                    let favorite = self.is_favorite(&project.path);
-                    let resolving_plan = self
-                        .environment_plan_request
-                        .as_ref()
-                        .is_some_and(|(path, _)| path == &project.path);
-                    match project_card(
-                        column_ui,
-                        project,
-                        ProjectCardView {
-                            environment: &environment,
-                            active_processes,
-                            dependency_install,
-                            application_url: application_url.as_deref(),
-                            history: project_history.as_ref(),
-                            favorite,
-                            hidden_from_recent: self
-                                .workspace_state
-                                .hidden_recent_projects
-                                .contains(&project.path),
-                            is_recent_card: recent,
-                            environment_pending,
-                            resolving_plan,
-                            width: card_width,
-                        },
-                    ) {
-                        Some(ProjectCardAction::ViewContainers(path)) => {
-                            self.touch_project(&path);
-                            self.page = Page::Containers;
-                        }
-                        Some(ProjectCardAction::Open(path)) => match open_in_vscode(&path) {
-                            Ok(()) => {
-                                self.touch_project(&path);
-                                self.notify(format!("Abrindo {} no VS Code...", project.name));
-                            }
-                            Err(error) => self.notify(error),
-                        },
-                        Some(ProjectCardAction::OpenUrl(url)) => {
-                            column_ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
-                            self.notify(format!("Abrindo {url}"));
-                        }
-                        Some(ProjectCardAction::Start(path)) => self.start_project(&path),
-                        Some(ProjectCardAction::Stop(path)) => self.stop_project(&path),
-                        Some(ProjectCardAction::ViewLogs(path)) => {
+            ui.horizontal_top(|row_ui| {
+                row_ui.spacing_mut().item_spacing.x = gap;
+                for project in row {
+                    row_ui.allocate_ui_with_layout(
+                        egui::vec2(card_outer_width, 0.0),
+                        Layout::top_down(Align::Min),
+                        |column_ui| {
+                            let environment = self
+                                .project_environments
+                                .get(&project.path)
+                                .cloned()
+                                .unwrap_or_default();
+                            let environment_pending = self.discovery.is_some()
+                                && !self.project_environments.contains_key(&project.path);
                             let active_processes =
-                                project_process_ids(&self.processes, &path, true);
-                            self.focused_project = Some(path);
-                            if let [process_id] = active_processes.as_slice() {
-                                self.terminal_process = Some(process_id.clone());
-                            } else {
-                                self.search.clear();
-                                self.page = Page::Processes;
+                                project_process_ids(&self.processes, &project.path, true).len();
+                            let dependency_install = self
+                                .dependency_installs
+                                .get(&project.path)
+                                .map(|session| session.status.clone());
+                            let application_url = self
+                                .processes
+                                .iter()
+                                .filter(|process| process.project_path == project.path)
+                                .filter(|process| process.state == ProcessState::Running)
+                                .filter(|process| process_exposes_application_url(project, process))
+                                .filter_map(|process| {
+                                    let running = self.running_processes.get(&process.id)?;
+                                    if running.finished {
+                                        return None;
+                                    }
+                                    running
+                                        .urls
+                                        .last()
+                                        .map(|url| url.address().to_owned())
+                                        .or_else(|| {
+                                            self.assigned_ports.get(&process.id).map(|port| {
+                                                format!("http://localhost:{}", port.value())
+                                            })
+                                        })
+                                })
+                                .next();
+                            let application_healthy = self
+                                .processes
+                                .iter()
+                                .filter(|process| process.project_path == project.path)
+                                .filter_map(|process| self.running_processes.get(&process.id))
+                                .filter_map(|running| running.http_health.as_ref())
+                                .any(|health| {
+                                    matches!(health.status, HttpHealthStatus::Healthy { .. })
+                                });
+                            let (container_running, container_url) =
+                                self.project_container_status(&project.path);
+                            let favorite = self.is_favorite(&project.path);
+                            let resolving_plan = self
+                                .environment_plan_request
+                                .as_ref()
+                                .is_some_and(|(path, _)| path == &project.path);
+                            match project_card(
+                                column_ui,
+                                project,
+                                ProjectCardView {
+                                    environment: &environment,
+                                    active_processes,
+                                    dependency_install,
+                                    application_url: application_url.as_deref(),
+                                    application_healthy,
+                                    container_running,
+                                    container_url: container_url.as_deref(),
+                                    favorite,
+                                    hidden_from_recent: self
+                                        .workspace_state
+                                        .hidden_recent_projects
+                                        .contains(&project.path),
+                                    is_recent_card: recent,
+                                    environment_pending,
+                                    resolving_plan,
+                                    width: card_width,
+                                },
+                            ) {
+                                Some(ProjectCardAction::ViewDetails(path)) => {
+                                    self.focused_project = Some(path);
+                                    self.search.clear();
+                                    self.page = Page::Processes;
+                                }
+                                Some(ProjectCardAction::ViewContainers(path)) => {
+                                    self.touch_project(&path);
+                                    self.focused_project = Some(path);
+                                    self.page = Page::Containers;
+                                }
+                                Some(ProjectCardAction::Open(path)) => {
+                                    match open_in_vscode(&path) {
+                                        Ok(()) => {
+                                            self.touch_project(&path);
+                                            self.notify(format!(
+                                                "Abrindo {} no VS Code...",
+                                                project.name
+                                            ));
+                                        }
+                                        Err(error) => self.notify(error),
+                                    }
+                                }
+                                Some(ProjectCardAction::OpenUrl(url)) => {
+                                    column_ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
+                                    self.notify(format!("Abrindo {url}"));
+                                }
+                                Some(ProjectCardAction::Start(path)) => self.start_project(&path),
+                                Some(ProjectCardAction::Stop(path)) => self.stop_project(&path),
+                                Some(ProjectCardAction::ViewRequirements(path)) => {
+                                    self.focused_project = Some(path);
+                                    self.search.clear();
+                                    self.page = Page::Processes;
+                                }
+                                Some(ProjectCardAction::PrepareEnvironment(path)) => {
+                                    self.request_environment_plan(&path, column_ui.ctx().clone());
+                                }
+                                Some(ProjectCardAction::InstallDependencies(path)) => {
+                                    self.install_dependencies(&path, column_ui.ctx().clone());
+                                }
+                                Some(ProjectCardAction::ViewDependencyLogs(path)) => {
+                                    self.dependency_terminal = Some(path);
+                                }
+                                Some(ProjectCardAction::PrepareLaravelMigration(path)) => {
+                                    self.prepare_laravel_migration(&path);
+                                }
+                                Some(ProjectCardAction::ToggleFavorite(path)) => {
+                                    self.toggle_favorite(&path);
+                                }
+                                Some(ProjectCardAction::ToggleRecentVisibility(path)) => {
+                                    self.toggle_recent_visibility(&path);
+                                }
+                                None => {}
                             }
-                        }
-                        Some(ProjectCardAction::ViewRequirements(path)) => {
-                            self.focused_project = Some(path);
-                            self.search.clear();
-                            self.page = Page::Processes;
-                        }
-                        Some(ProjectCardAction::PrepareEnvironment(path)) => {
-                            self.request_environment_plan(&path, column_ui.ctx().clone());
-                        }
-                        Some(ProjectCardAction::InstallDependencies(path)) => {
-                            self.install_dependencies(&path, column_ui.ctx().clone());
-                        }
-                        Some(ProjectCardAction::ViewDependencyLogs(path)) => {
-                            self.dependency_terminal = Some(path);
-                        }
-                        Some(ProjectCardAction::PrepareLaravelMigration(path)) => {
-                            self.prepare_laravel_migration(&path);
-                        }
-                        Some(ProjectCardAction::ToggleFavorite(path)) => {
-                            self.toggle_favorite(&path);
-                        }
-                        Some(ProjectCardAction::ToggleRecentVisibility(path)) => {
-                            self.toggle_recent_visibility(&path);
-                        }
-                        None => {}
-                    }
+                        },
+                    );
                 }
             });
             ui.add_space(14.0);
@@ -1845,6 +1877,20 @@ impl LocalCodePilot {
     }
 
     fn start_project(&mut self, project_path: &Path) {
+        if self.projects.iter().any(|project| {
+            project.path == project_path
+                && project.technologies.contains(&TechnologyKind::WordPress)
+                && localcodepilot_runtime::containers::COMPOSE_FILES
+                    .iter()
+                    .any(|file| project_path.join(file).is_file())
+        }) {
+            self.focused_project = Some(project_path.to_path_buf());
+            self.page = Page::Containers;
+            self.notify(
+                "Este WordPress usa o banco definido no Compose. Inicie os serviços na página Containers.",
+            );
+            return;
+        }
         let environment = self
             .project_environments
             .get(project_path)
@@ -3323,9 +3369,28 @@ impl LocalCodePilot {
     fn processes_page(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
         let query = self.search.trim().to_lowercase();
+        if let Some(project_path) = self.focused_project.clone() {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Projeto: {}",
+                    project_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                ));
+                if ui.button("Ver todos os processos").clicked() {
+                    self.focused_project = None;
+                }
+            });
+        }
         let matching_processes = self
             .processes
             .iter()
+            .filter(|process| {
+                self.focused_project
+                    .as_ref()
+                    .is_none_or(|path| process.project_path == *path)
+            })
             .filter(|process| {
                 let project = self
                     .projects
@@ -3334,24 +3399,40 @@ impl LocalCodePilot {
                 process_matches_search(process, project, &query)
             })
             .count();
+        let visible_process_count = self
+            .processes
+            .iter()
+            .filter(|process| {
+                self.focused_project
+                    .as_ref()
+                    .is_none_or(|path| process.project_path == *path)
+            })
+            .count();
         ui.heading("Processos");
+        if self.focused_project.is_some() {
+            self.container_processes_panel(ui);
+        } else {
+            ui.collapsing("Containers em execução", |ui| {
+                self.container_processes_panel(ui);
+            });
+        }
         ui.label(
             RichText::new(if query.is_empty() {
                 format!(
                     "{} comando(s) detectado(s) em seus projetos",
-                    self.processes.len()
+                    visible_process_count
                 )
             } else {
                 format!(
                     "{matching_processes} de {} comando(s) encontrado(s)",
-                    self.processes.len()
+                    visible_process_count
                 )
             })
             .color(theme::MUTED),
         );
         ui.add_space(20.0);
 
-        if self.processes.is_empty() {
+        if visible_process_count == 0 {
             Frame::new()
                 .fill(theme::SURFACE)
                 .stroke(Stroke::new(1.0_f32, theme::BORDER))
@@ -3362,10 +3443,19 @@ impl LocalCodePilot {
                     ui.label(RichText::new("Nenhum comando detectado").strong());
                     ui.label(
                         RichText::new(
-                            "Atualize os projetos para procurar scripts e comandos disponíveis.",
+                            if self.focused_project.is_some() {
+                                "Este projeto não tem comandos locais. Se usar Compose, abra Containers para iniciar os serviços."
+                            } else {
+                                "Atualize os projetos para procurar scripts e comandos disponíveis."
+                            },
                         )
                         .color(theme::MUTED),
                     );
+                    if self.focused_project.is_some()
+                        && ui.button("Abrir Containers deste projeto").clicked()
+                    {
+                        self.page = Page::Containers;
+                    }
                 });
             return;
         }
@@ -3401,6 +3491,13 @@ impl LocalCodePilot {
         });
 
         for project in &projects {
+            if self
+                .focused_project
+                .as_ref()
+                .is_some_and(|path| project.path != *path)
+            {
+                continue;
+            }
             let project_matches = project.name.to_lowercase().contains(&query)
                 || project
                     .path
@@ -3569,15 +3666,28 @@ impl LocalCodePilot {
                         );
                     }
                     for (database, available) in &environment.databases {
+                        let matching_container = database.host.as_deref().and_then(|host| {
+                            self.database_container_running(&project.path, host)
+                        });
                         let state = match (database.engine, available) {
                             (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
                             (DatabaseEngine::Sqlite, Some(false)) => "arquivo será preparado ao iniciar",
                             (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
+                            (_, _) if matching_container == Some(true) => "container do banco ativo; login não verificado",
+                            (_, _) if matching_container == Some(false) => "container do banco parado",
                             (_, Some(true)) => "TCP acessível; login não verificado",
                             (_, Some(false)) => "servidor local indisponível",
                             (_, None) => "conexão não testada",
                         };
                         ui.label(RichText::new(format!("Banco: {} · {state}", database.engine.label())).color(theme::MUTED).size(10.0));
+                    }
+                    if project.technologies.contains(&TechnologyKind::WordPress)
+                        && environment.databases.is_empty()
+                    {
+                        ui.colored_label(
+                            Color32::from_rgb(255, 205, 75),
+                            "WordPress: configuração de banco ausente ou DB_HOST dinâmico; confira wp-config.php e o serviço MySQL/MariaDB.",
+                        );
                     }
                     if has_dependency_logs
                         && ui
@@ -3670,7 +3780,7 @@ impl LocalCodePilot {
                         ) {
                             ("Saudável", theme::SUCCESS)
                         } else if command.state == ProcessState::Running && server_url.is_some() {
-                            ("Disponível", theme::SUCCESS)
+                            ("HTTP não verificado", theme::PRIMARY)
                         } else {
                             process_state_display(command.state)
                         };
@@ -3743,7 +3853,9 @@ impl LocalCodePilot {
                                                     environment.is_ready(),
                                                     egui::Button::new(RichText::new(format!(
                                                         "{PLAY}  {}",
-                                                        if port_conflict.is_some() {
+                                                        if port_conflict.is_some()
+                                                            || command.state == ProcessState::Failed
+                                                        {
                                                             "Tentar novamente"
                                                         } else {
                                                             "Iniciar"
@@ -4001,7 +4113,7 @@ impl LocalCodePilot {
     fn help_page(&self, ui: &mut egui::Ui) {
         ui.heading("Como usar o LocalCodePilot");
         ui.label(
-            RichText::new("Do projeto encontrado à aplicação aberta em poucos passos.")
+            RichText::new("Encontre o projeto, siga a próxima ação e acompanhe o resultado.")
                 .color(theme::MUTED),
         );
         ui.add_space(16.0);
@@ -4016,7 +4128,7 @@ impl LocalCodePilot {
                 ui.label(RichText::new("Primeiro uso").strong().size(14.0));
                 ui.label(
                     RichText::new(
-                        "O LocalCodePilot encontra projetos nas pastas configuradas, identifica tecnologias e mostra o que está pronto ou precisa de atenção.",
+                        "O LocalCodePilot descobre projetos locais, identifica tecnologias e mostra uma próxima ação. Processos e Containers podem ser abertos diretamente no projeto selecionado.",
                     )
                     .color(theme::MUTED)
                     .size(11.0),
@@ -4060,26 +4172,40 @@ impl LocalCodePilot {
             ui,
             1,
             "Confira as pastas de projetos",
-            "Abra Projetos para ver o catálogo e adicionar ou remover as pastas que devem ser pesquisadas.",
+            "Em Projetos, revise as pastas examinadas. Adicione uma pasta ou use Atualizar para refazer a busca; o campo superior filtra o catálogo.",
         );
         step_card(
             ui,
             2,
-            "Leia o diagnóstico",
-            "Cada cartão informa tecnologias, runtimes, banco de dados e pendências encontradas no projeto.",
+            "Siga a ação do cartão",
+            "O cartão resume o estado e oferece Preparar, Instalar dependências, Iniciar ambiente ou Iniciar com Containers. Ver diagnóstico e logs abre o projeto em Processos.",
         );
         step_card(
             ui,
             3,
-            "Prepare e inicie o ambiente",
-            "Quando houver uma pendência, revise o plano apresentado. Depois use Iniciar ambiente ou Retomar ambiente.",
+            "Revise antes de executar",
+            "Confira comandos, origem de pacotes e pasta de execução antes de confirmar instalações ou ações do Compose. Docker e Podman precisam estar instalados e ativos.",
         );
         step_card(
             ui,
             4,
-            "Abra e acompanhe a aplicação",
-            "Use Abrir aplicação quando o endereço estiver disponível. Veja Processos para portas, saúde HTTP e logs.",
+            "Acompanhe o resultado",
+            "Use Abrir aplicação ou Abrir site quando houver URL. Em Processos, veja portas, resposta HTTP e logs; em Containers, veja serviços Compose e containers reais.",
         );
+
+        Frame::new()
+            .fill(theme::SURFACE)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(10)
+            .inner_margin(Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Outros recursos").strong().size(14.0));
+                ui.label("Projetos: busca, favoritos, recentes, pastas de busca e abertura no VS Code.");
+                ui.label("Processos: iniciar, parar, reiniciar, acompanhar saúde HTTP e consultar logs.");
+                ui.label("Containers: Docker/Podman, Compose, portas publicadas, logs e controle de containers existentes.");
+                ui.label("Configurações: verificação de versões e atualização compatível do aplicativo.");
+            });
 
         let status_card = |ui: &mut egui::Ui| {
             Frame::new()
@@ -4091,12 +4217,18 @@ impl LocalCodePilot {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new("Entenda os estados").strong().size(14.0));
                     ui.add_space(6.0);
-                    ui.colored_label(theme::SUCCESS, "● Pronto — o projeto pode ser iniciado");
-                    ui.colored_label(theme::PRIMARY, "● Em execução — há serviços ativos");
-                    ui.colored_label(theme::MUTED, "● Verificando — diagnóstico em andamento");
+                    ui.colored_label(theme::SUCCESS, "● Aplicação respondendo — HTTP saudável");
+                    ui.colored_label(
+                        theme::PRIMARY,
+                        "● Serviços ativos — site ainda não verificado",
+                    );
+                    ui.colored_label(
+                        theme::MUTED,
+                        "● Pronto para iniciar — requisitos locais atendidos",
+                    );
                     ui.colored_label(
                         Color32::from_rgb(255, 176, 76),
-                        "● Atenção — existe uma pendência para revisar",
+                        "● Atenção — confira requisitos, banco ou logs",
                     );
                 });
         };
@@ -4118,7 +4250,7 @@ impl LocalCodePilot {
                     );
                     ui.label(
                         RichText::new(
-                            "O app identifica a configuração do projeto e verifica a disponibilidade local sem mostrar credenciais.",
+                            "O app detecta bancos em .env e DB_HOST literal do WordPress. Porta acessível não confirma credenciais nem existência do banco.",
                         )
                         .color(theme::MUTED)
                         .size(11.0),
@@ -4130,7 +4262,7 @@ impl LocalCodePilot {
                     );
                     ui.label(
                         RichText::new(
-                            "Docker ou Podman deve estar instalado e em execução. Confirme sempre o comando exibido antes de executá-lo.",
+                            "WordPress com Compose precisa iniciar seus serviços na página Containers. Um host como db só funciona na rede Compose. Revise o comando antes de confirmar.",
                         )
                         .color(theme::MUTED)
                         .size(11.0),
@@ -4162,7 +4294,7 @@ impl LocalCodePilot {
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new(
-                        "1. Confira a mensagem do cartão.  2. Abra Processos e leia os logs.  3. Verifique a porta e o banco.  4. Corrija a pendência e tente iniciar novamente.",
+                        "Abra Ver diagnóstico e logs no cartão. Confira o erro, a porta, a resposta HTTP e os logs do processo ou container. Corrija a pendência e use Tentar novamente ou inicie os serviços em Containers.",
                     )
                     .color(theme::MUTED)
                     .size(11.0),
@@ -4388,11 +4520,16 @@ impl LocalCodePilot {
 
     fn content(&mut self, root_ui: &mut egui::Ui) {
         let ctx = root_ui.ctx().clone();
+        let margin = if root_ui.available_width() < 720.0 {
+            16
+        } else {
+            36
+        };
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
                     .fill(theme::BACKGROUND)
-                    .inner_margin(Margin::same(36)),
+                    .inner_margin(Margin::same(margin)),
             )
             .show(root_ui, |ui| {
                 self.show_update_banner(ui);
@@ -6250,15 +6387,6 @@ fn service_history_status(status: &str) -> &'static str {
     }
 }
 
-fn project_history_status(history: &config::ProjectHistory) -> &'static str {
-    history
-        .services
-        .iter()
-        .max_by_key(|service| service.updated_at)
-        .map(|service| service_history_status(&service.status))
-        .unwrap_or("sem execução")
-}
-
 fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
     match state {
         ProcessState::Stopped => ("Parado", theme::MUTED),
@@ -6750,7 +6878,9 @@ fn project_card(
         active_processes,
         dependency_install,
         application_url,
-        history,
+        application_healthy,
+        container_running,
+        container_url,
         favorite,
         hidden_from_recent,
         is_recent_card,
@@ -6779,9 +6909,9 @@ fn project_card(
             ui.set_width(width);
             let card_top = ui.cursor().top();
             let (card_height, actions_top) = if is_recent_card {
-                (238.0, 142.0)
+                (220.0, 125.0)
             } else {
-                (268.0, 172.0)
+                (240.0, 145.0)
             };
             ui.set_min_height(card_height);
             ui.horizontal(|ui| {
@@ -6799,7 +6929,11 @@ fn project_card(
                     });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .button(if favorite { "★" } else { "☆" })
+                        .button(RichText::new(STAR).color(if favorite {
+                            theme::PRIMARY
+                        } else {
+                            theme::MUTED
+                        }))
                         .on_hover_text(if favorite {
                             "Remover dos favoritos"
                         } else {
@@ -6839,9 +6973,15 @@ fn project_card(
             } else if dependency_install_failed {
                 ("Falha na instalação", Color32::from_rgb(235, 87, 87))
             } else if active_processes > 0 {
-                ("Ambiente em execução", theme::SUCCESS)
+                if application_healthy {
+                    ("Aplicação respondendo", theme::SUCCESS)
+                } else {
+                    ("Serviços ativos · site não verificado", theme::PRIMARY)
+                }
+            } else if container_running {
+                ("Containers ativos · site não verificado", theme::PRIMARY)
             } else if container_only {
-                ("Configuração de containers", theme::PRIMARY)
+                ("Inicie os serviços com Containers", theme::PRIMARY)
             } else if environment
                 .databases
                 .iter()
@@ -6849,7 +6989,7 @@ fn project_card(
             {
                 ("Banco precisa de atenção", Color32::from_rgb(255, 205, 75))
             } else if environment.is_ready() {
-                ("Parado · pode iniciar", theme::MUTED)
+                ("Pronto para iniciar", theme::MUTED)
             } else {
                 environment.status()
             };
@@ -6872,55 +7012,9 @@ fn project_card(
             if !installing_dependencies && let Some(details) = environment.problem_details() {
                 ui.label(RichText::new(details).color(theme::MUTED).size(9.0));
             }
-            if let Some((database, available)) = environment.databases.first() {
-                let state = match (database.engine, available) {
-                    (DatabaseEngine::Sqlite, Some(true)) => "arquivo disponível",
-                    (DatabaseEngine::Sqlite, Some(false)) => "precisa ser preparado",
-                    (_, Some(true)) => "servidor acessível",
-                    (_, Some(false)) => "precisa de atenção",
-                    (_, None) => "não verificado",
-                };
-                ui.label(
-                    RichText::new(format!("Banco: {} · {state}", database.engine.label()))
-                        .color(theme::MUTED)
-                        .size(9.0),
-                );
-            }
-            if !is_recent_card && (!environment.databases.is_empty() || history.is_some()) {
-                ui.push_id(&project.path, |ui| {
-                    ui.collapsing("Detalhes do ambiente", |ui| {
-                        for (database, available) in &environment.databases {
-                            let detail = match (database.engine, available) {
-                                (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
-                                (DatabaseEngine::Sqlite, Some(false)) => {
-                                    "arquivo será preparado ao iniciar"
-                                }
-                                (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
-                                (_, Some(true)) => "TCP acessível; login não verificado",
-                                (_, Some(false)) => "servidor local indisponível",
-                                (_, None) => "conexão não testada",
-                            };
-                            ui.label(format!("{}: {detail}", database.engine.label()));
-                        }
-                        if let Some(history) = history.filter(|entry| entry.last_activity > 0) {
-                            if history.services.is_empty() {
-                                ui.label(format!(
-                                    "Último acesso: {}",
-                                    relative_time(history.last_activity)
-                                ));
-                            } else {
-                                ui.label(format!(
-                                    "Última sessão: {} · {}",
-                                    relative_time(history.last_activity),
-                                    project_history_status(history)
-                                ));
-                            }
-                        }
-                    });
-                });
-            }
             ui.add_space((card_top + actions_top - ui.cursor().top()).max(10.0));
             if let Some(url) = application_url
+                && active_processes > 0
                 && ui
                     .add_sized(
                         [ui.available_width(), 30.0],
@@ -6933,14 +7027,27 @@ fn project_card(
             {
                 action = Some(ProjectCardAction::OpenUrl(url.to_owned()));
             }
-            if active_processes > 0 {
-                if ui
+            if let Some(url) = container_url
+                && active_processes == 0
+                && ui
                     .add_sized(
                         [ui.available_width(), 30.0],
-                        egui::Button::new("Parar ambiente")
-                            .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.18)),
+                        egui::Button::new(format!("{ARROW_SQUARE_OUT}  Abrir site"))
+                            .fill(theme::PRIMARY.gamma_multiply(0.72)),
                     )
                     .clicked()
+            {
+                action = Some(ProjectCardAction::OpenUrl(url.to_owned()));
+            }
+            if active_processes > 0 {
+                if application_url.is_none()
+                    && ui
+                        .add_sized(
+                            [ui.available_width(), 30.0],
+                            egui::Button::new("Parar ambiente")
+                                .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.18)),
+                        )
+                        .clicked()
                 {
                     action = Some(ProjectCardAction::Stop(project.path.clone()));
                 }
@@ -6954,6 +7061,23 @@ fn project_card(
                     ui.spinner();
                     ui.label("Preparando ambiente...");
                 });
+            } else if container_running && container_url.is_some() {
+                // A URL publicada já é a ação principal deste projeto.
+            } else if container_only {
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::Button::new(if container_running {
+                            "Ver Containers"
+                        } else {
+                            "Iniciar com Containers"
+                        })
+                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                    )
+                    .clicked()
+                {
+                    action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
+                }
             } else if environment.can_prepare_environment() {
                 if ui
                     .add_sized(
@@ -6980,17 +7104,6 @@ fn project_card(
                 {
                     action = Some(ProjectCardAction::InstallDependencies(project.path.clone()));
                 }
-            } else if container_only {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 30.0],
-                        egui::Button::new("Abrir containers")
-                            .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                    )
-                    .clicked()
-                {
-                    action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
-                }
             } else if environment.is_ready() {
                 let start = ui.add_sized(
                     [ui.available_width(), 30.0],
@@ -7009,15 +7122,25 @@ fn project_card(
                     action = Some(ProjectCardAction::ViewRequirements(project.path.clone()));
                 }
             }
-            if has_containers && !container_only && ui.link("Abrir containers").clicked() {
-                action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
-            }
             if active_processes > 0
-                && ui
-                    .link(RichText::new(format!("{TERMINAL}  Ver logs")).size(10.0))
-                    .clicked()
+                && application_url.is_some()
+                && ui.link("Parar ambiente").clicked()
             {
-                action = Some(ProjectCardAction::ViewLogs(project.path.clone()));
+                action = Some(ProjectCardAction::Stop(project.path.clone()));
+            }
+            if ui
+                .link(if container_only {
+                    "Ver serviços e logs"
+                } else {
+                    "Ver diagnóstico e logs"
+                })
+                .clicked()
+            {
+                action = Some(if container_only {
+                    ProjectCardAction::ViewContainers(project.path.clone())
+                } else {
+                    ProjectCardAction::ViewDetails(project.path.clone())
+                });
             }
             if has_dependency_logs
                 && ui
@@ -7033,35 +7156,38 @@ fn project_card(
             {
                 action = Some(ProjectCardAction::ViewDependencyLogs(project.path.clone()));
             }
-            if environment.legacy_laravel_constraint().is_some()
-                && ui
-                    .link(RichText::new("Planejar atualização do Laravel").size(10.0))
+            ui.collapsing("Mais ações", |ui| {
+                if has_containers && !container_only && ui.link("Abrir containers").clicked() {
+                    action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
+                }
+                if environment.legacy_laravel_constraint().is_some()
+                    && ui.link("Planejar atualização do Laravel").clicked()
+                {
+                    action = Some(ProjectCardAction::PrepareLaravelMigration(
+                        project.path.clone(),
+                    ));
+                }
+                if ui
+                    .link(format!("{CODE_SIMPLE}  Abrir no VS Code"))
                     .clicked()
-            {
-                action = Some(ProjectCardAction::PrepareLaravelMigration(
-                    project.path.clone(),
-                ));
-            }
-            if ui
-                .link(RichText::new(format!("{CODE_SIMPLE}  Abrir no VS Code")).size(10.0))
-                .clicked()
-            {
-                action = Some(ProjectCardAction::Open(project.path.clone()));
-            }
-            if (is_recent_card || hidden_from_recent)
-                && !is_localcodepilot_qa_project(&project.path)
-                && ui
-                    .link(if hidden_from_recent {
-                        "Mostrar nos recentes"
-                    } else {
-                        "Ocultar dos recentes"
-                    })
-                    .clicked()
-            {
-                action = Some(ProjectCardAction::ToggleRecentVisibility(
-                    project.path.clone(),
-                ));
-            }
+                {
+                    action = Some(ProjectCardAction::Open(project.path.clone()));
+                }
+                if (is_recent_card || hidden_from_recent)
+                    && !is_localcodepilot_qa_project(&project.path)
+                    && ui
+                        .link(if hidden_from_recent {
+                            "Mostrar nos recentes"
+                        } else {
+                            "Ocultar dos recentes"
+                        })
+                        .clicked()
+                {
+                    action = Some(ProjectCardAction::ToggleRecentVisibility(
+                        project.path.clone(),
+                    ));
+                }
+            });
         });
     action
 }
@@ -7160,6 +7286,7 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
     match technology {
         TechnologyKind::Laravel => Color32::from_rgb(255, 70, 70),
         TechnologyKind::Lumen => Color32::from_rgb(239, 110, 80),
+        TechnologyKind::WordPress => Color32::from_rgb(50, 130, 190),
         TechnologyKind::Vue => Color32::from_rgb(66, 184, 131),
         TechnologyKind::React => Color32::from_rgb(97, 218, 251),
         TechnologyKind::TypeScript => Color32::from_rgb(49, 120, 198),

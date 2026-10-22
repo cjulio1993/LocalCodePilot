@@ -41,12 +41,135 @@ pub struct EngineDiagnosis {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeContainer {
+    pub engine: ContainerEngine,
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+    pub ports: String,
+    pub service: Option<String>,
+    pub project_directory: Option<PathBuf>,
+    pub running_for: Option<String>,
+}
+
+impl RuntimeContainer {
+    pub fn browser_urls(&self) -> Vec<String> {
+        self.ports
+            .split(',')
+            .filter_map(|mapping| {
+                let mapping = mapping.trim();
+                let (published, target) = mapping.split_once("->")?;
+                let target = target.strip_suffix("/tcp")?.parse::<u16>().ok()?;
+                let (host, port) = published.rsplit_once(':')?;
+                let host = match host {
+                    "0.0.0.0" | "" => "localhost",
+                    "127.0.0.1" | "localhost" => host,
+                    _ => return None,
+                };
+                let port = port.parse::<u16>().ok().filter(|port| *port > 0)?;
+                let scheme = match target {
+                    443 | 8443 => "https",
+                    80 | 8000 | 8080 | 3000 | 5173 | 8888 => "http",
+                    _ => return None,
+                };
+                Some(format!("{scheme}://{host}:{port}"))
+            })
+            .collect()
+    }
+
+    pub fn command(&self, action: ContainerAction) -> Option<ContainerCommand> {
+        if self.id.len() < 6
+            || self.id.len() > 64
+            || !self
+                .id
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let (label, args): (&'static str, Vec<String>) = match action {
+            ContainerAction::StartExisting if !self.state.eq_ignore_ascii_case("running") => {
+                ("Iniciar container", vec!["start".into(), self.id.clone()])
+            }
+            ContainerAction::StopExisting if self.state.eq_ignore_ascii_case("running") => {
+                ("Parar container", vec!["stop".into(), self.id.clone()])
+            }
+            ContainerAction::RestartExisting if self.state.eq_ignore_ascii_case("running") => (
+                "Reiniciar container",
+                vec!["restart".into(), self.id.clone()],
+            ),
+            ContainerAction::LogsExisting => (
+                "Visualizar logs",
+                vec![
+                    "logs".into(),
+                    "--tail".into(),
+                    "200".into(),
+                    self.id.clone(),
+                ],
+            ),
+            _ => return None,
+        };
+        Some(ContainerCommand {
+            action,
+            label,
+            program: self.engine.program(),
+            args,
+            working_directory: self
+                .project_directory
+                .as_ref()
+                .filter(|directory| directory.is_dir())
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from(".")),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerService {
     pub name: String,
     pub image: Option<String>,
     pub builds_image: bool,
     pub ports: Vec<String>,
     pub profiles: Vec<String>,
+}
+
+impl ContainerService {
+    /// Returns browser candidates only for published TCP ports that look like web services.
+    /// Compose variables and dynamic ports require a runtime query.
+    pub fn browser_urls(&self) -> Vec<String> {
+        self.ports
+            .iter()
+            .filter_map(|mapping| browser_url(&self.name, mapping))
+            .collect()
+    }
+}
+
+fn browser_url(_service: &str, mapping: &str) -> Option<String> {
+    let mapping = mapping.strip_suffix("/tcp").unwrap_or(mapping);
+    if mapping.ends_with("/udp") || mapping.contains(['$', '{', '}', '→']) {
+        return None;
+    }
+    let parts = mapping.split(':').collect::<Vec<_>>();
+    let (host, published, target) = match parts.as_slice() {
+        [published, target] => ("localhost", *published, *target),
+        [host, published, target] => (*host, *published, *target),
+        _ => return None,
+    };
+    let published = published.parse::<u16>().ok().filter(|port| *port > 0)?;
+    let target = target.parse::<u16>().ok().filter(|port| *port > 0)?;
+    let scheme = match target {
+        443 | 8443 => "https",
+        80 | 8000 | 8080 | 3000 | 5173 | 8888 => "http",
+        _ => return None,
+    };
+    let host = match host {
+        "0.0.0.0" | "" => "localhost",
+        "localhost" | "127.0.0.1" => host,
+        _ => return None,
+    };
+    Some(format!("{scheme}://{host}:{published}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +200,10 @@ pub enum ContainerAction {
     Status,
     Logs,
     Build,
+    StartExisting,
+    StopExisting,
+    RestartExisting,
+    LogsExisting,
 }
 
 impl ContainerAction {
@@ -90,11 +217,23 @@ impl ContainerAction {
             Self::Status => "Consulta o estado e as portas publicadas pelos serviços.",
             Self::Logs => "Consulta as 200 linhas mais recentes dos serviços.",
             Self::Build => "Constrói uma imagem local e pode baixar imagens-base.",
+            Self::StartExisting => "Inicia um container existente que está parado.",
+            Self::StopExisting => "Interrompe um container em execução sem removê-lo.",
+            Self::RestartExisting => "Reinicia um container existente sem removê-lo.",
+            Self::LogsExisting => "Consulta as 200 linhas mais recentes do container.",
         }
     }
 
     pub fn changes_environment(self) -> bool {
-        matches!(self, Self::Start | Self::Stop | Self::Build)
+        matches!(
+            self,
+            Self::Start
+                | Self::Stop
+                | Self::Build
+                | Self::StartExisting
+                | Self::StopExisting
+                | Self::RestartExisting
+        )
     }
 }
 
@@ -197,6 +336,55 @@ impl ContainerProject {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_urls_require_published_tcp_web_ports() {
+        let service = ContainerService {
+            name: "wordpress".into(),
+            image: None,
+            builds_image: false,
+            ports: vec![
+                "8080:80/tcp".into(),
+                "127.0.0.1:8443:443/tcp".into(),
+                "3306:3306/tcp".into(),
+                "53:53/udp".into(),
+                "${WEB_PORT}:80/tcp".into(),
+            ],
+            profiles: vec![],
+        };
+        assert_eq!(
+            service.browser_urls(),
+            ["http://localhost:8080", "https://127.0.0.1:8443"]
+        );
+    }
+
+    #[test]
+    fn runtime_container_actions_and_ports_use_real_container_ids() {
+        let container = RuntimeContainer {
+            engine: ContainerEngine::Docker,
+            id: "abcdef123456".into(),
+            name: "wordpress-web-1".into(),
+            image: "wordpress:latest".into(),
+            state: "running".into(),
+            status: "Up".into(),
+            ports: "0.0.0.0:8080->80/tcp, 0.0.0.0:3306->3306/tcp".into(),
+            service: Some("web".into()),
+            project_directory: None,
+            running_for: None,
+        };
+        assert_eq!(container.browser_urls(), ["http://localhost:8080"]);
+        assert_eq!(
+            container
+                .command(ContainerAction::StopExisting)
+                .unwrap()
+                .args,
+            ["stop", "abcdef123456"]
+        );
+        assert!(container.command(ContainerAction::StartExisting).is_none());
+        let mut invalid = container;
+        invalid.id = "--rm".into();
+        assert!(invalid.command(ContainerAction::StopExisting).is_none());
+    }
 
     #[test]
     fn preserves_paths_and_previews_both_engines_without_deleting_volumes() {

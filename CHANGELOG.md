@@ -6,6 +6,18 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Adicionado
+
+- Reconhecimento de WordPress e leitura segura do `DB_HOST` literal para diagnóstico MySQL.
+- Listagem de containers reais Docker/Podman em Processos, com estado, portas, URLs candidatas, logs e ações de iniciar, parar ou reiniciar.
+- Navegação de Projetos para Processos e Containers filtrada pelo projeto selecionado.
+
+### Alterado
+
+- Cartões de projeto destacam o próximo passo, mostram a resposta HTTP confirmada separadamente do estado dos serviços e agrupam opções secundárias em **Mais ações**.
+- WordPress com Compose abre o fluxo de Containers em vez de iniciar um servidor PHP local sem acesso ao host do banco na rede Compose.
+- README e Ajuda integrada descrevem os fluxos atuais, os limites do diagnóstico de bancos e a recuperação de falhas.
+
 ## [0.4.0-alpha.6] - 2026-10-21
 
 ### Adicionado
