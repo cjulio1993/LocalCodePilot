@@ -233,7 +233,7 @@ impl LocalCodePilot {
                         ui.label(format!("Serviço: {service}"));
                     }
                     if let Some(directory) = &container.project_directory {
-                        ui.label(format!("Projeto: {}", directory.display()));
+                        ui.label(format!("Projeto: {}", display_path(directory)));
                     }
                     if !container.ports.is_empty() {
                         ui.label(format!("Portas: {}", container.ports));
@@ -656,7 +656,7 @@ impl LocalCodePilot {
                         .size(16.0),
                     );
                     ui.label(
-                        RichText::new(project.directory.to_string_lossy())
+                        RichText::new(display_path(&project.directory))
                             .monospace()
                             .color(theme::MUTED)
                             .size(10.0),
@@ -786,7 +786,7 @@ impl LocalCodePilot {
                         .size(10.0),
                 );
                 ui.label(
-                    RichText::new(session.command.working_directory.to_string_lossy())
+                    RichText::new(display_path(&session.command.working_directory))
                         .color(theme::MUTED)
                         .size(10.0),
                 );
@@ -866,7 +866,7 @@ impl LocalCodePilot {
                 ui.label(RichText::new(command.display()).monospace());
                 ui.label("Pasta:");
                 ui.label(
-                    RichText::new(command.working_directory.to_string_lossy())
+                    RichText::new(display_path(&command.working_directory))
                         .monospace()
                         .size(10.0),
                 );

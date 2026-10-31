@@ -20,6 +20,26 @@ pub fn has_container_markers(directory: &Path) -> bool {
         .any(|file| directory.join(file).is_file())
 }
 
+/// Whether the WordPress site in `site` is meant to run through Compose: a Compose manifest
+/// in the site folder or above it, in one of its subfolders (`docker/`, `infra/`), or anywhere
+/// in the project when it declares a WordPress image. A Compose file for an unrelated sibling
+/// service does not count.
+pub fn wordpress_uses_compose(project_root: &Path, site: &Path) -> bool {
+    detect_container_projects(project_root)
+        .iter()
+        .filter(|project| project.compose_file.is_some())
+        .any(|project| {
+            site.starts_with(&project.directory)
+                || project.directory.starts_with(site)
+                || project.services.iter().any(|service| {
+                    service
+                        .image
+                        .as_deref()
+                        .is_some_and(|image| image.to_ascii_lowercase().contains("wordpress"))
+                })
+        })
+}
+
 pub fn detect_container_projects(root: &Path) -> Vec<ContainerProject> {
     let mut projects = Vec::new();
     let mut seen = HashSet::new();

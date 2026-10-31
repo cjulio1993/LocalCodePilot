@@ -108,7 +108,7 @@ Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já
 - Serviços web exibem uma URL quando ela é confirmada; aplicações de terminal devem permanecer acompanhadas pelos logs.
 - Portas de sites estáticos são derivadas do caminho do projeto para reduzir conflitos e impedir que a URL de outro projeto seja reutilizada.
 - Bancos PostgreSQL, MySQL, MariaDB, SQL Server e SQLite declarados em `.env`/`.env.local` aparecem no diagnóstico; portas locais são testadas sem expor credenciais. Veja [docs/DATABASES.md](docs/DATABASES.md).
-- WordPress é reconhecido por `wp-config.php`, arquivo de exemplo ou dependência Composer. O `DB_HOST` literal em `wp-config.php` indica o destino MySQL. Quando há Compose, o aplicativo direciona o início aos containers: um nome como `db` só é resolvido na rede deles. A verificação de porta não confirma credenciais nem a existência do banco.
+- WordPress é reconhecido por `wp-config.php`, arquivo de exemplo ou dependência Composer. O `DB_HOST` literal em `wp-config.php` indica o destino MySQL. Quando há Compose (na pasta do site, numa subpasta como `docker/` ou declarando a imagem do WordPress em outra pasta do projeto), o aplicativo direciona o início aos containers: um nome como `db` só é resolvido na rede deles e aparece como banco em container, não como servidor remoto. A verificação de porta não confirma credenciais nem a existência do banco.
 - Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
 
 ### Containers: execução controlada (em validação)
@@ -400,7 +400,7 @@ Go, Dart, and Flutter appear in diagnostics because their files and manifests ca
 - Web services expose a URL after it is confirmed; terminal applications should remain observable through their logs.
 - Static-site ports are derived from the project path to reduce conflicts and prevent another project's URL from being reused.
 - PostgreSQL, MySQL, MariaDB, SQL Server and SQLite declared in `.env`/`.env.local` appear in diagnostics; local ports are checked without exposing credentials. See [docs/DATABASES.md](docs/DATABASES.md).
-- WordPress is recognized from `wp-config.php`, its sample file, or a Composer dependency. A literal `DB_HOST` in `wp-config.php` identifies the MySQL destination. With Compose, the app routes startup to Containers: a name such as `db` only resolves inside its network. A port check does not verify credentials or database existence.
+- WordPress is recognized from `wp-config.php`, its sample file, or a Composer dependency. A literal `DB_HOST` in `wp-config.php` identifies the MySQL destination. With Compose (in the site folder, in a subfolder such as `docker/`, or declaring the WordPress image elsewhere in the project), the app routes startup to Containers: a name such as `db` only resolves inside its network and is shown as a container database, not a remote server. A port check does not verify credentials or database existence.
 - Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
 
 ### Containers: controlled execution (under validation)

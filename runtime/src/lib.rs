@@ -648,6 +648,14 @@ pub fn detect_technologies(path: &Path) -> Vec<TechnologyKind> {
             }
         }
     }
+    // Folders without Git are not walked above, so a WordPress Compose file in `docker/`
+    // would otherwise leave the project without its Containers action.
+    if found.contains(&TechnologyKind::WordPress)
+        && !found.contains(&TechnologyKind::Containers)
+        && containers::wordpress_uses_compose(path, path)
+    {
+        push_unique(&mut found, TechnologyKind::Containers);
+    }
     found.sort_by_key(|technology| technology_priority(*technology));
     found
 }
@@ -755,16 +763,15 @@ fn detect_processes_in_directory(
             );
         }
     } else if !belongs_to_artisan_app
-        && !(project.technologies.contains(&TechnologyKind::WordPress)
-            && containers::COMPOSE_FILES
-                .iter()
-                .any(|file| directory.join(file).is_file()))
         && (directory.join("index.php").is_file()
             || directory.join("wp-config.php").is_file()
             || directory.join("wp-config-sample.php").is_file()
             || (directory == project.path
                 && project.runtimes.contains(&RuntimeKind::Php)
                 && directory.join("index.html").is_file()))
+        // Checked last: it scans the project for Compose manifests.
+        && !(project.technologies.contains(&TechnologyKind::WordPress)
+            && containers::wordpress_uses_compose(&project.path, directory))
     {
         push_process(
             processes,
@@ -1765,6 +1772,68 @@ version = "0.1.0"
         .unwrap();
         assert!(detect_processes(&project).is_empty());
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn wordpress_with_compose_in_a_subfolder_or_sibling_runs_through_containers() {
+        let root = std::env::temp_dir().join(format!(
+            "lcp-wordpress-compose-layouts-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let php_servers = |project: &Project| {
+            detect_processes(project)
+                .iter()
+                .filter(|process| process.name == "Servidor PHP")
+                .count()
+        };
+
+        // Site with its Compose file in docker/.
+        let site = root.join("blog");
+        fs::create_dir_all(site.join("docker")).unwrap();
+        fs::write(site.join("wp-config.php"), "<?php").unwrap();
+        let blog = Project::new(site.clone(), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::WordPress]);
+        assert_eq!(php_servers(&blog), 1);
+        fs::write(
+            site.join("docker").join("compose.yaml"),
+            "services:\n  db:\n    image: mariadb:11\n",
+        )
+        .unwrap();
+        assert_eq!(php_servers(&blog), 0);
+        // Without Git the subfolders are not walked, but the card still needs Containers.
+        assert!(detect_technologies(&site).contains(&TechnologyKind::Containers));
+
+        // Monorepo: a sibling Compose for another service does not hijack the site...
+        let monorepo = root.join("monorepo");
+        fs::create_dir_all(monorepo.join(".git")).unwrap();
+        fs::create_dir_all(monorepo.join("wordpress")).unwrap();
+        fs::create_dir_all(monorepo.join("api")).unwrap();
+        fs::create_dir_all(monorepo.join("infra")).unwrap();
+        fs::write(monorepo.join("wordpress").join("wp-config.php"), "<?php").unwrap();
+        fs::write(
+            monorepo.join("api").join("compose.yaml"),
+            "services:\n  api:\n    image: node:22\n",
+        )
+        .unwrap();
+        let project = Project::new(monorepo.clone(), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::WordPress]);
+        assert_eq!(php_servers(&project), 1);
+        // ...but one that declares a WordPress image does.
+        fs::write(
+            monorepo.join("infra").join("compose.yaml"),
+            "services:\n  site:\n    image: docker.io/library/WordPress:6\n",
+        )
+        .unwrap();
+        assert_eq!(php_servers(&project), 0);
+        assert!(containers::wordpress_uses_compose(
+            &monorepo,
+            &monorepo.join("wordpress")
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

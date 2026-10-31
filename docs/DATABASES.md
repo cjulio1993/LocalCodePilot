@@ -10,7 +10,9 @@ localcodepilot databases <pasta>
 
 Somente endereços de loopback (`127.0.0.1`, `localhost`, `::1`) são testados por TCP. Uma porta acessível não comprova que usuário, senha, banco e tabelas estejam corretos. Destinos remotos e SQLite não são testados por esse comando. Senhas, nomes de usuário e nomes de banco não aparecem na saída.
 
-O diagnóstico separa servidor local acessível, servidor local indisponível, servidor remoto, arquivo SQLite e configuração incompleta. Para PostgreSQL, MySQL, MariaDB e SQL Server, o LocalCodePilot não instala, inicia nem configura o servidor. Quando um servidor local não responde, a CLI orienta a verificar instalação, serviço e porta. A conexão remota não é alterada.
+O diagnóstico separa servidor local acessível, servidor local indisponível, servidor remoto, banco em container, arquivo SQLite e configuração incompleta.
+
+Quando o host (por exemplo, `db` no `DB_HOST` do `wp-config.php`) é o nome de um serviço declarado num arquivo Compose do projeto, inclusive numa subpasta como `docker/`, o banco é tratado como **serviço do Compose**, e não como servidor remoto. Esse banco só existe na rede dos containers e não é testado a partir do host. A CLI informa se o container correspondente está em execução, parado ou ainda não foi criado; o desktop mostra o mesmo estado no projeto e orienta a iniciar os serviços em **Containers**. Para PostgreSQL, MySQL, MariaDB e SQL Server, o LocalCodePilot não instala, inicia nem configura o servidor. Quando um servidor local não responde, a CLI orienta a verificar instalação, serviço e porta. A conexão remota não é alterada.
 
 Ao iniciar um projeto com `DB_CONNECTION=sqlite` e `DB_DATABASE` apontando para um arquivo dentro do projeto, o desktop cria a pasta e o banco quando faltam e verifica a integridade do arquivo. Arquivos fora do projeto e bancos em memória não são criados por esse fluxo. A preparação de SQLite não cria tabelas nem executa migrations.
 

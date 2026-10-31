@@ -23,6 +23,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Containers Podman mostram nome, portas e URLs; antes os campos em lista retornados pelo Podman eram ignorados.
 - Copiar texto do aplicativo para a área de transferência voltou a funcionar; o suporte a clipboard do `eframe` estava desativado no build.
 - Com o motor parado, o Compose aparece como "será verificado quando o motor estiver ativo" em vez de ausente.
+- WordPress com o arquivo Compose numa subpasta (como `docker/`) ou com um Compose que declara a imagem do WordPress em outra pasta do projeto não oferece mais "Servidor PHP" (`php -S`): o cartão mostra **Iniciar com Containers**. Um Compose de outro serviço na mesma pasta pai continua sem afetar o site.
+- `DB_HOST` com o nome de um serviço Compose do projeto, como `db`, aparece como banco em container, e não como servidor remoto. A CLI `databases` informa se o container está em execução, parado ou ainda não criado.
+- Caminhos de projetos aparecem sem o prefixo `\\?\` na CLI e no aplicativo.
 
 ## [0.4.0-alpha.7] - 2026-10-22
 
