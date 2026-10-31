@@ -1,3 +1,4 @@
+pub mod compose_safety;
 pub mod container_setup;
 pub mod containers;
 pub mod discovery;

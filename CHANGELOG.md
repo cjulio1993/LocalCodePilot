@@ -8,6 +8,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- Proteção contra conflitos de nome Compose: o aplicativo identifica cada ambiente pelo motor, pelo nome que o provedor Compose resolve (`name:`, `COMPOSE_PROJECT_NAME` no ambiente ou no `.env`, nome da pasta) e pela pasta de origem dos containers. Quando dois projetos resolvem o mesmo nome (por exemplo, dois `docker/compose.yaml`), quando há containers desse nome criados a partir de outra pasta, quando há volumes sem container que comprove a origem ou quando não é possível confirmar, iniciar e parar o ambiente, e iniciar, parar e reiniciar seus containers, ficam bloqueados, com explicação e o trecho `name:` sugerido para copiar. A verificação é refeita logo antes de executar. Validar, consultar estado e logs continuam disponíveis.
+- Volumes deixados sem containers (por exemplo, após `compose down`) podem ser confirmados como do projeto; a confirmação fica salva por motor e pasta.
+- A CLI `containers` mostra o nome Compose efetivo de cada ambiente e os conflitos encontrados.
 - Preparação guiada de Docker e Podman: quando um motor não está pronto, a aba Containers e a CLI `containers` explicam o que falta (WSL, instalação, motor parado, máquina Podman ou provedor Compose) e mostram comandos oficiais para o usuário copiar e rodar, links de documentação e condições de licença. O aplicativo não executa esses comandos.
 - **Verificar motores e arquivos** relê o `PATH` do sistema enquanto um motor está ausente, encontrando um motor recém-instalado sem reiniciar o aplicativo.
 

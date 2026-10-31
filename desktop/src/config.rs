@@ -26,6 +26,18 @@ pub struct WorkspaceState {
     pub last_update_check: u64,
     pub update_remind_after: u64,
     pub cached_update: Option<UpdateInfo>,
+    /// Compose volumes the user confirmed as belonging to an environment that has no
+    /// containers, for example after `compose down`.
+    pub compose_data_confirmations: Vec<ComposeDataConfirmation>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ComposeDataConfirmation {
+    /// `docker` or `podman`.
+    pub engine: String,
+    pub directory: PathBuf,
+    pub volumes: Vec<String>,
 }
 
 impl Default for WorkspaceState {
@@ -41,6 +53,7 @@ impl Default for WorkspaceState {
             last_update_check: 0,
             update_remind_after: 0,
             cached_update: None,
+            compose_data_confirmations: Vec::new(),
         }
     }
 }

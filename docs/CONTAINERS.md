@@ -14,6 +14,30 @@ Docker e Podman são verificados independentemente:
 
 O aplicativo não instala ferramentas nem inicia VMs. O provedor Compose do Podman precisa estar instalado separadamente quando não estiver disponível.
 
+### Proteção contra conflitos de nome Compose
+
+O Docker e o Podman tratam todos os arquivos Compose com o mesmo **nome de projeto** como um único ambiente. Dois projetos com o Compose numa pasta `docker/` recebem o nome `docker`: o `up` de um recria os containers do outro e reaproveita os volumes de dados dele, e o `stop` de um para os containers do outro.
+
+O aplicativo identifica cada ambiente por três informações:
+
+- **motor** (Docker ou Podman);
+- **nome efetivo**, perguntado ao próprio provedor com `compose --file … config` na pasta do manifesto, com os mesmos arquivos e variáveis usados no `up`. Assim valem `name:`, `COMPOSE_PROJECT_NAME` (ambiente ou `.env`) e o nome da pasta. Só o nome é lido da saída, que pode conter segredos;
+- **pasta de origem**, gravada pelo Compose em cada container (`com.docker.compose.project.working_dir`).
+
+| Situação | Consequência |
+| --- | --- |
+| Nome único e containers só desta pasta | Nenhuma restrição |
+| Outro projeto do catálogo resolve o mesmo nome | Bloqueado: "Nome de ambiente compartilhado" |
+| Containers com esse nome criados a partir de outra pasta (terminal ou outra ferramenta) | Bloqueado: "Ambiente em uso por outra pasta" |
+| Volumes com esse nome e nenhum container que mostre a origem | Bloqueado até o usuário confirmar que os dados são do projeto |
+| Nome não informado pelo provedor, motor sem resposta ou container sem pasta de origem | Bloqueado: "Não foi possível confirmar o ambiente" |
+
+Quando bloqueado, **Iniciar ambiente** e **Parar serviços** ficam desativados, assim como iniciar, parar e reiniciar os containers desse ambiente em Processos: um ID exato não deixa claro o impacto num ambiente compartilhado. **Validar configuração**, **Consultar estado** e os logs continuam disponíveis. O cartão explica o motivo e sugere um `name:` único para copiar. O aplicativo não altera os arquivos do projeto e não usa `--project-name` automaticamente.
+
+Logo antes de executar, depois da confirmação, a verificação é refeita com uma consulta nova ao motor; se algo mudou (por exemplo, containers criados pelo terminal), o comando é cancelado sem executar.
+
+Ao adotar um nome novo, containers e volumes criados com o nome antigo continuam existindo e não são reaproveitados. Para pará-los, use o terminal na pasta de origem: `docker compose -p <nome-antigo> stop` (ou `podman compose`).
+
 ### Preparação guiada dos motores
 
 Quando um motor não está pronto, o cartão dele mostra o que falta e os passos para resolver. O LocalCodePilot **não executa** esses passos: cada comando tem um botão **Copiar** para o usuário rodar no próprio terminal, e cada referência aponta para a documentação oficial.
