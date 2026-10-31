@@ -1,4 +1,5 @@
 use super::*;
+use localcodepilot_core::container_setup::{ContainerHostFacts, EngineGuidance, engine_guidance};
 use localcodepilot_core::containers::{
     ContainerAction, ContainerCommand, ContainerEngine, ContainerProject, EngineDiagnosis,
     EngineState, RuntimeContainer,
@@ -18,8 +19,10 @@ struct ContainerSession {
 /// previous Compose scan and engine diagnosis.
 struct ContainerSnapshot {
     projects: Option<Vec<ContainerProject>>,
-    engines: Option<Vec<EngineDiagnosis>>,
+    engines: Option<(Vec<EngineDiagnosis>, ContainerHostFacts)>,
     containers: Vec<RuntimeContainer>,
+    /// Registry PATH re-read while an engine was missing.
+    refreshed_path: Option<OsString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +46,16 @@ fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)
     }
 }
 
+/// An engine installed from a terminal after launch is only on the registry PATH, so a full
+/// check re-reads it while an engine is missing. Re-reading spawns PowerShell, so it is
+/// skipped otherwise.
+fn rereads_registry_path(scope: ContainerRefresh, engines: &[EngineDiagnosis]) -> bool {
+    scope == ContainerRefresh::Full
+        && engines
+            .iter()
+            .any(|engine| engine.state == EngineState::Missing)
+}
+
 /// Podman leaves `Status` empty, so it is only shown when the engine provides it.
 fn container_summary(container: &RuntimeContainer) -> String {
     let mut summary = format!("{} · {}", container.engine, container.state);
@@ -53,11 +66,52 @@ fn container_summary(container: &RuntimeContainer) -> String {
     summary
 }
 
+/// Numbered preparation steps for an engine. Commands are only copied for the user to run.
+/// Returns the command copied in this frame.
+fn engine_guidance_panel(ui: &mut egui::Ui, guidance: &EngineGuidance) -> Option<&'static str> {
+    let mut copied = None;
+    ui.add_space(8.0);
+    ui.label(RichText::new(guidance.summary).strong().size(12.0));
+    for (index, step) in guidance.steps.iter().enumerate() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!("{}.", index + 1))
+                    .color(theme::MUTED)
+                    .size(11.0),
+            );
+            match step.link {
+                Some(link) => {
+                    ui.hyperlink_to(RichText::new(step.text).size(11.0), link);
+                }
+                None => {
+                    ui.label(RichText::new(step.text).size(11.0));
+                }
+            }
+        });
+        if let Some(command) = step.command {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(18.0);
+                ui.label(RichText::new(command).monospace().size(11.0));
+                if ui.small_button("Copiar").clicked() {
+                    ui.ctx().copy_text(command.to_owned());
+                    copied = Some(command);
+                }
+            });
+        }
+    }
+    ui.add_space(4.0);
+    for note in &guidance.notes {
+        ui.label(RichText::new(*note).color(theme::MUTED).size(10.5));
+    }
+    copied
+}
+
 pub(super) struct ContainerState {
     projects: Vec<ContainerProject>,
     runtime_containers: Vec<RuntimeContainer>,
     last_refresh: Option<std::time::Instant>,
     engines: Vec<EngineDiagnosis>,
+    host: Option<ContainerHostFacts>,
     pending: Option<Receiver<ContainerSnapshot>>,
     selected_engine: ContainerEngine,
     confirmation: Option<ContainerCommand>,
@@ -72,6 +126,7 @@ impl Default for ContainerState {
             runtime_containers: vec![],
             last_refresh: None,
             engines: vec![],
+            host: None,
             pending: None,
             selected_engine: ContainerEngine::Docker,
             confirmation: None,
@@ -239,10 +294,15 @@ impl LocalCodePilot {
             .map(|project| project.path.clone())
             .collect::<Vec<_>>();
         let path = self.environment_path.clone();
+        let reread_path = rereads_registry_path(scope, &self.container_state.engines);
         let (sender, receiver) = mpsc::channel();
         self.container_state.pending = Some(receiver);
         self.container_state.error = None;
         std::thread::spawn(move || {
+            let refreshed_path = reread_path
+                .then(|| refreshed_environment_path().ok())
+                .flatten();
+            let path = refreshed_path.clone().or(path);
             let (projects, engines) = match scope {
                 ContainerRefresh::Full => {
                     let mut seen = HashSet::new();
@@ -256,7 +316,10 @@ impl LocalCodePilot {
                     let engines = localcodepilot_platform::containers::inspect_container_engines(
                         path.as_deref(),
                     );
-                    (Some(projects), Some(engines))
+                    let host = localcodepilot_platform::containers::inspect_container_host(
+                        path.as_deref(),
+                    );
+                    (Some(projects), Some((engines, host)))
                 }
                 ContainerRefresh::RuntimeOnly => (None, None),
             };
@@ -266,6 +329,7 @@ impl LocalCodePilot {
                 projects,
                 engines,
                 containers,
+                refreshed_path,
             });
             ctx.request_repaint();
         });
@@ -289,7 +353,11 @@ impl LocalCodePilot {
                     projects,
                     engines,
                     containers,
+                    refreshed_path,
                 }) => {
+                    if refreshed_path.is_some() {
+                        self.environment_path = refreshed_path;
+                    }
                     let stopped = self
                         .container_state
                         .runtime_containers
@@ -303,13 +371,14 @@ impl LocalCodePilot {
                                 .map(|new| new.name.clone())
                         })
                         .collect::<Vec<_>>();
-                    if let Some(engines) = engines {
+                    if let Some((engines, host)) = engines {
                         if let Some(engine) = engines.iter().find(|engine| {
                             engine.state == EngineState::Ready && engine.compose_available
                         }) {
                             self.container_state.selected_engine = engine.engine;
                         }
                         self.container_state.engines = engines;
+                        self.container_state.host = Some(host);
                     }
                     if let Some(projects) = projects {
                         self.container_state.projects = projects;
@@ -463,7 +532,13 @@ impl LocalCodePilot {
 
         self.container_execution_panel(ui);
         ui.add_space(12.0);
+        let mut copied = None;
         for diagnosis in &self.container_state.engines {
+            let guidance = self
+                .container_state
+                .host
+                .as_ref()
+                .and_then(|host| engine_guidance(diagnosis, host));
             Frame::new()
                 .fill(theme::SURFACE)
                 .corner_radius(8)
@@ -491,21 +566,22 @@ impl LocalCodePilot {
                     if diagnosis.state != EngineState::Missing {
                         ui.label(if diagnosis.compose_available {
                             "Compose disponível"
-                        } else {
+                        } else if diagnosis.state == EngineState::Ready {
                             "Compose não confirmado; verifique o plugin ou provedor"
+                        } else {
+                            "Compose será verificado quando o motor estiver ativo"
                         });
                     }
-                    if diagnosis.state == EngineState::Unavailable {
-                        ui.label(
-                            RichText::new(
-                                "Abra o motor e confira sua conexão antes de iniciar um ambiente.",
-                            )
-                            .color(theme::MUTED)
-                            .size(11.0),
-                        );
+                    if let Some(guidance) = &guidance
+                        && let Some(command) = engine_guidance_panel(ui, guidance)
+                    {
+                        copied = Some(command);
                     }
                 });
             ui.add_space(6.0);
+        }
+        if let Some(command) = copied {
+            self.notify(format!("Comando copiado: {command}"));
         }
         ui.add_space(12.0);
         ui.horizontal_wrapped(|ui| {
@@ -839,6 +915,26 @@ mod tests {
         for page in [Page::Plugins, Page::Help, Page::Settings] {
             assert_eq!(container_refresh_schedule(page), None);
         }
+    }
+
+    #[test]
+    fn rereads_the_path_only_on_full_checks_with_a_missing_engine() {
+        let engine = |state| EngineDiagnosis {
+            engine: ContainerEngine::Docker,
+            state,
+            compose_available: false,
+        };
+        let missing = [engine(EngineState::Ready), engine(EngineState::Missing)];
+        assert!(rereads_registry_path(ContainerRefresh::Full, &missing));
+        assert!(!rereads_registry_path(
+            ContainerRefresh::RuntimeOnly,
+            &missing
+        ));
+        assert!(!rereads_registry_path(
+            ContainerRefresh::Full,
+            &[engine(EngineState::Ready), engine(EngineState::Unavailable)]
+        ));
+        assert!(!rereads_registry_path(ContainerRefresh::Full, &[]));
     }
 
     #[test]

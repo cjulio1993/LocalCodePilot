@@ -14,6 +14,23 @@ Docker e Podman são verificados independentemente:
 
 O aplicativo não instala ferramentas nem inicia VMs. O provedor Compose do Podman precisa estar instalado separadamente quando não estiver disponível.
 
+### Preparação guiada dos motores
+
+Quando um motor não está pronto, o cartão dele mostra o que falta e os passos para resolver. O LocalCodePilot **não executa** esses passos: cada comando tem um botão **Copiar** para o usuário rodar no próprio terminal, e cada referência aponta para a documentação oficial.
+
+| Situação | Orientação |
+| --- | --- |
+| CLI não encontrada | Requisitos e instalação: Docker Desktop (Windows/macOS) ou Docker Engine (Linux); Podman pelo `winget`, Homebrew ou gerenciador da distribuição. No Windows, `wsl --install` aparece primeiro quando `wsl --status` falha. |
+| Motor parado | `docker desktop start` (ou `systemctl` no Linux); no Podman, `podman machine init` e/ou `podman machine start`, conforme `podman machine list`. |
+| Motor pronto sem Compose | Docker: atualizar o Docker Desktop ou instalar o plugin; Podman: instalar um provedor, como o Docker Compose standalone. |
+| Consulta sem resposta | Rodar `docker info` ou `podman info` para ver o erro completo. |
+
+O Compose só é diagnosticado com o motor ativo: com a máquina do Podman parada, `podman compose version` também falha e não indica que o provedor esteja ausente.
+
+A instalação do Docker Desktop mostra as condições de licença: é gratuito para uso pessoal, educação, open source não comercial e pequenas empresas; empresas maiores precisam de assinatura. O Podman é open source (Apache 2.0). No Linux, o app alerta que entrar no grupo `docker` equivale a privilégios de administrador.
+
+As consultas adicionais são somente leitura: `wsl --status` no Windows e `podman machine list --format json` no Windows e macOS. Enquanto algum motor está ausente, **Verificar motores e arquivos** também relê o `PATH` do sistema, de modo que um motor instalado pelo terminal é encontrado sem reiniciar o aplicativo.
+
 Serviços, imagens, build, portas declaradas e perfis aparecem numa prévia local do YAML. Variáveis de ambiente, segredos e comandos internos dos serviços não são exibidos. As portas da prévia são declarações; **Consultar estado** usa a saída efetiva de `compose ps --all` no Docker ou `compose ps` no Podman para mostrar o estado e as portas publicadas pelo motor.
 
 Quando o motor e o provedor Compose selecionados estão disponíveis, cada projeto oferece estas ações:
@@ -35,7 +52,7 @@ Arquivos `compose.override.*` reconhecidos são passados ao provedor depois do m
 cargo run -p localcodepilot-cli -- containers "C:\caminho\do projeto"
 ```
 
-O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos sem executá-los. Um manifesto inválido é relatado e não produz comandos; a CLI retorna falha nesse caso. A execução controlada está disponível apenas no desktop.
+O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos sem executá-los. Motores que não estão prontos recebem a mesma orientação da aba Containers. Um manifesto inválido é relatado e não produz comandos; a CLI retorna falha nesse caso. A execução controlada está disponível apenas no desktop.
 
 ## Limites atuais
 
@@ -46,7 +63,8 @@ O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos
 - O usuário ainda pode iniciar diretamente; para projetos desconhecidos, execute **Validar configuração** primeiro.
 - Um Dockerfile isolado oferece somente build, sem nomear a imagem nem oferecer `run`.
 - A parada usa `stop`; não há remoção de containers, redes ou volumes.
-- O app não instala Docker/Podman, não inicia Docker Desktop ou máquinas Podman e não aceita entrada interativa no comando.
+- O app não instala Docker/Podman, não inicia Docker Desktop ou máquinas Podman e não aceita entrada interativa no comando; ele apenas orienta esses passos.
+- A orientação não verifica virtualização no firmware nem espaço em disco; esses requisitos aparecem como texto e nos links oficiais.
 - O CI valida os fluxos reais de comandos Docker e Podman (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. No Windows 11, Docker Desktop passou pela interface em `config`, `up`, `ps`, logs, `stop`, build e cancelamento. Podman 6.1.4 passou pela interface em `config`, `up`, `ps`, logs e `stop`; o build passou pela CLI.
 
 ## Antes da alpha 6

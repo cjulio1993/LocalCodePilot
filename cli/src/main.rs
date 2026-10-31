@@ -141,6 +141,7 @@ fn containers(path: Option<PathBuf>) -> ExitCode {
     println!(
         "Diagnóstico de containers — nenhuma instalação ou execução de containers será iniciada."
     );
+    let host = localcodepilot_platform::containers::inspect_container_host(None);
     for engine in localcodepilot_platform::containers::inspect_container_engines(None) {
         println!(
             "{}: {:?} · Compose: {}",
@@ -152,6 +153,23 @@ fn containers(path: Option<PathBuf>) -> ExitCode {
                 "não confirmado"
             }
         );
+        if let Some(guidance) =
+            localcodepilot_core::container_setup::engine_guidance(&engine, &host)
+        {
+            println!("  {}", guidance.summary);
+            for (index, step) in guidance.steps.iter().enumerate() {
+                println!("  {}. {}", index + 1, step.text);
+                if let Some(command) = step.command {
+                    println!("       {command}");
+                }
+                if let Some(link) = step.link {
+                    println!("       {link}");
+                }
+            }
+            for note in &guidance.notes {
+                println!("  Nota: {note}");
+            }
+        }
     }
     let mut invalid = false;
     for project in &projects {

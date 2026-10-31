@@ -1,4 +1,5 @@
 use crate::installations::{configure_background_command, find_executable};
+use localcodepilot_core::container_setup::{ContainerHostFacts, HostOs, PodmanMachine};
 use localcodepilot_core::containers::{
     ContainerCommand, ContainerEngine, EngineDiagnosis, EngineState, RuntimeContainer,
 };
@@ -30,10 +31,61 @@ fn list_engine_containers(
     engine: ContainerEngine,
     path: Option<&OsStr>,
 ) -> Result<Vec<RuntimeContainer>, String> {
-    let executable = find_executable(engine.program(), path).ok_or("CLI indisponível")?;
+    let output = read_command_output(
+        engine.program(),
+        &["ps", "--all", "--format", "{{json .}}"],
+        path,
+    )?;
+    Ok(parse_container_rows(engine, &output))
+}
+
+/// Read-only facts used to guide the user through preparing an engine. Nothing is installed,
+/// started or created here.
+pub fn inspect_container_host(path: Option<&OsStr>) -> ContainerHostFacts {
+    let os = HostOs::current();
+    let wsl_ready = (os == HostOs::Windows).then(|| probe("wsl", &["--status"], path));
+    let podman_machine = (os != HostOs::Linux)
+        .then(|| read_command_output("podman", &["machine", "list", "--format", "json"], path).ok())
+        .flatten()
+        .and_then(|output| parse_podman_machines(&output));
+    ContainerHostFacts {
+        os,
+        wsl_ready: match wsl_ready {
+            Some(ProbeResult::Success) => Some(true),
+            Some(ProbeResult::Missing | ProbeResult::Failed) => Some(false),
+            Some(ProbeResult::TimedOut) | None => None,
+        },
+        podman_machine,
+    }
+}
+
+fn parse_podman_machines(output: &str) -> Option<PodmanMachine> {
+    let machines = serde_json::from_str::<Vec<serde_json::Value>>(output).ok()?;
+    Some(if machines.is_empty() {
+        PodmanMachine::NotCreated
+    } else if machines.iter().any(|machine| {
+        machine
+            .get("Running")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }) {
+        PodmanMachine::Running
+    } else {
+        PodmanMachine::Stopped
+    })
+}
+
+/// Runs a read-only query and returns its standard output, capped at 1 MiB and stopped after
+/// `LIST_TIMEOUT`.
+fn read_command_output(
+    program: &str,
+    args: &[&str],
+    path: Option<&OsStr>,
+) -> Result<String, String> {
+    let executable = find_executable(program, path).ok_or("CLI indisponível")?;
     let mut command = Command::new(executable);
     command
-        .args(["ps", "--all", "--format", "{{json .}}"])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -60,7 +112,7 @@ fn list_engine_containers(
             _ => {
                 terminate_container_process(&mut child);
                 let _ = reader.join();
-                return Err("Consulta de containers excedeu o tempo limite".into());
+                return Err("Consulta excedeu o tempo limite".into());
             }
         }
     };
@@ -71,8 +123,7 @@ fn list_engine_containers(
     if !status.success() {
         return Err("Motor indisponível".into());
     }
-    let output = String::from_utf8(bytes).map_err(|error| error.to_string())?;
-    Ok(parse_container_rows(engine, &output))
+    String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
 fn parse_container_rows(engine: ContainerEngine, output: &str) -> Vec<RuntimeContainer> {
@@ -524,6 +575,29 @@ mod tests {
                 ),
                 "{engine}: database container not associated"
             );
+        }
+    }
+
+    #[test]
+    fn reads_the_podman_machine_state_from_machine_list() {
+        // Trimmed `podman machine list --format json` from Podman 6.1.4 on Windows.
+        let stopped = r#"[{"Name":"podman-machine-default","Default":true,"Running":false,"Starting":false,"VMType":"wsl"}]"#;
+        assert_eq!(parse_podman_machines(stopped), Some(PodmanMachine::Stopped));
+        let running = r#"[{"Name":"other","Running":false},{"Name":"podman-machine-default","Running":true}]"#;
+        assert_eq!(parse_podman_machines(running), Some(PodmanMachine::Running));
+        assert_eq!(parse_podman_machines("[]"), Some(PodmanMachine::NotCreated));
+        assert_eq!(parse_podman_machines("Error: cannot connect"), None);
+    }
+
+    #[test]
+    fn host_inspection_with_empty_path_reports_missing_tools_without_changes() {
+        let facts = inspect_container_host(Some(OsStr::new("")));
+        assert_eq!(facts.os, HostOs::current());
+        assert_eq!(facts.podman_machine, None);
+        if facts.os == HostOs::Windows {
+            assert_eq!(facts.wsl_ready, Some(false));
+        } else {
+            assert_eq!(facts.wsl_ready, None);
         }
     }
 
