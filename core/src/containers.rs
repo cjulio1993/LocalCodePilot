@@ -1,4 +1,8 @@
-use std::{fmt, path::PathBuf};
+use std::{
+    ffi::OsStr,
+    fmt,
+    path::{Component, Path, PathBuf, Prefix},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerEngine {
@@ -56,27 +60,28 @@ pub struct RuntimeContainer {
 
 impl RuntimeContainer {
     pub fn browser_urls(&self) -> Vec<String> {
-        self.ports
-            .split(',')
-            .filter_map(|mapping| {
-                let mapping = mapping.trim();
-                let (published, target) = mapping.split_once("->")?;
-                let target = target.strip_suffix("/tcp")?.parse::<u16>().ok()?;
-                let (host, port) = published.rsplit_once(':')?;
-                let host = match host {
-                    "0.0.0.0" | "" => "localhost",
-                    "127.0.0.1" | "localhost" => host,
-                    _ => return None,
-                };
-                let port = port.parse::<u16>().ok().filter(|port| *port > 0)?;
-                let scheme = match target {
-                    443 | 8443 => "https",
-                    80 | 8000 | 8080 | 3000 | 5173 | 8888 => "http",
-                    _ => return None,
-                };
-                Some(format!("{scheme}://{host}:{port}"))
-            })
-            .collect()
+        let mut urls = Vec::new();
+        // Engines list the same binding once per address family.
+        for url in self.ports.split(',').filter_map(runtime_browser_url) {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
+    }
+
+    /// Whether the Compose working directory recorded by the engine is the project or one of
+    /// its subfolders.
+    pub fn belongs_to(&self, project: &Path) -> bool {
+        self.project_directory
+            .as_deref()
+            .is_some_and(|directory| path_is_within(directory, project))
+    }
+
+    /// Whether `host`, as written in an application configuration, names this container
+    /// inside the Compose network.
+    pub fn answers_to_host(&self, host: &str) -> bool {
+        self.service.as_deref() == Some(host) || self.name == host
     }
 
     pub fn command(&self, action: ContainerAction) -> Option<ContainerCommand> {
@@ -159,17 +164,86 @@ fn browser_url(_service: &str, mapping: &str) -> Option<String> {
     };
     let published = published.parse::<u16>().ok().filter(|port| *port > 0)?;
     let target = target.parse::<u16>().ok().filter(|port| *port > 0)?;
-    let scheme = match target {
-        443 | 8443 => "https",
-        80 | 8000 | 8080 | 3000 | 5173 | 8888 => "http",
-        _ => return None,
-    };
+    let scheme = web_scheme(target)?;
     let host = match host {
         "0.0.0.0" | "" => "localhost",
         "localhost" | "127.0.0.1" => host,
         _ => return None,
     };
     Some(format!("{scheme}://{host}:{published}"))
+}
+
+/// Reads one `host:published->target/tcp` entry as printed by `docker ps`.
+fn runtime_browser_url(mapping: &str) -> Option<String> {
+    let (published, target) = mapping.trim().split_once("->")?;
+    let target = target.strip_suffix("/tcp")?.parse::<u16>().ok()?;
+    let (host, port) = published.rsplit_once(':')?;
+    let host = match host {
+        "0.0.0.0" | "" | "::" | "[::]" => "localhost",
+        "127.0.0.1" | "localhost" => host,
+        _ => return None,
+    };
+    let port = port.parse::<u16>().ok().filter(|port| *port > 0)?;
+    Some(format!("{}://{host}:{port}", web_scheme(target)?))
+}
+
+/// Container ports conventionally served over HTTP(S) by web servers and development
+/// tools. Database, FastCGI (9000) and other protocol ports are deliberately absent.
+fn web_scheme(target: u16) -> Option<&'static str> {
+    match target {
+        443 | 8443 => Some("https"),
+        80 | 3000 | 3001 | 4000 | 4173 | 4200 | 5000 | 5173 | 5174 | 8000 | 8001 | 8008 | 8025
+        | 8080 | 8081 | 8888 => Some("http"),
+        _ => None,
+    }
+}
+
+/// Compares paths lexically, without touching the filesystem, so it is cheap enough for
+/// every frame. On Windows it also tolerates how engines record Compose directories:
+/// drive-letter and name case, `\\?\` prefixes, either separator and WSL `/mnt/<drive>`.
+pub fn path_is_within(path: &Path, root: &Path) -> bool {
+    let root = path_key(root);
+    !root.is_empty() && path_key(path).starts_with(&root)
+}
+
+fn path_key(path: &Path) -> Vec<String> {
+    let mut key = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Prefix(prefix) => key.push(match prefix.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                    format!("{}:", char::from(drive).to_ascii_lowercase())
+                }
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                    format!(r"\\{}\{}", fold_case(server), fold_case(share))
+                }
+                _ => fold_case(component.as_os_str()),
+            }),
+            Component::RootDir => key.push("/".into()),
+            other => key.push(fold_case(other.as_os_str())),
+        }
+    }
+    if cfg!(windows)
+        && let [root, mnt, drive, ..] = key.as_slice()
+        && root == "/"
+        && mnt == "mnt"
+        && drive.len() == 1
+        && drive.chars().all(|letter| letter.is_ascii_alphabetic())
+    {
+        let drive = format!("{drive}:");
+        key.splice(0..3, [drive, "/".to_owned()]);
+    }
+    key
+}
+
+fn fold_case(value: &OsStr) -> String {
+    let value = value.to_string_lossy();
+    if cfg!(windows) {
+        value.to_lowercase()
+    } else {
+        value.into_owned()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,6 +458,98 @@ mod tests {
         let mut invalid = container;
         invalid.id = "--rm".into();
         assert!(invalid.command(ContainerAction::StopExisting).is_none());
+    }
+
+    fn runtime_container(ports: &str, project_directory: Option<&str>) -> RuntimeContainer {
+        RuntimeContainer {
+            engine: ContainerEngine::Docker,
+            id: "abcdef123456".into(),
+            name: "shop-db-1".into(),
+            image: "mariadb".into(),
+            state: "running".into(),
+            status: "Up".into(),
+            ports: ports.into(),
+            service: Some("db".into()),
+            project_directory: project_directory.map(PathBuf::from),
+            running_for: None,
+        }
+    }
+
+    #[test]
+    fn runtime_urls_cover_common_dev_servers_once_per_binding() {
+        let container = runtime_container(
+            "0.0.0.0:4200->4200/tcp, :::4200->4200/tcp, [::]:4200->4200/tcp, \
+             127.0.0.1:5001->5000/tcp, 0.0.0.0:8025->8025/tcp, 0.0.0.0:9000->9000/tcp, \
+             0.0.0.0:3307->3306/tcp, 0.0.0.0:8080-8081->80-81/tcp, 10.0.0.5:8082->80/tcp",
+            None,
+        );
+        assert_eq!(
+            container.browser_urls(),
+            [
+                "http://localhost:4200",
+                "http://127.0.0.1:5001",
+                "http://localhost:8025"
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_and_runtime_urls_share_the_web_port_list() {
+        for target in [3001, 4000, 4173, 4200, 5000, 5174, 8001, 8008, 8025, 8081] {
+            let service = ContainerService {
+                name: "web".into(),
+                image: None,
+                builds_image: false,
+                ports: vec![format!("18000:{target}")],
+                profiles: vec![],
+            };
+            assert_eq!(service.browser_urls(), ["http://localhost:18000"]);
+            let container = runtime_container(&format!("0.0.0.0:18000->{target}/tcp"), None);
+            assert_eq!(container.browser_urls(), ["http://localhost:18000"]);
+        }
+    }
+
+    #[test]
+    fn containers_belong_to_their_project_and_its_subfolders_only() {
+        let root = std::env::temp_dir().join("lcp-shop");
+        let compose_in_subfolder = root.join("docker");
+        let container = runtime_container("", compose_in_subfolder.to_str());
+        assert!(container.belongs_to(&root));
+        assert!(container.belongs_to(&compose_in_subfolder));
+        assert!(!container.belongs_to(&root.join("docker/other")));
+        assert!(!container.belongs_to(&std::env::temp_dir().join("lcp-sho")));
+        assert!(!runtime_container("", None).belongs_to(&root));
+        assert!(!path_is_within(&root, Path::new("")));
+        assert!(container.answers_to_host("db"));
+        assert!(container.answers_to_host("shop-db-1"));
+        assert!(!container.answers_to_host("localhost"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_match_regardless_of_how_the_engine_recorded_them() {
+        let project = Path::new(r"C:\Users\Dev\Área de Trabalho\Shop");
+        for recorded in [
+            r"c:\Users\Dev\Área de Trabalho\Shop",
+            r"C:\users\dev\área de trabalho\shop\docker",
+            "C:/Users/Dev/Área de Trabalho/Shop/",
+            r"\\?\C:\Users\Dev\Área de Trabalho\Shop",
+            "/mnt/c/Users/Dev/Área de Trabalho/Shop",
+        ] {
+            assert!(path_is_within(Path::new(recorded), project), "{recorded}");
+        }
+        assert!(!path_is_within(
+            Path::new(r"D:\Users\Dev\Área de Trabalho\Shop"),
+            project
+        ));
+        assert!(!path_is_within(
+            Path::new("/mnt/d/Users/Dev/Área de Trabalho/Shop"),
+            project
+        ));
+        assert!(path_is_within(
+            Path::new(r"\\Server\Share\shop"),
+            Path::new(r"\\server\share")
+        ));
     }
 
     #[test]
