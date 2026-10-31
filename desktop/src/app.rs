@@ -4262,7 +4262,7 @@ impl LocalCodePilot {
                     );
                     ui.label(
                         RichText::new(
-                            "WordPress com Compose precisa iniciar seus serviços na página Containers. Um host como db só funciona na rede Compose. Revise o comando antes de confirmar.",
+                            "WordPress com Compose precisa iniciar seus serviços na página Containers. Um host como db só funciona na rede Compose. Revise o comando antes de confirmar. Se Docker ou Podman não estiver pronto, o cartão do motor mostra os passos e comandos para você rodar no terminal.",
                         )
                         .color(theme::MUTED)
                         .size(11.0),

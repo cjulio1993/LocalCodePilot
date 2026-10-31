@@ -6,6 +6,11 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Adicionado
+
+- Preparação guiada de Docker e Podman: quando um motor não está pronto, a aba Containers e a CLI `containers` explicam o que falta (WSL, instalação, motor parado, máquina Podman ou provedor Compose) e mostram comandos oficiais para o usuário copiar e rodar, links de documentação e condições de licença. O aplicativo não executa esses comandos.
+- **Verificar motores e arquivos** relê o `PATH` do sistema enquanto um motor está ausente, encontrando um motor recém-instalado sem reiniciar o aplicativo.
+
 ### Alterado
 
 - Visão geral e Projetos atualizam o estado dos containers a cada 30 segundos, consultando apenas a lista de containers, para manter cartões e diagnóstico de banco atualizados.
@@ -16,6 +21,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Containers aparecem no projeto correto no Windows mesmo quando o Compose registrou a pasta com letra de unidade ou nomes em outra caixa, outro separador, prefixo `\\?\` ou caminho WSL `/mnt/<unidade>`.
 - O banco em container é associado ao projeto quando o Compose está em uma subpasta e quando o `DB_HOST` usa o nome do container em vez do serviço.
 - Containers Podman mostram nome, portas e URLs; antes os campos em lista retornados pelo Podman eram ignorados.
+- Copiar texto do aplicativo para a área de transferência voltou a funcionar; o suporte a clipboard do `eframe` estava desativado no build.
+- Com o motor parado, o Compose aparece como "será verificado quando o motor estiver ativo" em vez de ausente.
 
 ## [0.4.0-alpha.7] - 2026-10-22
 
