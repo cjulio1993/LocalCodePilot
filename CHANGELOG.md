@@ -26,6 +26,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - WordPress com o arquivo Compose numa subpasta (como `docker/`) ou com um Compose que declara a imagem do WordPress em outra pasta do projeto não oferece mais "Servidor PHP" (`php -S`): o cartão mostra **Iniciar com Containers**. Um Compose de outro serviço na mesma pasta pai continua sem afetar o site.
 - `DB_HOST` com o nome de um serviço Compose do projeto, como `db`, aparece como banco em container, e não como servidor remoto. A CLI `databases` informa se o container está em execução, parado ou ainda não criado.
 - Caminhos de projetos aparecem sem o prefixo `\\?\` na CLI e no aplicativo.
+- A CLI aceita pastas relativas, como `.`, em `inspect`, `containers` e `databases`; antes, `databases .` não encontrava o container do banco em execução.
 
 ## [0.4.0-alpha.7] - 2026-10-22
 
