@@ -7,9 +7,9 @@ fn main() -> ExitCode {
     match env::args().nth(1).as_deref() {
         None | Some("status") => status(),
         Some("scan") => scan(),
-        Some("inspect") => inspect(env::args_os().nth(2).map(PathBuf::from)),
-        Some("containers") => containers(env::args_os().nth(2).map(PathBuf::from)),
-        Some("databases") => databases(env::args_os().nth(2).map(PathBuf::from)),
+        Some("inspect") => inspect(folder_argument()),
+        Some("containers") => containers(folder_argument()),
+        Some("databases") => databases(folder_argument()),
         Some("--help" | "-h" | "help") => {
             help();
             ExitCode::SUCCESS
@@ -20,6 +20,18 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn folder_argument() -> Option<PathBuf> {
+    env::args_os()
+        .nth(2)
+        .map(|path| absolute_folder(PathBuf::from(path)))
+}
+
+/// Resolves `.` and other relative folders so they can be compared with the absolute
+/// folders that Docker and Podman record for Compose containers.
+fn absolute_folder(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
 }
 
 fn status() -> ExitCode {
@@ -247,5 +259,26 @@ fn containers(path: Option<PathBuf>) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_folders_match_the_absolute_folders_engines_record() {
+        let current = env::current_dir().unwrap();
+        let resolved = absolute_folder(PathBuf::from("."));
+        assert!(resolved.is_absolute());
+        assert!(localcodepilot_core::containers::path_is_within(
+            &current, &resolved
+        ));
+        assert!(localcodepilot_core::containers::path_is_within(
+            &current.join("docker"),
+            &resolved
+        ));
+        let missing = PathBuf::from("pasta-que-nao-existe");
+        assert_eq!(absolute_folder(missing.clone()), missing);
     }
 }
