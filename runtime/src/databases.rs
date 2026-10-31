@@ -54,6 +54,9 @@ pub struct DatabaseRequirement {
     pub engine: DatabaseEngine,
     pub host: Option<String>,
     pub port: Option<u16>,
+    /// Compose service of the same project that `host` names, such as `db`. The database
+    /// then lives on the Compose network and cannot be probed from the host.
+    pub compose_service: Option<String>,
 }
 
 /// The destination state for a detected database. This does not imply that
@@ -63,6 +66,7 @@ pub enum DatabaseRoute {
     LocalServerReachable(DatabaseEngine),
     LocalServerUnavailable(DatabaseEngine),
     RemoteServer(DatabaseEngine),
+    ComposeService(DatabaseEngine),
     FileDatabase,
     NeedsConfiguration(DatabaseEngine),
 }
@@ -74,6 +78,9 @@ pub fn route_database(requirement: &DatabaseRequirement) -> DatabaseRoute {
     let Some(host) = requirement.host.as_deref() else {
         return DatabaseRoute::NeedsConfiguration(requirement.engine);
     };
+    if requirement.compose_service.is_some() {
+        return DatabaseRoute::ComposeService(requirement.engine);
+    }
     if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
         return DatabaseRoute::RemoteServer(requirement.engine);
     }
@@ -246,7 +253,38 @@ pub fn detect_database_requirements(project_root: &Path) -> Vec<DatabaseRequirem
             }
         }
     }
+    mark_compose_services(project_root, &mut found);
     found
+}
+
+/// Links hosts such as `db` to a service declared in one of the project's Compose files.
+/// The Compose scan only runs when some host is not a loopback address.
+fn mark_compose_services(project_root: &Path, requirements: &mut [DatabaseRequirement]) {
+    let named_host = |requirement: &DatabaseRequirement| {
+        requirement
+            .host
+            .as_deref()
+            .filter(|host| !matches!(*host, "localhost" | "127.0.0.1" | "::1"))
+            .map(str::to_owned)
+    };
+    if !requirements
+        .iter()
+        .any(|requirement| named_host(requirement).is_some())
+    {
+        return;
+    }
+    let services = crate::containers::detect_container_projects(project_root)
+        .into_iter()
+        .flat_map(|project| project.services)
+        .map(|service| service.name)
+        .collect::<Vec<_>>();
+    for requirement in requirements {
+        if let Some(host) = named_host(requirement)
+            && services.contains(&host)
+        {
+            requirement.compose_service = Some(host);
+        }
+    }
 }
 
 /// Reads only literal WordPress DB_HOST values. PHP expressions are left unresolved.
@@ -285,6 +323,7 @@ fn parse_wordpress_config(path: &Path, contents: &str) -> Option<DatabaseRequire
         engine: DatabaseEngine::MySql,
         host: Some(host),
         port,
+        compose_service: None,
     })
 }
 
@@ -328,6 +367,7 @@ fn parse_dotenv(path: &Path, contents: &str) -> Option<DatabaseRequirement> {
         } else {
             engine.default_port()
         },
+        compose_service: None,
     })
 }
 
@@ -415,6 +455,55 @@ mod tests {
     }
 
     #[test]
+    fn compose_service_hosts_route_to_containers_instead_of_remote_servers() {
+        let root = std::env::temp_dir().join(format!(
+            "lcp-db-compose-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("docker")).unwrap();
+        fs::write(
+            root.join("wp-config.php"),
+            "<?php\ndefine( 'DB_HOST', 'db:3306' );",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".env"),
+            "DB_CONNECTION=pgsql\nDB_HOST=analytics.example\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("docker").join("compose.yaml"),
+            "services:\n  db:\n    image: mariadb:11\n  web:\n    image: wordpress:6\n",
+        )
+        .unwrap();
+
+        let found = detect_database_requirements(&root);
+        let wordpress = found
+            .iter()
+            .find(|db| db.engine == DatabaseEngine::MySql)
+            .unwrap();
+        assert_eq!(wordpress.compose_service.as_deref(), Some("db"));
+        assert_eq!(
+            route_database(wordpress),
+            DatabaseRoute::ComposeService(DatabaseEngine::MySql)
+        );
+        let remote = found
+            .iter()
+            .find(|db| db.engine == DatabaseEngine::PostgreSql)
+            .unwrap();
+        assert_eq!(remote.compose_service, None);
+        assert_eq!(
+            route_database(remote),
+            DatabaseRoute::RemoteServer(DatabaseEngine::PostgreSql)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn routes_each_engine_without_treating_remote_or_file_as_local_server() {
         for engine in [
             DatabaseEngine::PostgreSql,
@@ -427,6 +516,7 @@ mod tests {
                 engine,
                 host: Some("127.0.0.1".into()),
                 port: None,
+                compose_service: None,
             };
             assert_eq!(
                 route_database(&requirement),
@@ -448,6 +538,7 @@ mod tests {
             engine: DatabaseEngine::Sqlite,
             host: None,
             port: None,
+            compose_service: None,
         };
         assert_eq!(route_database(&sqlite), DatabaseRoute::FileDatabase);
     }

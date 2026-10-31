@@ -16,6 +16,7 @@ use localcodepilot_core::{
         InstallationPlan, InstallationStep, InstallationStepKind, RequirementStatus,
         RuntimeRequirement,
     },
+    paths::display_path,
     ports::{LocalServerUrl, Port, extract_local_urls, strip_terminal_sequences},
     processes::{ProcessState, ProjectProcess},
     projects::Project,
@@ -1645,7 +1646,7 @@ impl LocalCodePilot {
                 for root in &self.scan_roots {
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(root.to_string_lossy())
+                            RichText::new(display_path(root))
                                 .color(theme::MUTED)
                                 .monospace()
                                 .size(10.0),
@@ -1726,7 +1727,7 @@ impl LocalCodePilot {
             self.notify(format!(
                 "Não foi possível iniciar {}: a pasta '{}' não existe mais",
                 process.name,
-                process.working_directory.display()
+                display_path(&process.working_directory)
             ));
             return;
         }
@@ -1880,9 +1881,10 @@ impl LocalCodePilot {
         if self.projects.iter().any(|project| {
             project.path == project_path
                 && project.technologies.contains(&TechnologyKind::WordPress)
-                && localcodepilot_runtime::containers::COMPOSE_FILES
-                    .iter()
-                    .any(|file| project_path.join(file).is_file())
+                && localcodepilot_runtime::containers::wordpress_uses_compose(
+                    project_path,
+                    project_path,
+                )
         }) {
             self.focused_project = Some(project_path.to_path_buf());
             self.page = Page::Containers;
@@ -2560,7 +2562,7 @@ impl LocalCodePilot {
                     );
                 });
                 ui.label(
-                    RichText::new(process.working_directory.to_string_lossy())
+                    RichText::new(display_path(&process.working_directory))
                         .color(Color32::from_rgb(112, 124, 145))
                         .monospace()
                         .size(10.0),
@@ -2676,7 +2678,7 @@ impl LocalCodePilot {
                     .show(ui, |ui| {
                         ui.label(RichText::new(&plan.title).strong().size(16.0));
                         ui.label(
-                            RichText::new(plan.project_path.to_string_lossy())
+                            RichText::new(display_path(&plan.project_path))
                                 .color(theme::MUTED)
                                 .monospace()
                                 .size(10.0),
@@ -2820,7 +2822,7 @@ impl LocalCodePilot {
                     }
                 });
                 ui.label(
-                    RichText::new(project_path.to_string_lossy())
+                    RichText::new(display_path(&project_path))
                         .color(Color32::from_rgb(112, 124, 145))
                         .monospace()
                         .size(10.0),
@@ -2964,7 +2966,7 @@ impl LocalCodePilot {
             .show(root_ui, |ui| {
                 ui.heading(&project_name);
                 ui.label(
-                    RichText::new(project_path.to_string_lossy())
+                    RichText::new(display_path(&project_path))
                         .color(theme::MUTED)
                         .monospace()
                         .size(10.0),
@@ -3675,6 +3677,7 @@ impl LocalCodePilot {
                             (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
                             (_, _) if matching_container == Some(true) => "container do banco ativo; login não verificado",
                             (_, _) if matching_container == Some(false) => "container do banco parado",
+                            (_, _) if database.compose_service.is_some() => "serviço do Compose; inicie os containers",
                             (_, Some(true)) => "TCP acessível; login não verificado",
                             (_, Some(false)) => "servidor local indisponível",
                             (_, None) => "conexão não testada",
@@ -6921,7 +6924,7 @@ fn project_card(
                         ui.set_max_width(420.0);
                         ui.label(RichText::new("Local do projeto").strong().size(11.0));
                         ui.label(
-                            RichText::new(project.path.to_string_lossy())
+                            RichText::new(display_path(&project.path))
                                 .color(theme::MUTED)
                                 .monospace()
                                 .size(10.0),

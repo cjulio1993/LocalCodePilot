@@ -1,4 +1,4 @@
-use localcodepilot_core::{discovery::DiscoveryService, projects::Project};
+use localcodepilot_core::{discovery::DiscoveryService, paths::display_path, projects::Project};
 use localcodepilot_platform::{NativePlatform, Platform, filesystem::FilesystemProjectSource};
 use localcodepilot_runtime::ManifestRuntimeDetector;
 use std::{env, path::PathBuf, process::ExitCode};
@@ -41,14 +41,14 @@ fn inspect(path: Option<PathBuf>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     if !path.is_dir() {
-        eprintln!("A pasta não existe: {}", path.display());
+        eprintln!("A pasta não existe: {}", display_path(&path));
         return ExitCode::FAILURE;
     }
     let runtimes = localcodepilot_runtime::detect(&path);
     let technologies = localcodepilot_runtime::detect_technologies(&path);
     let project = Project::new(path, runtimes).with_technologies(technologies);
     println!("{} — {}", project.name, project.display_stack());
-    println!("{}", project.path.display());
+    println!("{}", display_path(&project.path));
     ExitCode::SUCCESS
 }
 
@@ -64,7 +64,7 @@ fn scan() -> ExitCode {
                     "{} — {}\n  {}",
                     project.name,
                     project.display_stack(),
-                    project.path.display()
+                    display_path(&project.path)
                 );
             }
             println!("\n{} projeto(s) encontrado(s)", catalog.projects().len());
@@ -90,12 +90,17 @@ fn databases(path: Option<PathBuf>) -> ExitCode {
     };
     let requirements = localcodepilot_runtime::databases::detect_database_requirements(&path);
     if requirements.is_empty() {
-        println!("Nenhuma configuração DB_CONNECTION ativa encontrada em .env ou .env.local.");
+        println!("Nenhuma configuração de banco encontrada em .env, .env.local ou wp-config.php.");
         return ExitCode::SUCCESS;
     }
     let mut unavailable = false;
+    let mut runtime_containers = None;
     for database in requirements {
-        println!("{}: {}", database.source.display(), database.engine.label());
+        println!(
+            "{}: {}",
+            display_path(&database.source),
+            database.engine.label()
+        );
         if let (Some(host), Some(port)) = (&database.host, database.port) {
             println!("  Destino: {host}:{port}");
         }
@@ -110,6 +115,35 @@ fn databases(path: Option<PathBuf>) -> ExitCode {
                     engine.label()
                 );
                 unavailable = true;
+            }
+            DatabaseRoute::ComposeService(_) => {
+                let service = database.compose_service.as_deref().unwrap_or_default();
+                println!(
+                    "  Serviço Compose `{service}`: o banco roda na rede dos containers e não é testado a partir do host"
+                );
+                let containers = runtime_containers.get_or_insert_with(|| {
+                    localcodepilot_platform::containers::list_runtime_containers(None)
+                });
+                match containers.iter().find(|container| {
+                    container.belongs_to(&path) && container.answers_to_host(service)
+                }) {
+                    Some(container) if container.state.eq_ignore_ascii_case("running") => {
+                        println!("  Container {}: em execução", container.name)
+                    }
+                    Some(container) => {
+                        println!(
+                            "  Container {}: {}; inicie os serviços em Containers",
+                            container.name, container.state
+                        );
+                        unavailable = true;
+                    }
+                    None => {
+                        println!(
+                            "  Nenhum container criado; inicie os serviços em Containers ou com `compose up`"
+                        );
+                        unavailable = true;
+                    }
+                }
             }
             DatabaseRoute::RemoteServer(_) => {
                 println!(
@@ -173,12 +207,12 @@ fn containers(path: Option<PathBuf>) -> ExitCode {
     }
     let mut invalid = false;
     for project in &projects {
-        println!("\n{}", project.directory.display());
+        println!("\n{}", display_path(&project.directory));
         if let Some(file) = &project.dockerfile {
-            println!("Dockerfile: {}", file.display());
+            println!("Dockerfile: {}", display_path(file));
         }
         if let Some(file) = &project.compose_file {
-            println!("Compose: {}", file.display());
+            println!("Compose: {}", display_path(file));
         }
         if let Some(error) = &project.error {
             eprintln!("Erro: {error}");
