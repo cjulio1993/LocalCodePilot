@@ -6,6 +6,17 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Alterado
+
+- Visão geral e Projetos atualizam o estado dos containers a cada 30 segundos, consultando apenas a lista de containers, para manter cartões e diagnóstico de banco atualizados.
+- URLs candidatas de containers reconhecem mais portas de servidores de desenvolvimento, como 3001, 4000, 4200, 5000 e 8025, e não repetem a mesma URL publicada em IPv4 e IPv6.
+
+### Corrigido
+
+- Containers aparecem no projeto correto no Windows mesmo quando o Compose registrou a pasta com letra de unidade ou nomes em outra caixa, outro separador, prefixo `\\?\` ou caminho WSL `/mnt/<unidade>`.
+- O banco em container é associado ao projeto quando o Compose está em uma subpasta e quando o `DB_HOST` usa o nome do container em vez do serviço.
+- Containers Podman mostram nome, portas e URLs; antes os campos em lista retornados pelo Podman eram ignorados.
+
 ## [0.4.0-alpha.7] - 2026-10-22
 
 ### Adicionado

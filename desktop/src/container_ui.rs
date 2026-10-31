@@ -14,10 +14,43 @@ struct ContainerSession {
     outcome: Option<ContainerExecutionOutcome>,
 }
 
+/// `projects` and `engines` are `None` after a runtime-only refresh, which keeps the
+/// previous Compose scan and engine diagnosis.
 struct ContainerSnapshot {
-    projects: Vec<ContainerProject>,
-    engines: Vec<EngineDiagnosis>,
+    projects: Option<Vec<ContainerProject>>,
+    engines: Option<Vec<EngineDiagnosis>>,
     containers: Vec<RuntimeContainer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContainerRefresh {
+    /// Compose scan of every catalogued project, engine diagnosis and container list.
+    Full,
+    /// Only `ps`, cheap enough to keep project cards current.
+    RuntimeOnly,
+}
+
+/// Pages that show container state and how often they refresh it.
+fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)> {
+    match page {
+        Page::Processes | Page::Containers => {
+            Some((Duration::from_secs(15), ContainerRefresh::Full))
+        }
+        Page::Overview | Page::Projects => {
+            Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
+        }
+        Page::Plugins | Page::Help | Page::Settings => None,
+    }
+}
+
+/// Podman leaves `Status` empty, so it is only shown when the engine provides it.
+fn container_summary(container: &RuntimeContainer) -> String {
+    let mut summary = format!("{} · {}", container.engine, container.state);
+    if !container.status.is_empty() {
+        summary.push_str(" · ");
+        summary.push_str(&container.status);
+    }
+    summary
 }
 
 pub(super) struct ContainerState {
@@ -55,11 +88,7 @@ impl LocalCodePilot {
             .runtime_containers
             .iter()
             .filter(|container| {
-                container.state.eq_ignore_ascii_case("running")
-                    && container
-                        .project_directory
-                        .as_ref()
-                        .is_some_and(|directory| directory.starts_with(project))
+                container.state.eq_ignore_ascii_case("running") && container.belongs_to(project)
             });
         let mut found = false;
         let mut url = None;
@@ -72,14 +101,11 @@ impl LocalCodePilot {
         (found, url)
     }
 
-    pub(super) fn database_container_running(&self, project: &Path, service: &str) -> Option<bool> {
+    pub(super) fn database_container_running(&self, project: &Path, host: &str) -> Option<bool> {
         self.container_state
             .runtime_containers
             .iter()
-            .find(|container| {
-                container.project_directory.as_deref() == Some(project)
-                    && container.service.as_deref() == Some(service)
-            })
+            .find(|container| container.belongs_to(project) && container.answers_to_host(host))
             .map(|container| container.state.eq_ignore_ascii_case("running"))
     }
     pub(super) fn container_refresh_pending(&self) -> bool {
@@ -112,12 +138,9 @@ impl LocalCodePilot {
                 .runtime_containers
                 .iter()
                 .any(|container| {
-                    self.focused_project.as_ref().is_none_or(|path| {
-                        container
-                            .project_directory
-                            .as_ref()
-                            .is_some_and(|directory| directory.starts_with(path))
-                    })
+                    self.focused_project
+                        .as_ref()
+                        .is_none_or(|path| container.belongs_to(path))
                 })
         {
             ui.label(
@@ -136,12 +159,9 @@ impl LocalCodePilot {
             .runtime_containers
             .iter()
             .filter(|container| {
-                self.focused_project.as_ref().is_none_or(|path| {
-                    container
-                        .project_directory
-                        .as_ref()
-                        .is_some_and(|directory| directory.starts_with(path))
-                })
+                self.focused_project
+                    .as_ref()
+                    .is_none_or(|path| container.belongs_to(path))
             })
         {
             Frame::new()
@@ -152,10 +172,7 @@ impl LocalCodePilot {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new(&container.name).strong());
-                    ui.label(format!(
-                        "{} · {} · {}",
-                        container.engine, container.state, container.status
-                    ));
+                    ui.label(container_summary(container));
                     ui.label(format!("Imagem: {}", container.image));
                     if let Some(service) = &container.service {
                         ui.label(format!("Serviço: {service}"));
@@ -211,6 +228,10 @@ impl LocalCodePilot {
     }
 
     pub(super) fn refresh_containers(&mut self, ctx: egui::Context) {
+        self.start_container_refresh(ctx, ContainerRefresh::Full);
+    }
+
+    fn start_container_refresh(&mut self, ctx: egui::Context, scope: ContainerRefresh) {
         self.container_state.last_refresh = Some(std::time::Instant::now());
         let directories = self
             .projects
@@ -222,16 +243,23 @@ impl LocalCodePilot {
         self.container_state.pending = Some(receiver);
         self.container_state.error = None;
         std::thread::spawn(move || {
-            let mut seen = HashSet::new();
-            let projects = directories
-                .iter()
-                .flat_map(|directory| {
-                    localcodepilot_runtime::containers::detect_container_projects(directory)
-                })
-                .filter(|project| seen.insert(project.directory.clone()))
-                .collect();
-            let engines =
-                localcodepilot_platform::containers::inspect_container_engines(path.as_deref());
+            let (projects, engines) = match scope {
+                ContainerRefresh::Full => {
+                    let mut seen = HashSet::new();
+                    let projects = directories
+                        .iter()
+                        .flat_map(|directory| {
+                            localcodepilot_runtime::containers::detect_container_projects(directory)
+                        })
+                        .filter(|project| seen.insert(project.directory.clone()))
+                        .collect();
+                    let engines = localcodepilot_platform::containers::inspect_container_engines(
+                        path.as_deref(),
+                    );
+                    (Some(projects), Some(engines))
+                }
+                ContainerRefresh::RuntimeOnly => (None, None),
+            };
             let containers =
                 localcodepilot_platform::containers::list_runtime_containers(path.as_deref());
             let _ = sender.send(ContainerSnapshot {
@@ -244,15 +272,15 @@ impl LocalCodePilot {
     }
 
     pub(super) fn poll_containers(&mut self, ctx: &egui::Context) {
-        if matches!(self.page, Page::Processes | Page::Containers) {
-            ctx.request_repaint_after(Duration::from_secs(15));
+        if let Some((interval, scope)) = container_refresh_schedule(self.page) {
+            ctx.request_repaint_after(interval);
             if self.container_state.pending.is_none()
                 && self
                     .container_state
                     .last_refresh
-                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(15))
+                    .is_none_or(|last| last.elapsed() >= interval)
             {
-                self.refresh_containers(ctx.clone());
+                self.start_container_refresh(ctx.clone(), scope);
             }
         }
         if let Some(receiver) = &self.container_state.pending {
@@ -275,14 +303,18 @@ impl LocalCodePilot {
                                 .map(|new| new.name.clone())
                         })
                         .collect::<Vec<_>>();
-                    if let Some(engine) = engines.iter().find(|engine| {
-                        engine.state == EngineState::Ready && engine.compose_available
-                    }) {
-                        self.container_state.selected_engine = engine.engine;
+                    if let Some(engines) = engines {
+                        if let Some(engine) = engines.iter().find(|engine| {
+                            engine.state == EngineState::Ready && engine.compose_available
+                        }) {
+                            self.container_state.selected_engine = engine.engine;
+                        }
+                        self.container_state.engines = engines;
                     }
-                    self.container_state.projects = projects;
+                    if let Some(projects) = projects {
+                        self.container_state.projects = projects;
+                    }
                     self.container_state.runtime_containers = containers;
-                    self.container_state.engines = engines;
                     self.container_state.pending = None;
                     if !self
                         .container_state
@@ -783,5 +815,52 @@ impl LocalCodePilot {
             self.start_container_execution(command);
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_cards_keep_container_state_current_with_a_light_refresh() {
+        for page in [Page::Overview, Page::Projects] {
+            assert_eq!(
+                container_refresh_schedule(page),
+                Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
+            );
+        }
+        for page in [Page::Processes, Page::Containers] {
+            assert_eq!(
+                container_refresh_schedule(page),
+                Some((Duration::from_secs(15), ContainerRefresh::Full))
+            );
+        }
+        for page in [Page::Plugins, Page::Help, Page::Settings] {
+            assert_eq!(container_refresh_schedule(page), None);
+        }
+    }
+
+    #[test]
+    fn container_summary_omits_an_empty_engine_status() {
+        let mut container = RuntimeContainer {
+            engine: ContainerEngine::Podman,
+            id: "abcdef123456".into(),
+            name: "blog-db-1".into(),
+            image: "mariadb".into(),
+            state: "running".into(),
+            status: String::new(),
+            ports: String::new(),
+            service: None,
+            project_directory: None,
+            running_for: None,
+        };
+        assert_eq!(container_summary(&container), "Podman · running");
+        container.engine = ContainerEngine::Docker;
+        container.status = "Up 2 minutes".into();
+        assert_eq!(
+            container_summary(&container),
+            "Docker · running · Up 2 minutes"
+        );
     }
 }

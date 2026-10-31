@@ -82,8 +82,15 @@ fn parse_container_rows(engine: ContainerEngine, output: &str) -> Vec<RuntimeCon
         .filter_map(|row| {
             let field = |name| row.get(name).and_then(serde_json::Value::as_str);
             let id = field("ID").or_else(|| field("Id"))?.to_owned();
+            // Docker prints `Names` as text; Podman returns an array.
             let name = field("Names")
                 .or_else(|| field("Name"))
+                .or_else(|| {
+                    row.get("Names")?
+                        .as_array()?
+                        .iter()
+                        .find_map(serde_json::Value::as_str)
+                })
                 .unwrap_or(&id)
                 .to_owned();
             let label = |name: &str| {
@@ -104,7 +111,15 @@ fn parse_container_rows(engine: ContainerEngine, output: &str) -> Vec<RuntimeCon
                 image: field("Image").unwrap_or_default().to_owned(),
                 state: field("State").unwrap_or_default().to_owned(),
                 status: field("Status").unwrap_or_default().to_owned(),
-                ports: field("Ports").unwrap_or_default().to_owned(),
+                ports: field("Ports").map_or_else(
+                    || {
+                        row.get("Ports")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|ports| podman_ports(ports))
+                            .unwrap_or_default()
+                    },
+                    str::to_owned,
+                ),
                 service: label("com.docker.compose.service")
                     .or_else(|| label("io.podman.compose.service")),
                 project_directory: label("com.docker.compose.project.working_dir")
@@ -114,6 +129,49 @@ fn parse_container_rows(engine: ContainerEngine, output: &str) -> Vec<RuntimeCon
             })
         })
         .collect()
+}
+
+/// Rewrites Podman's port objects in the `docker ps` text form the rest of the app reads,
+/// e.g. `0.0.0.0:8080->80/tcp`. Podman 4+ uses snake_case keys; Podman 3 used camelCase.
+fn podman_ports(ports: &[serde_json::Value]) -> String {
+    const MAX_RANGE: u64 = 100;
+    let mut mappings = Vec::new();
+    for port in ports {
+        let number = |keys: [&str; 2]| keys.iter().find_map(|key| port.get(key)?.as_u64());
+        let text = |keys: [&str; 2]| keys.iter().find_map(|key| port.get(key)?.as_str());
+        let (Some(host_port), Some(container_port)) = (
+            number(["host_port", "hostPort"]).filter(|port| *port > 0),
+            number(["container_port", "containerPort"]),
+        ) else {
+            continue;
+        };
+        let host = match text(["host_ip", "hostIP"]).unwrap_or_default() {
+            "" => "0.0.0.0".to_owned(),
+            ip if ip.contains(':') => format!("[{ip}]"),
+            ip => ip.to_owned(),
+        };
+        let range = port
+            .get("range")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1)
+            .clamp(1, MAX_RANGE);
+        let protocols = port
+            .get("protocol")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("tcp");
+        for protocol in protocols.split(',').map(str::trim) {
+            for offset in 0..range {
+                let (Ok(published), Ok(target)) = (
+                    u16::try_from(host_port + offset),
+                    u16::try_from(container_port + offset),
+                ) else {
+                    break;
+                };
+                mappings.push(format!("{host}:{published}->{target}/{protocol}"));
+            }
+        }
+    }
+    mappings.join(", ")
 }
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
@@ -392,6 +450,81 @@ mod tests {
         let rows = parse_container_rows(ContainerEngine::Podman, podman);
         assert_eq!(rows[0].service.as_deref(), Some("db"));
         assert_eq!(rows[0].state, "exited");
+    }
+
+    #[test]
+    fn reads_podman_rows_with_name_and_port_arrays() {
+        // Shape of `podman ps --all --format "{{json .}}"` (Podman 4+, ListContainer).
+        let output = concat!(
+            r#"{"AutoRemove":false,"Command":["apache2-foreground"],"Created":1761900000,"Exited":false,"Id":"0f3c2b1a9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a","Image":"docker.io/library/wordpress:latest","Labels":{"com.docker.compose.project.working_dir":"C:\\Projetos\\Blog","com.docker.compose.service":"wordpress"},"Names":["blog-wordpress-1"],"Networks":["blog_default"],"Pod":"","Ports":[{"host_ip":"","container_port":80,"host_port":8080,"range":1,"protocol":"tcp"},{"host_ip":"127.0.0.1","container_port":8025,"host_port":8025,"range":2,"protocol":"tcp,udp"}],"State":"running","Status":"Up 3 minutes"}"#,
+            "\n",
+            r#"{"Id":"1a2b3c4d5e6f","Image":"docker.io/library/mariadb:11","Names":["blog-db-1"],"Ports":null,"State":"exited","Labels":{"com.docker.compose.service":"db"}}"#,
+            "\n",
+            r#"{"Id":"aabbccddeeff","Names":["legacy"],"Ports":[{"hostIP":"::","containerPort":3000,"hostPort":3000,"protocol":"tcp"},{"host_ip":"","container_port":80,"host_port":0,"protocol":"tcp"},{"host_ip":"","container_port":65535,"host_port":65535,"range":3,"protocol":"tcp"}],"State":"running"}"#,
+        );
+        let rows = parse_container_rows(ContainerEngine::Podman, output);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].name, "blog-wordpress-1");
+        assert_eq!(
+            rows[0].ports,
+            "0.0.0.0:8080->80/tcp, 127.0.0.1:8025->8025/tcp, 127.0.0.1:8026->8026/tcp, \
+             127.0.0.1:8025->8025/udp, 127.0.0.1:8026->8026/udp"
+        );
+        assert_eq!(
+            rows[0].browser_urls(),
+            ["http://localhost:8080", "http://127.0.0.1:8025"]
+        );
+        assert_eq!(rows[0].service.as_deref(), Some("wordpress"));
+        assert_eq!(rows[0].status, "Up 3 minutes");
+        assert_eq!(rows[1].name, "blog-db-1");
+        assert!(rows[1].ports.is_empty());
+        assert_eq!(
+            rows[2].ports,
+            "[::]:3000->3000/tcp, 0.0.0.0:65535->65535/tcp"
+        );
+        assert_eq!(rows[2].browser_urls(), ["http://localhost:3000"]);
+    }
+
+    /// Manual check against real engines. Start a Compose project with a web service
+    /// publishing port 80 and a `db` service on each engine, then run:
+    /// `LCP_QA_PROJECT=<project folder> cargo test -p localcodepilot-platform -- --ignored real_engines`
+    #[test]
+    #[ignore = "requires Docker and Podman running a Compose fixture"]
+    fn real_engines_list_fixture_containers_for_the_project() {
+        let project = std::path::PathBuf::from(
+            std::env::var_os("LCP_QA_PROJECT").expect("LCP_QA_PROJECT must name the fixture"),
+        );
+        let containers = list_runtime_containers(None);
+        for engine in [ContainerEngine::Docker, ContainerEngine::Podman] {
+            let rows = containers
+                .iter()
+                .filter(|container| container.engine == engine && container.belongs_to(&project))
+                .collect::<Vec<_>>();
+            for row in &rows {
+                eprintln!(
+                    "{engine} · {} · {} · {:?} · {:?}",
+                    row.name,
+                    row.state,
+                    row.ports,
+                    row.browser_urls()
+                );
+            }
+            let web = rows
+                .iter()
+                .find(|container| !container.browser_urls().is_empty())
+                .unwrap_or_else(|| panic!("{engine}: no web container with a URL"));
+            assert_eq!(web.browser_urls().len(), 1, "{engine}: duplicated URLs");
+            assert!(
+                !web.name.starts_with(&web.id),
+                "{engine}: name fell back to id"
+            );
+            assert!(
+                rows.iter().any(
+                    |container| container.answers_to_host("db") && container.state == "running"
+                ),
+                "{engine}: database container not associated"
+            );
+        }
     }
 
     #[test]
