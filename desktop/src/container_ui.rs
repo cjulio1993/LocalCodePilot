@@ -43,6 +43,16 @@ fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)
     }
 }
 
+/// Podman leaves `Status` empty, so it is only shown when the engine provides it.
+fn container_summary(container: &RuntimeContainer) -> String {
+    let mut summary = format!("{} · {}", container.engine, container.state);
+    if !container.status.is_empty() {
+        summary.push_str(" · ");
+        summary.push_str(&container.status);
+    }
+    summary
+}
+
 pub(super) struct ContainerState {
     projects: Vec<ContainerProject>,
     runtime_containers: Vec<RuntimeContainer>,
@@ -162,10 +172,7 @@ impl LocalCodePilot {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new(&container.name).strong());
-                    ui.label(format!(
-                        "{} · {} · {}",
-                        container.engine, container.state, container.status
-                    ));
+                    ui.label(container_summary(container));
                     ui.label(format!("Imagem: {}", container.image));
                     if let Some(service) = &container.service {
                         ui.label(format!("Serviço: {service}"));
@@ -832,5 +839,28 @@ mod tests {
         for page in [Page::Plugins, Page::Help, Page::Settings] {
             assert_eq!(container_refresh_schedule(page), None);
         }
+    }
+
+    #[test]
+    fn container_summary_omits_an_empty_engine_status() {
+        let mut container = RuntimeContainer {
+            engine: ContainerEngine::Podman,
+            id: "abcdef123456".into(),
+            name: "blog-db-1".into(),
+            image: "mariadb".into(),
+            state: "running".into(),
+            status: String::new(),
+            ports: String::new(),
+            service: None,
+            project_directory: None,
+            running_for: None,
+        };
+        assert_eq!(container_summary(&container), "Podman · running");
+        container.engine = ContainerEngine::Docker;
+        container.status = "Up 2 minutes".into();
+        assert_eq!(
+            container_summary(&container),
+            "Docker · running · Up 2 minutes"
+        );
     }
 }
