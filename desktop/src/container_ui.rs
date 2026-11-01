@@ -186,7 +186,7 @@ fn blocked_panel(ui: &mut egui::Ui, blocked: &BlockedAction) -> Option<BlockedPa
             if let Some(snippet) = &blocked.snippet {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(snippet).monospace());
-                    if ui.small_button("Copiar trecho").clicked() {
+                    if ui.small_button("Copiar configuração sugerida").clicked() {
                         ui.ctx().copy_text(snippet.clone());
                         action = Some(BlockedPanelAction::Copy(snippet.clone()));
                     }

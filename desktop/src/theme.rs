@@ -8,6 +8,8 @@ pub const PRIMARY: Color32 = Color32::from_rgb(79, 140, 255);
 pub const SUCCESS: Color32 = Color32::from_rgb(46, 204, 113);
 pub const TEXT: Color32 = Color32::from_rgb(245, 245, 245);
 pub const MUTED: Color32 = Color32::from_rgb(160, 167, 180);
+pub const WARNING: Color32 = Color32::from_rgb(255, 205, 75);
+pub const DANGER: Color32 = Color32::from_rgb(235, 87, 87);
 
 pub fn configure(ctx: &egui::Context) {
     let mut visuals = Visuals::dark();

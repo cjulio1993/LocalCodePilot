@@ -1,5 +1,9 @@
 #[path = "container_ui.rs"]
 mod container_ui;
+#[path = "help_ui.rs"]
+mod help_ui;
+#[path = "project_ui.rs"]
+mod project_ui;
 
 use crate::{
     config, theme,
@@ -181,6 +185,8 @@ struct ProjectEnvironment {
     missing_php_extensions: Vec<String>,
     laravel_constraint: Option<String>,
     databases: Vec<(DatabaseRequirement, Option<bool>)>,
+    /// Manifests that exist but cannot be read, such as an invalid `package.json`.
+    manifest_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -410,29 +416,15 @@ enum ProjectCardAction {
     OpenUrl(String),
     Start(PathBuf),
     Stop(PathBuf),
-    ViewRequirements(PathBuf),
     PrepareEnvironment(PathBuf),
     InstallDependencies(PathBuf),
     ViewDependencyLogs(PathBuf),
     PrepareLaravelMigration(PathBuf),
     ToggleFavorite(PathBuf),
     ToggleRecentVisibility(PathBuf),
-}
-
-struct ProjectCardView<'a> {
-    environment: &'a ProjectEnvironment,
-    active_processes: usize,
-    dependency_install: Option<DependencyInstallStatus>,
-    application_url: Option<&'a str>,
-    application_healthy: bool,
-    container_running: bool,
-    container_url: Option<&'a str>,
-    favorite: bool,
-    hidden_from_recent: bool,
-    is_recent_card: bool,
-    environment_pending: bool,
-    resolving_plan: bool,
-    width: f32,
+    ToggleDetails(PathBuf),
+    /// Opens Projects showing this project with its details expanded.
+    ShowInProjects(PathBuf, String),
 }
 
 enum DiscoveryEvent {
@@ -479,6 +471,7 @@ pub struct LocalCodePilot {
     update_install_progress: Option<(u64, Option<u64>)>,
     update_install_error: Option<String>,
     container_state: container_ui::ContainerState,
+    project_ui: project_ui::ProjectUiState,
 }
 
 impl LocalCodePilot {
@@ -567,6 +560,7 @@ impl LocalCodePilot {
             update_install_progress: None,
             update_install_error: None,
             container_state: container_ui::ContainerState::default(),
+            project_ui: project_ui::ProjectUiState::default(),
         }
     }
 
@@ -1155,9 +1149,13 @@ impl LocalCodePilot {
                         ui.label(RichText::new(BELL).color(theme::PRIMARY).size(16.0));
 
                         let search_hint = match self.page {
-                            Page::Overview | Page::Projects => Some("Buscar projeto..."),
+                            Page::Overview => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
-                            Page::Plugins | Page::Help | Page::Settings | Page::Containers => None,
+                            Page::Projects
+                            | Page::Plugins
+                            | Page::Help
+                            | Page::Settings
+                            | Page::Containers => None,
                         };
                         if let Some(search_hint) = search_hint {
                             ui.add_sized(
@@ -1293,302 +1291,7 @@ impl LocalCodePilot {
     }
 
     fn overview(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("BOM TE VER NOVAMENTE")
-                        .color(theme::PRIMARY)
-                        .strong()
-                        .size(11.0),
-                );
-                ui.label(RichText::new("Seus projetos").strong().size(32.0));
-                ui.label(
-                    RichText::new("Gerencie ambientes, processos e atalhos em um só lugar.")
-                        .color(theme::MUTED)
-                        .size(13.0),
-                );
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("{FOLDER_OPEN}  Ver projetos"))
-                                .color(Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(theme::PRIMARY)
-                        .corner_radius(8),
-                    )
-                    .clicked()
-                {
-                    self.page = Page::Projects;
-                }
-            });
-        });
-        ui.add_space(22.0);
-        let active_projects = self
-            .projects
-            .iter()
-            .filter(|project| !project_process_ids(&self.processes, &project.path, true).is_empty())
-            .count();
-        ui.columns(2, |columns| {
-            stat_card(
-                &mut columns[0],
-                FOLDER_OPEN,
-                "Projetos",
-                &self.projects.len().to_string(),
-                "disponíveis",
-                theme::PRIMARY,
-            );
-            stat_card(
-                &mut columns[1],
-                PLAY,
-                "Ambientes ativos",
-                &active_projects.to_string(),
-                "em execução",
-                theme::SUCCESS,
-            );
-        });
-        ui.add_space(26.0);
-        ui.label(RichText::new("Projetos recentes").strong().size(16.0));
-        ui.label(
-            RichText::new("Continue de onde parou")
-                .color(theme::MUTED)
-                .size(11.0),
-        );
-        ui.add_space(8.0);
-        self.project_grid(ui, Some(3));
-    }
-
-    fn project_grid(&mut self, ui: &mut egui::Ui, max_projects: Option<usize>) {
-        let recent = max_projects.is_some();
-        let query = self.search.trim().to_lowercase();
-        let mut projects: Vec<_> = self
-            .projects
-            .iter()
-            .filter(|p| {
-                query.is_empty()
-                    || p.name.to_lowercase().contains(&query)
-                    || p.path.to_string_lossy().to_lowercase().contains(&query)
-            })
-            .filter(|project| {
-                !recent
-                    || (self
-                        .workspace_state
-                        .project(&project.path)
-                        .is_some_and(|history| history.last_activity > 0)
-                        && !self
-                            .workspace_state
-                            .hidden_recent_projects
-                            .contains(&project.path)
-                        && !is_localcodepilot_qa_project(&project.path))
-            })
-            .cloned()
-            .collect();
-
-        projects.sort_by_key(|project| {
-            let last_activity = self
-                .workspace_state
-                .project(&project.path)
-                .map(|history| history.last_activity)
-                .unwrap_or_else(|| system_time_timestamp(project.modified_at));
-            if recent {
-                std::cmp::Reverse((false, last_activity))
-            } else {
-                std::cmp::Reverse((self.is_favorite(&project.path), last_activity))
-            }
-        });
-        if let Some(max_projects) = max_projects {
-            projects.truncate(max_projects);
-        }
-
-        if projects.is_empty() {
-            let (title, detail) = if self.discovery.is_some() {
-                (
-                    "Procurando projetos...",
-                    "Aguarde enquanto examinamos as pastas mais comuns da sua máquina.",
-                )
-            } else if !query.is_empty() {
-                (
-                    "Nenhum resultado para esta busca",
-                    "Tente buscar pelo nome do projeto ou por parte do caminho.",
-                )
-            } else if recent {
-                (
-                    "Nenhum projeto recente",
-                    "Abra um projeto pela lista para encontrá-lo aqui depois.",
-                )
-            } else {
-                (
-                    "Nenhum projeto encontrado",
-                    "A descoberta procura manifestos Rust, Node.js, PHP e Python.",
-                )
-            };
-            Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0_f32, theme::BORDER))
-                .corner_radius(12)
-                .inner_margin(Margin::same(24))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(title).strong().size(14.0));
-                    ui.label(RichText::new(detail).color(theme::MUTED).size(11.0));
-                });
-            return;
-        }
-
-        let available_width = ui.available_width();
-        let columns: usize = if available_width >= 900.0 {
-            3
-        } else if available_width >= 600.0 {
-            2
-        } else {
-            1
-        };
-        let gap = 14.0;
-        let card_outer_width =
-            ((available_width - gap * (columns - 1) as f32) / columns as f32).floor();
-        let card_width = (card_outer_width - 36.0).max(1.0);
-        for row in projects.chunks(columns) {
-            ui.horizontal_top(|row_ui| {
-                row_ui.spacing_mut().item_spacing.x = gap;
-                for project in row {
-                    row_ui.allocate_ui_with_layout(
-                        egui::vec2(card_outer_width, 0.0),
-                        Layout::top_down(Align::Min),
-                        |column_ui| {
-                            let environment = self
-                                .project_environments
-                                .get(&project.path)
-                                .cloned()
-                                .unwrap_or_default();
-                            let environment_pending = self.discovery.is_some()
-                                && !self.project_environments.contains_key(&project.path);
-                            let active_processes =
-                                project_process_ids(&self.processes, &project.path, true).len();
-                            let dependency_install = self
-                                .dependency_installs
-                                .get(&project.path)
-                                .map(|session| session.status.clone());
-                            let application_url = self
-                                .processes
-                                .iter()
-                                .filter(|process| process.project_path == project.path)
-                                .filter(|process| process.state == ProcessState::Running)
-                                .filter(|process| process_exposes_application_url(project, process))
-                                .filter_map(|process| {
-                                    let running = self.running_processes.get(&process.id)?;
-                                    if running.finished {
-                                        return None;
-                                    }
-                                    running
-                                        .urls
-                                        .last()
-                                        .map(|url| url.address().to_owned())
-                                        .or_else(|| {
-                                            self.assigned_ports.get(&process.id).map(|port| {
-                                                format!("http://localhost:{}", port.value())
-                                            })
-                                        })
-                                })
-                                .next();
-                            let application_healthy = self
-                                .processes
-                                .iter()
-                                .filter(|process| process.project_path == project.path)
-                                .filter_map(|process| self.running_processes.get(&process.id))
-                                .filter_map(|running| running.http_health.as_ref())
-                                .any(|health| {
-                                    matches!(health.status, HttpHealthStatus::Healthy { .. })
-                                });
-                            let (container_running, container_url) =
-                                self.project_container_status(&project.path);
-                            let favorite = self.is_favorite(&project.path);
-                            let resolving_plan = self
-                                .environment_plan_request
-                                .as_ref()
-                                .is_some_and(|(path, _)| path == &project.path);
-                            match project_card(
-                                column_ui,
-                                project,
-                                ProjectCardView {
-                                    environment: &environment,
-                                    active_processes,
-                                    dependency_install,
-                                    application_url: application_url.as_deref(),
-                                    application_healthy,
-                                    container_running,
-                                    container_url: container_url.as_deref(),
-                                    favorite,
-                                    hidden_from_recent: self
-                                        .workspace_state
-                                        .hidden_recent_projects
-                                        .contains(&project.path),
-                                    is_recent_card: recent,
-                                    environment_pending,
-                                    resolving_plan,
-                                    width: card_width,
-                                },
-                            ) {
-                                Some(ProjectCardAction::ViewDetails(path)) => {
-                                    self.focused_project = Some(path);
-                                    self.search.clear();
-                                    self.page = Page::Processes;
-                                }
-                                Some(ProjectCardAction::ViewContainers(path)) => {
-                                    self.touch_project(&path);
-                                    self.focused_project = Some(path);
-                                    self.page = Page::Containers;
-                                }
-                                Some(ProjectCardAction::Open(path)) => {
-                                    match open_in_vscode(&path) {
-                                        Ok(()) => {
-                                            self.touch_project(&path);
-                                            self.notify(format!(
-                                                "Abrindo {} no VS Code...",
-                                                project.name
-                                            ));
-                                        }
-                                        Err(error) => self.notify(error),
-                                    }
-                                }
-                                Some(ProjectCardAction::OpenUrl(url)) => {
-                                    column_ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
-                                    self.notify(format!("Abrindo {url}"));
-                                }
-                                Some(ProjectCardAction::Start(path)) => self.start_project(&path),
-                                Some(ProjectCardAction::Stop(path)) => self.stop_project(&path),
-                                Some(ProjectCardAction::ViewRequirements(path)) => {
-                                    self.focused_project = Some(path);
-                                    self.search.clear();
-                                    self.page = Page::Processes;
-                                }
-                                Some(ProjectCardAction::PrepareEnvironment(path)) => {
-                                    self.request_environment_plan(&path, column_ui.ctx().clone());
-                                }
-                                Some(ProjectCardAction::InstallDependencies(path)) => {
-                                    self.install_dependencies(&path, column_ui.ctx().clone());
-                                }
-                                Some(ProjectCardAction::ViewDependencyLogs(path)) => {
-                                    self.dependency_terminal = Some(path);
-                                }
-                                Some(ProjectCardAction::PrepareLaravelMigration(path)) => {
-                                    self.prepare_laravel_migration(&path);
-                                }
-                                Some(ProjectCardAction::ToggleFavorite(path)) => {
-                                    self.toggle_favorite(&path);
-                                }
-                                Some(ProjectCardAction::ToggleRecentVisibility(path)) => {
-                                    self.toggle_recent_visibility(&path);
-                                }
-                                None => {}
-                            }
-                        },
-                    );
-                }
-            });
-            ui.add_space(14.0);
-        }
+        self.overview_page(ui);
     }
 
     fn projects_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -1630,15 +1333,17 @@ impl LocalCodePilot {
                     ui.spinner();
                     ui.label(RichText::new("Procurando...").color(theme::MUTED));
                 }
+                if has_active_processes {
+                    ui.label(
+                        RichText::new(
+                            "Pare os projetos em execução para adicionar uma pasta ou atualizar a lista.",
+                        )
+                        .color(theme::WARNING)
+                        .size(12.0),
+                    );
+                }
             });
         });
-        if has_active_processes {
-            ui.label(
-                RichText::new("Pare os processos ativos para alterar ou atualizar os projetos.")
-                    .color(Color32::from_rgb(255, 205, 75))
-                    .size(10.0),
-            );
-        }
         let mut root_to_remove = None;
         ui.collapsing(
             format!("Pastas examinadas ({})", self.scan_roots.len()),
@@ -1679,8 +1384,8 @@ impl LocalCodePilot {
         if let Some(root) = root_to_remove {
             self.remove_scan_root(ctx, &root);
         }
-        ui.add_space(20.0);
-        self.project_grid(ui, None);
+        ui.add_space(16.0);
+        self.project_catalog(ui);
     }
 
     fn port_is_available(&self, port: Port) -> bool {
@@ -1889,7 +1594,7 @@ impl LocalCodePilot {
             self.focused_project = Some(project_path.to_path_buf());
             self.page = Page::Containers;
             self.notify(
-                "Este WordPress usa o banco definido no Compose. Inicie os serviços na página Containers.",
+                "Este projeto usa o banco definido no Compose. Inicie os serviços na página Containers.",
             );
             return;
         }
@@ -3689,7 +3394,7 @@ impl LocalCodePilot {
                     {
                         ui.colored_label(
                             Color32::from_rgb(255, 205, 75),
-                            "WordPress: configuração de banco ausente ou DB_HOST dinâmico; confira wp-config.php e o serviço MySQL/MariaDB.",
+                            "Configuração de banco ausente ou DB_HOST dinâmico; confira wp-config.php e o serviço MySQL/MariaDB.",
                         );
                     }
                     if has_dependency_logs
@@ -4111,199 +3816,6 @@ impl LocalCodePilot {
             }
             None => {}
         }
-    }
-
-    fn help_page(&self, ui: &mut egui::Ui) {
-        ui.heading("Como usar o LocalCodePilot");
-        ui.label(
-            RichText::new("Encontre o projeto, siga a próxima ação e acompanhe o resultado.")
-                .color(theme::MUTED),
-        );
-        ui.add_space(16.0);
-
-        Frame::new()
-            .fill(theme::PRIMARY.gamma_multiply(0.10))
-            .stroke(Stroke::new(1.0, theme::PRIMARY.gamma_multiply(0.45)))
-            .corner_radius(10)
-            .inner_margin(Margin::same(16))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new("Primeiro uso").strong().size(14.0));
-                ui.label(
-                    RichText::new(
-                        "O LocalCodePilot descobre projetos locais, identifica tecnologias e mostra uma próxima ação. Processos e Containers podem ser abertos diretamente no projeto selecionado.",
-                    )
-                    .color(theme::MUTED)
-                    .size(11.0),
-                );
-            });
-
-        ui.add_space(22.0);
-        ui.heading("Primeiros passos");
-        ui.add_space(10.0);
-
-        let step_card = |ui: &mut egui::Ui, number: u8, title: &str, description: &str| {
-            Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0, theme::BORDER))
-                .corner_radius(10)
-                .inner_margin(Margin::same(16))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        Frame::new()
-                            .fill(theme::PRIMARY.gamma_multiply(0.22))
-                            .corner_radius(8)
-                            .inner_margin(Margin::symmetric(11, 8))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(number.to_string())
-                                        .color(theme::PRIMARY)
-                                        .strong(),
-                                );
-                            });
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(title).strong().size(13.0));
-                            ui.label(RichText::new(description).color(theme::MUTED).size(11.0));
-                        });
-                    });
-                });
-            ui.add_space(8.0);
-        };
-
-        step_card(
-            ui,
-            1,
-            "Confira as pastas de projetos",
-            "Em Projetos, revise as pastas examinadas. Adicione uma pasta ou use Atualizar para refazer a busca; o campo superior filtra o catálogo.",
-        );
-        step_card(
-            ui,
-            2,
-            "Siga a ação do cartão",
-            "O cartão resume o estado e oferece Preparar, Instalar dependências, Iniciar ambiente ou Iniciar com Containers. Ver diagnóstico e logs abre o projeto em Processos.",
-        );
-        step_card(
-            ui,
-            3,
-            "Revise antes de executar",
-            "Confira comandos, origem de pacotes e pasta de execução antes de confirmar instalações ou ações do Compose. Docker e Podman precisam estar instalados e ativos.",
-        );
-        step_card(
-            ui,
-            4,
-            "Acompanhe o resultado",
-            "Use Abrir aplicação ou Abrir site quando houver URL. Em Processos, veja portas, resposta HTTP e logs; em Containers, veja serviços Compose e containers reais.",
-        );
-
-        Frame::new()
-            .fill(theme::SURFACE)
-            .stroke(Stroke::new(1.0, theme::BORDER))
-            .corner_radius(10)
-            .inner_margin(Margin::same(16))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new("Outros recursos").strong().size(14.0));
-                ui.label("Projetos: busca, favoritos, recentes, pastas de busca e abertura no VS Code.");
-                ui.label("Processos: iniciar, parar, reiniciar, acompanhar saúde HTTP e consultar logs.");
-                ui.label("Containers: Docker/Podman, Compose, portas publicadas, logs e controle de containers existentes.");
-                ui.label("Configurações: verificação de versões e atualização compatível do aplicativo.");
-            });
-
-        let status_card = |ui: &mut egui::Ui| {
-            Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0, theme::BORDER))
-                .corner_radius(10)
-                .inner_margin(Margin::same(16))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Entenda os estados").strong().size(14.0));
-                    ui.add_space(6.0);
-                    ui.colored_label(theme::SUCCESS, "● Aplicação respondendo — HTTP saudável");
-                    ui.colored_label(
-                        theme::PRIMARY,
-                        "● Serviços ativos — site ainda não verificado",
-                    );
-                    ui.colored_label(
-                        theme::MUTED,
-                        "● Pronto para iniciar — requisitos locais atendidos",
-                    );
-                    ui.colored_label(
-                        Color32::from_rgb(255, 176, 76),
-                        "● Atenção — confira requisitos, banco ou logs",
-                    );
-                });
-        };
-
-        let services_card = |ui: &mut egui::Ui| {
-            Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0, theme::BORDER))
-                .corner_radius(10)
-                .inner_margin(Margin::same(16))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Bancos e containers").strong().size(14.0));
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new("Bancos")
-                            .color(theme::PRIMARY)
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "O app detecta bancos em .env e DB_HOST literal do WordPress. Porta acessível não confirma credenciais nem existência do banco.",
-                        )
-                        .color(theme::MUTED)
-                        .size(11.0),
-                    );
-                    ui.label(
-                        RichText::new("Containers")
-                            .color(theme::PRIMARY)
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "WordPress com Compose precisa iniciar seus serviços na página Containers. Um host como db só funciona na rede Compose. Revise o comando antes de confirmar. Se Docker ou Podman não estiver pronto, o cartão do motor mostra os passos e comandos para você rodar no terminal. Dois projetos com o mesmo nome de ambiente Compose (por exemplo, dois docker/compose.yaml) ficam bloqueados para iniciar e parar até receberem nomes diferentes.",
-                        )
-                        .color(theme::MUTED)
-                        .size(11.0),
-                    );
-                });
-        };
-
-        ui.add_space(16.0);
-        if ui.available_width() >= 720.0 {
-            ui.columns(2, |columns| {
-                status_card(&mut columns[0]);
-                services_card(&mut columns[1]);
-            });
-        } else {
-            status_card(ui);
-            ui.add_space(8.0);
-            services_card(ui);
-        }
-
-        ui.add_space(18.0);
-        Frame::new()
-            .fill(theme::SURFACE)
-            .stroke(Stroke::new(1.0, theme::BORDER))
-            .corner_radius(10)
-            .inner_margin(Margin::same(16))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new("Se algo não abrir").strong().size(14.0));
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "Abra Ver diagnóstico e logs no cartão. Confira o erro, a porta, a resposta HTTP e os logs do processo ou container. Corrija a pendência e use Tentar novamente ou inicie os serviços em Containers.",
-                    )
-                    .color(theme::MUTED)
-                    .size(11.0),
-                );
-            });
-        ui.add_space(16.0);
     }
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {
@@ -6400,44 +5912,6 @@ fn process_state_display(state: ProcessState) -> (&'static str, Color32) {
     }
 }
 
-fn stat_card(
-    ui: &mut egui::Ui,
-    icon: &str,
-    label: &str,
-    value: &str,
-    detail: &str,
-    color: Color32,
-) {
-    Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0_f32, theme::BORDER))
-        .corner_radius(12)
-        .inner_margin(Margin::same(16))
-        .show(ui, |ui| {
-            ui.set_min_height(62.0);
-            ui.horizontal_wrapped(|ui| {
-                Frame::new()
-                    .fill(color.gamma_multiply(0.12))
-                    .corner_radius(9)
-                    .inner_margin(Margin::same(10))
-                    .show(ui, |ui| {
-                        ui.label(RichText::new(icon).color(color).size(18.0));
-                    });
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(label).color(theme::MUTED).size(11.0));
-                    ui.label(RichText::new(value).strong().size(19.0));
-                });
-                ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
-                    ui.label(
-                        RichText::new(detail)
-                            .color(Color32::from_rgb(105, 114, 130))
-                            .size(9.0),
-                    );
-                });
-            });
-        });
-}
-
 fn inspect_project_environment(
     project: &Project,
     processes: &[ProjectProcess],
@@ -6735,7 +6209,21 @@ fn inspect_project_environment_with_inventory(
         missing_php_extensions,
         laravel_constraint,
         databases,
+        manifest_errors: manifest_errors(&project.path),
     }
+}
+
+/// JSON manifests in the project folder that exist but are not valid JSON. Without this the
+/// project only shows that nothing can be started, with no reason.
+fn manifest_errors(project_path: &Path) -> Vec<String> {
+    ["package.json", "composer.json"]
+        .into_iter()
+        .filter_map(|name| {
+            let contents = fs::read_to_string(project_path.join(name)).ok()?;
+            let error = serde_json::from_str::<serde_json::Value>(&contents).err()?;
+            Some(format!("{name} inválido (linha {})", error.line()))
+        })
+        .collect()
 }
 
 fn inspect_php_extensions(environment_path: Option<&OsStr>) -> HashSet<String> {
@@ -6871,330 +6359,6 @@ fn is_localcodepilot_qa_project(path: &Path) -> bool {
         || normalized.contains("/localcodepilot/tests/fixtures/")
 }
 
-fn project_card(
-    ui: &mut egui::Ui,
-    project: &Project,
-    view: ProjectCardView<'_>,
-) -> Option<ProjectCardAction> {
-    let ProjectCardView {
-        environment,
-        active_processes,
-        dependency_install,
-        application_url,
-        application_healthy,
-        container_running,
-        container_url,
-        favorite,
-        hidden_from_recent,
-        is_recent_card,
-        environment_pending,
-        resolving_plan,
-        width,
-    } = view;
-    let has_containers = project.technologies.contains(&TechnologyKind::Containers);
-    let container_only = has_containers && environment.command_count == 0;
-    let mut action = None;
-    let installing_dependencies = matches!(
-        &dependency_install,
-        Some(DependencyInstallStatus::Running | DependencyInstallStatus::Cancelling)
-    );
-    let dependency_install_failed = matches!(
-        &dependency_install,
-        Some(DependencyInstallStatus::Failed { .. })
-    );
-    let has_dependency_logs = dependency_install.is_some();
-    Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0_f32, theme::BORDER))
-        .corner_radius(12)
-        .inner_margin(Margin::same(18))
-        .show(ui, |ui| {
-            ui.set_width(width);
-            let card_top = ui.cursor().top();
-            let (card_height, actions_top) = if is_recent_card {
-                (220.0, 125.0)
-            } else {
-                (240.0, 145.0)
-            };
-            ui.set_min_height(card_height);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&project.name).strong().size(15.0))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_ui(|ui| {
-                        ui.set_max_width(420.0);
-                        ui.label(RichText::new("Local do projeto").strong().size(11.0));
-                        ui.label(
-                            RichText::new(display_path(&project.path))
-                                .color(theme::MUTED)
-                                .monospace()
-                                .size(10.0),
-                        );
-                    });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .button(RichText::new(STAR).color(if favorite {
-                            theme::PRIMARY
-                        } else {
-                            theme::MUTED
-                        }))
-                        .on_hover_text(if favorite {
-                            "Remover dos favoritos"
-                        } else {
-                            "Adicionar aos favoritos"
-                        })
-                        .clicked()
-                    {
-                        action = Some(ProjectCardAction::ToggleFavorite(project.path.clone()));
-                    }
-                });
-            });
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                if project.runtimes.is_empty() && project.technologies.is_empty() {
-                    runtime_badge(ui, "Projeto local", theme::MUTED);
-                } else {
-                    for technology in &project.technologies {
-                        runtime_badge(ui, &technology.to_string(), technology_color(*technology));
-                    }
-                    for runtime in project
-                        .runtimes
-                        .iter()
-                        .copied()
-                        .filter(|runtime| project.shows_runtime(*runtime))
-                    {
-                        runtime_badge(ui, &runtime.to_string(), runtime_color(runtime));
-                    }
-                }
-            });
-            ui.add_space(10.0);
-            let (status, status_color) = if environment_pending {
-                ("Atualizando diagnóstico", theme::PRIMARY)
-            } else if resolving_plan {
-                ("Preparando plano", theme::PRIMARY)
-            } else if installing_dependencies {
-                ("Preparando ambiente", theme::PRIMARY)
-            } else if dependency_install_failed {
-                ("Falha na instalação", Color32::from_rgb(235, 87, 87))
-            } else if active_processes > 0 {
-                if application_healthy {
-                    ("Aplicação respondendo", theme::SUCCESS)
-                } else {
-                    ("Serviços ativos · site não verificado", theme::PRIMARY)
-                }
-            } else if container_running {
-                ("Containers ativos · site não verificado", theme::PRIMARY)
-            } else if container_only {
-                ("Inicie os serviços com Containers", theme::PRIMARY)
-            } else if environment
-                .databases
-                .iter()
-                .any(|(_, available)| *available == Some(false))
-            {
-                ("Banco precisa de atenção", Color32::from_rgb(255, 205, 75))
-            } else if environment.is_ready() {
-                ("Pronto para iniciar", theme::MUTED)
-            } else {
-                environment.status()
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(CIRCLE).color(status_color).size(7.0));
-                ui.label(
-                    RichText::new(status)
-                        .color(status_color)
-                        .strong()
-                        .size(10.0),
-                );
-                if environment.command_count > 0 {
-                    ui.label(
-                        RichText::new(format!("· {} serviço(s)", environment.command_count))
-                            .color(theme::MUTED)
-                            .size(9.0),
-                    );
-                }
-            });
-            if !installing_dependencies && let Some(details) = environment.problem_details() {
-                ui.label(RichText::new(details).color(theme::MUTED).size(9.0));
-            }
-            ui.add_space((card_top + actions_top - ui.cursor().top()).max(10.0));
-            if let Some(url) = application_url
-                && active_processes > 0
-                && ui
-                    .add_sized(
-                        [ui.available_width(), 30.0],
-                        egui::Button::new(RichText::new(format!(
-                            "{ARROW_SQUARE_OUT}  Abrir aplicação"
-                        )))
-                        .fill(theme::SUCCESS.gamma_multiply(0.25)),
-                    )
-                    .clicked()
-            {
-                action = Some(ProjectCardAction::OpenUrl(url.to_owned()));
-            }
-            if let Some(url) = container_url
-                && active_processes == 0
-                && ui
-                    .add_sized(
-                        [ui.available_width(), 30.0],
-                        egui::Button::new(format!("{ARROW_SQUARE_OUT}  Abrir site"))
-                            .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                    )
-                    .clicked()
-            {
-                action = Some(ProjectCardAction::OpenUrl(url.to_owned()));
-            }
-            if active_processes > 0 {
-                if application_url.is_none()
-                    && ui
-                        .add_sized(
-                            [ui.available_width(), 30.0],
-                            egui::Button::new("Parar ambiente")
-                                .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.18)),
-                        )
-                        .clicked()
-                {
-                    action = Some(ProjectCardAction::Stop(project.path.clone()));
-                }
-            } else if resolving_plan {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Consultando versões disponíveis...");
-                });
-            } else if installing_dependencies {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Preparando ambiente...");
-                });
-            } else if container_running && container_url.is_some() {
-                // A URL publicada já é a ação principal deste projeto.
-            } else if container_only {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 30.0],
-                        egui::Button::new(if container_running {
-                            "Ver Containers"
-                        } else {
-                            "Iniciar com Containers"
-                        })
-                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                    )
-                    .clicked()
-                {
-                    action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
-                }
-            } else if environment.can_prepare_environment() {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 30.0],
-                        egui::Button::new("Preparar ambiente")
-                            .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                    )
-                    .clicked()
-                {
-                    action = Some(ProjectCardAction::PrepareEnvironment(project.path.clone()));
-                }
-            } else if environment.can_install_dependencies() {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 30.0],
-                        egui::Button::new(if dependency_install_failed {
-                            "Tentar novamente"
-                        } else {
-                            "Instalar dependências"
-                        })
-                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                    )
-                    .clicked()
-                {
-                    action = Some(ProjectCardAction::InstallDependencies(project.path.clone()));
-                }
-            } else if environment.is_ready() {
-                let start = ui.add_sized(
-                    [ui.available_width(), 30.0],
-                    egui::Button::new(format!("{PLAY}  Iniciar ambiente"))
-                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                );
-                if start.clicked() {
-                    action = Some(ProjectCardAction::Start(project.path.clone()));
-                }
-            } else if environment.command_count > 0 {
-                let requirements = ui.add_sized(
-                    [ui.available_width(), 30.0],
-                    egui::Button::new("Ver requisitos"),
-                );
-                if requirements.clicked() {
-                    action = Some(ProjectCardAction::ViewRequirements(project.path.clone()));
-                }
-            }
-            if active_processes > 0
-                && application_url.is_some()
-                && ui.link("Parar ambiente").clicked()
-            {
-                action = Some(ProjectCardAction::Stop(project.path.clone()));
-            }
-            if ui
-                .link(if container_only {
-                    "Ver serviços e logs"
-                } else {
-                    "Ver diagnóstico e logs"
-                })
-                .clicked()
-            {
-                action = Some(if container_only {
-                    ProjectCardAction::ViewContainers(project.path.clone())
-                } else {
-                    ProjectCardAction::ViewDetails(project.path.clone())
-                });
-            }
-            if has_dependency_logs
-                && ui
-                    .link(
-                        RichText::new(if dependency_install_failed {
-                            format!("{TERMINAL}  Ver erro e sugestões")
-                        } else {
-                            format!("{TERMINAL}  Ver logs da instalação")
-                        })
-                        .size(10.0),
-                    )
-                    .clicked()
-            {
-                action = Some(ProjectCardAction::ViewDependencyLogs(project.path.clone()));
-            }
-            ui.collapsing("Mais ações", |ui| {
-                if has_containers && !container_only && ui.link("Abrir containers").clicked() {
-                    action = Some(ProjectCardAction::ViewContainers(project.path.clone()));
-                }
-                if environment.legacy_laravel_constraint().is_some()
-                    && ui.link("Planejar atualização do Laravel").clicked()
-                {
-                    action = Some(ProjectCardAction::PrepareLaravelMigration(
-                        project.path.clone(),
-                    ));
-                }
-                if ui
-                    .link(format!("{CODE_SIMPLE}  Abrir no VS Code"))
-                    .clicked()
-                {
-                    action = Some(ProjectCardAction::Open(project.path.clone()));
-                }
-                if (is_recent_card || hidden_from_recent)
-                    && !is_localcodepilot_qa_project(&project.path)
-                    && ui
-                        .link(if hidden_from_recent {
-                            "Mostrar nos recentes"
-                        } else {
-                            "Ocultar dos recentes"
-                        })
-                        .clicked()
-                {
-                    action = Some(ProjectCardAction::ToggleRecentVisibility(
-                        project.path.clone(),
-                    ));
-                }
-            });
-        });
-    action
-}
-
 fn current_username() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
@@ -7268,7 +6432,7 @@ fn runtime_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
         .corner_radius(6)
         .inner_margin(Margin::symmetric(7, 3))
         .show(ui, |ui| {
-            ui.label(RichText::new(label).color(color).strong().size(9.0));
+            ui.label(RichText::new(label).color(color).strong().size(12.0));
         });
 }
 
