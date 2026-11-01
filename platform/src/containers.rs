@@ -1,7 +1,7 @@
 use crate::installations::{configure_background_command, find_executable};
 use localcodepilot_core::compose_safety::{
     BlockedAction, ComposeEnvironment, ComposeName, ComposeVolume, classify_environment,
-    guard_environment_action,
+    guard_environment_action, normalize_compose_name,
 };
 use localcodepilot_core::container_setup::{ContainerHostFacts, HostOs, PodmanMachine};
 use localcodepilot_core::containers::{
@@ -254,16 +254,35 @@ pub fn query_engine_containers(
     list_engine_containers(engine, path)
 }
 
-/// Volumes labelled by Compose on one engine.
+/// Volumes labelled by Compose on one engine, with their creation time. `volume ls` does not
+/// report the creation time on Docker, so the labelled volumes are inspected as well. A
+/// failure in either step fails the whole query, which callers treat as unverifiable.
 pub fn list_compose_volumes(
     engine: ContainerEngine,
     path: Option<&OsStr>,
 ) -> Result<Vec<ComposeVolume>, String> {
-    let output = read_command_output(
+    let names = read_command_output(
         engine.program(),
-        &["volume", "ls", "--format", "{{json .}}"],
+        &[
+            "volume",
+            "ls",
+            "--quiet",
+            "--filter",
+            "label=com.docker.compose.project",
+        ],
         path,
     )?;
+    let names = names
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["volume", "inspect", "--format", "{{json .}}"];
+    args.extend(names);
+    let output = read_command_output(engine.program(), &args, path)?;
     Ok(parse_compose_volumes(&output))
 }
 
@@ -287,7 +306,16 @@ fn parse_compose_volumes(output: &str) -> Vec<ComposeVolume> {
                             .map(str::to_owned)
                     })
                 })?;
-            Some(ComposeVolume { name, project })
+            let created_at = row
+                .get("CreatedAt")
+                .and_then(serde_json::Value::as_str)
+                .filter(|created_at| !created_at.is_empty())
+                .map(str::to_owned);
+            Some(ComposeVolume {
+                name,
+                project,
+                created_at,
+            })
         })
         .collect()
 }
@@ -316,14 +344,84 @@ pub fn resolve_compose_name(
     {
         return Ok(name);
     }
-    // podman-compose prints YAML only.
+    // podman-compose prints YAML only, and omits the project name unless `name:` is set.
     args.push("config");
     let output = read_command_output_in(engine.program(), &args, Some(&project.directory), path)?;
-    serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&output)
+    let config = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&output)
+        .map_err(|_| "O provedor Compose não informou o nome do ambiente".to_owned())?;
+    match config.get("name").and_then(serde_yaml_ng::Value::as_str) {
+        Some(name) if !name.is_empty() => Ok(name.to_owned()),
+        // The provider accepted these files and merged them without a `name:`, so its
+        // documented rule applies: COMPOSE_PROJECT_NAME, then the folder name.
+        _ => Ok(estimate_compose_name(project)),
+    }
+}
+
+/// Project name for the catalog: asked to the provider of the first engine whose CLI is
+/// installed, or a local estimate that only serves to *find* conflicts.
+pub fn compose_name(
+    engines: &[EngineDiagnosis],
+    project: &ContainerProject,
+    path: Option<&OsStr>,
+) -> ComposeName {
+    engines
+        .iter()
+        .filter(|engine| engine.state != EngineState::Missing)
+        .find_map(|engine| resolve_compose_name(engine.engine, project, path).ok())
+        .map_or_else(
+            || ComposeName::Estimated(estimate_compose_name(project)),
+            ComposeName::Resolved,
+        )
+}
+
+/// Local estimate of the Compose project name with Compose's precedence:
+/// `COMPOSE_PROJECT_NAME` (environment, then `.env` next to the manifest), `name:` (an
+/// override file wins over the main file, as in the merge), folder name.
+pub fn estimate_compose_name(project: &ContainerProject) -> String {
+    let from_dotenv = || {
+        std::fs::read_to_string(project.directory.join(".env"))
+            .ok()?
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "COMPOSE_PROJECT_NAME")
+                    .then(|| value.trim().trim_matches(['"', '\'']).to_owned())
+            })
+            .rfind(|value| !value.is_empty())
+    };
+    let from_manifests = || {
+        project
+            .compose_overrides
+            .iter()
+            .rev()
+            .chain(project.compose_file.iter())
+            .find_map(|file| {
+                let contents = std::fs::read_to_string(file).ok()?;
+                let contents = contents.trim_start_matches('\u{feff}');
+                serde_yaml_ng::from_str::<serde_yaml_ng::Value>(contents)
+                    .ok()?
+                    .get("name")?
+                    .as_str()
+                    .filter(|name| !name.is_empty() && !name.contains('$'))
+                    .map(str::to_owned)
+            })
+    };
+    let name = std::env::var("COMPOSE_PROJECT_NAME")
         .ok()
-        .and_then(|config| config.get("name")?.as_str().map(str::to_owned))
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| "O provedor Compose não informou o nome do ambiente".into())
+        .or_else(from_dotenv)
+        .or_else(from_manifests)
+        .unwrap_or_else(|| {
+            project
+                .directory
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        });
+    normalize_compose_name(&name)
 }
 
 /// Fresh check right before `up` or `stop`: resolves the name again and queries the engine,
@@ -456,13 +554,22 @@ fn execute_container_command_with_timeout(
     let worker_cancel = Arc::clone(&cancel);
     let (sender, events) = mpsc::channel();
     let worker = std::thread::spawn(move || {
-        if let Some(precheck) = precheck
-            && let Err(reason) = precheck()
-        {
-            let _ = sender.send(ContainerExecutionEvent::Finished(
-                ContainerExecutionOutcome::Failed(reason),
-            ));
-            return;
+        if let Some(precheck) = precheck {
+            let checked = precheck();
+            // The precheck can take several engine queries; a cancel or app close during it
+            // must keep the command from starting at all.
+            if worker_cancel.load(Ordering::Relaxed) {
+                let _ = sender.send(ContainerExecutionEvent::Finished(
+                    ContainerExecutionOutcome::Cancelled,
+                ));
+                return;
+            }
+            if let Err(reason) = checked {
+                let _ = sender.send(ContainerExecutionEvent::Finished(
+                    ContainerExecutionOutcome::Failed(reason),
+                ));
+                return;
+            }
         }
         let mut process = Command::new(executable);
         process
@@ -642,27 +749,84 @@ mod tests {
 
     #[test]
     fn reads_compose_volumes_from_docker_and_podman() {
-        // Real `volume ls --format "{{json .}}"` rows: Docker 29.9 then Podman 6.1.
+        // Real `volume inspect --format "{{json .}}"` rows (Docker 29.9 and Podman 6.1), plus
+        // a `volume ls` row in Docker's text-label form, which has no creation time.
         let output = concat!(
-            r#"{"Driver":"local","Labels":"com.docker.compose.config-hash=5a8d,com.docker.compose.project=docker,com.docker.compose.version=5.6.0,com.docker.compose.volume=dados","Name":"docker_dados","Scope":"local"}"#,
+            r#"{"CreatedAt":"2026-10-31T21:35:40Z","Driver":"local","Labels":{"com.docker.compose.config-hash":"5a8d","com.docker.compose.project":"docker","com.docker.compose.volume":"dados"},"Mountpoint":"/var/lib/docker/volumes/docker_dados/_data","Name":"docker_dados","Scope":"local"}"#,
             "\n",
             r#"{"Driver":"local","Labels":"com.docker.volume.anonymous=","Name":"2bd5a26c7e71","Scope":"local"}"#,
             "\n",
-            r#"{"Name":"lcpqa_dados","Driver":"local","Labels":{"com.docker.compose.project":"lcpqa","com.docker.compose.volume":"dados"},"Scope":"local"}"#,
+            r#"{"Name":"lcpqa_dados","Driver":"local","CreatedAt":"2026-10-31T17:54:36.129741651-03:00","Labels":{"com.docker.compose.project":"lcpqa","com.docker.compose.volume":"dados"},"Scope":"local"}"#,
+            "\n",
+            r#"{"Driver":"local","Labels":"com.docker.compose.project=antigo","Name":"antigo_dados","Scope":"local"}"#,
         );
+        let volumes = parse_compose_volumes(output);
         assert_eq!(
-            parse_compose_volumes(output),
+            volumes,
             [
                 ComposeVolume {
                     name: "docker_dados".into(),
-                    project: "docker".into()
+                    project: "docker".into(),
+                    created_at: Some("2026-10-31T21:35:40Z".into()),
                 },
                 ComposeVolume {
                     name: "lcpqa_dados".into(),
-                    project: "lcpqa".into()
+                    project: "lcpqa".into(),
+                    created_at: Some("2026-10-31T17:54:36.129741651-03:00".into()),
+                },
+                ComposeVolume {
+                    name: "antigo_dados".into(),
+                    project: "antigo".into(),
+                    created_at: None,
                 }
             ]
         );
+        assert_eq!(
+            volumes[0].identity().as_deref(),
+            Some("docker_dados@2026-10-31T21:35:40Z")
+        );
+        assert_eq!(volumes[2].identity(), None);
+    }
+
+    #[test]
+    fn estimates_the_compose_name_with_compose_precedence() {
+        if std::env::var_os("COMPOSE_PROJECT_NAME").is_some() {
+            return; // The variable would take precedence over every case below.
+        }
+        let root = std::env::temp_dir().join(format!(
+            "lcp-compose-name-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let directory = root.join("Minha Loja").join("Docker");
+        std::fs::create_dir_all(&directory).unwrap();
+        let manifest = directory.join("compose.yaml");
+        let override_file = directory.join("compose.override.yaml");
+        std::fs::write(&manifest, "services:\n  web:\n    image: nginx\n").unwrap();
+        let project = ContainerProject {
+            directory: directory.clone(),
+            dockerfile: None,
+            compose_file: Some(manifest.clone()),
+            compose_overrides: vec![override_file.clone()],
+            services: vec![],
+            warnings: vec![],
+            error: None,
+        };
+        assert_eq!(estimate_compose_name(&project), "docker");
+        // A BOM does not hide `name:`.
+        std::fs::write(&manifest, "\u{feff}name: Loja_Web\nservices: {}\n").unwrap();
+        assert_eq!(estimate_compose_name(&project), "loja_web");
+        // The override wins, as in Compose's merge.
+        std::fs::write(&override_file, "name: loja-override\n").unwrap();
+        assert_eq!(estimate_compose_name(&project), "loja-override");
+        // `.env` wins over the files, also with `export` and spaces.
+        std::fs::write(
+            directory.join(".env"),
+            "export COMPOSE_PROJECT_NAME = \"-Via-Env\"\n",
+        )
+        .unwrap();
+        assert_eq!(estimate_compose_name(&project), "via-env");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -876,12 +1040,17 @@ mod tests {
             Some(&volumes),
             &[],
         );
-        let ComposeSafety::UnconfirmedData {
-            volumes: pending, ..
-        } = unconfirmed
-        else {
+        let ComposeSafety::UnconfirmedData { volumes, .. } = unconfirmed else {
             panic!("expected unconfirmed data, got {unconfirmed:?}");
         };
+        let pending = volumes
+            .iter()
+            .map(|volume| {
+                volume
+                    .identity()
+                    .expect("the engine reports creation times")
+            })
+            .collect::<Vec<_>>();
         assert!(
             verify_compose_action(ContainerAction::Start, engine, &a, &catalog, &[], None).is_err()
         );
@@ -898,6 +1067,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancelling_during_the_precheck_never_starts_the_command() {
+        use localcodepilot_core::containers::ContainerAction;
+        use std::{fs, path::Path};
+
+        let directory = std::env::temp_dir().join(format!(
+            "localcodepilot-precheck-cancel-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/ping.exe"),
+            directory.join("docker.exe"),
+        )
+        .unwrap();
+        let command = ContainerCommand {
+            action: ContainerAction::Start,
+            label: "Iniciar ambiente",
+            program: "docker",
+            args: vec!["-n".into(), "30".into(), "127.0.0.1".into()],
+            working_directory: directory.clone(),
+        };
+        let (started_tx, started_rx) = mpsc::channel();
+        let execution = execute_container_command_with_timeout(
+            command,
+            Some(directory.as_os_str()),
+            Duration::from_secs(60),
+            // A slow but successful verification, cancelled while it runs.
+            Some(Box::new(move || {
+                let _ = started_tx.send(());
+                std::thread::sleep(Duration::from_millis(500));
+                Ok(())
+            })),
+        )
+        .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        execution.cancel();
+        let outcome = match execution
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+        {
+            ContainerExecutionEvent::Finished(outcome) => outcome,
+            ContainerExecutionEvent::Output(line) => panic!("command ran: {line}"),
+        };
+        assert_eq!(outcome, ContainerExecutionOutcome::Cancelled);
+        drop(execution);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(windows)]

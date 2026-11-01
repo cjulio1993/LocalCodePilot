@@ -4,7 +4,7 @@ use std::{
     path::{Component, Path, PathBuf, Prefix},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerEngine {
     Docker,
     Podman,
@@ -206,6 +206,11 @@ fn web_scheme(target: u16) -> Option<&'static str> {
 pub fn path_is_within(path: &Path, root: &Path) -> bool {
     let root = path_key(root);
     !root.is_empty() && path_key(path).starts_with(&root)
+}
+
+/// Same folder under the rules of [`path_is_within`].
+pub fn same_folder(left: &Path, right: &Path) -> bool {
+    path_is_within(left, right) && path_is_within(right, left)
 }
 
 fn path_key(path: &Path) -> Vec<String> {

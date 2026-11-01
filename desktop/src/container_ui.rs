@@ -6,11 +6,11 @@ use localcodepilot_core::compose_safety::{
 use localcodepilot_core::container_setup::{ContainerHostFacts, EngineGuidance, engine_guidance};
 use localcodepilot_core::containers::{
     ContainerAction, ContainerCommand, ContainerEngine, ContainerProject, EngineDiagnosis,
-    EngineState, RuntimeContainer,
+    EngineState, RuntimeContainer, same_folder,
 };
 use localcodepilot_platform::containers::{
-    ContainerExecution, ContainerExecutionEvent, ContainerExecutionOutcome, Precheck,
-    list_compose_volumes, query_engine_containers, resolve_compose_name, verify_compose_action,
+    ContainerExecution, ContainerExecutionEvent, ContainerExecutionOutcome, Precheck, compose_name,
+    list_compose_volumes, query_engine_containers, verify_compose_action,
 };
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -27,6 +27,8 @@ struct ContainerSnapshot {
     projects: Option<Vec<ContainerProject>>,
     engines: Option<(Vec<EngineDiagnosis>, ContainerHostFacts)>,
     runtime: Vec<EngineRuntime>,
+    /// Volumes are only listed on full refreshes; otherwise the previous lists are kept.
+    volumes_refreshed: bool,
     compose_names: Option<ComposeNames>,
     /// Registry PATH re-read while an engine was missing.
     refreshed_path: Option<OsString>,
@@ -48,17 +50,59 @@ type ComposeNames = HashMap<PathBuf, (u64, ComposeName)>;
 struct VolumeConfirmation {
     engine: ContainerEngine,
     directory: PathBuf,
-    volumes: Vec<String>,
+    volumes: Vec<ComposeVolume>,
 }
 
-fn query_engine_runtime(path: Option<&OsStr>) -> Vec<EngineRuntime> {
-    [ContainerEngine::Docker, ContainerEngine::Podman]
-        .into_iter()
-        .map(|engine| EngineRuntime {
-            engine,
-            containers: query_engine_containers(engine, path).ok(),
-            volumes: list_compose_volumes(engine, path).ok(),
+/// Queries both engines in parallel. Engines whose CLI is missing are skipped and reported
+/// as failed queries, which keeps the Compose protection closed for them. Volumes are only
+/// listed when `with_volumes` is set.
+fn query_engine_runtime(
+    path: Option<&OsStr>,
+    missing: &[ContainerEngine],
+    with_volumes: bool,
+) -> Vec<EngineRuntime> {
+    std::thread::scope(|scope| {
+        [ContainerEngine::Docker, ContainerEngine::Podman]
+            .map(|engine| {
+                let query = scope.spawn(move || {
+                    if missing.contains(&engine) {
+                        return (None, None);
+                    }
+                    (
+                        query_engine_containers(engine, path).ok(),
+                        with_volumes
+                            .then(|| list_compose_volumes(engine, path).ok())
+                            .flatten(),
+                    )
+                });
+                (engine, query)
+            })
+            .into_iter()
+            .map(|(engine, query)| {
+                let (containers, volumes) = query.join().unwrap_or((None, None));
+                EngineRuntime {
+                    engine,
+                    containers,
+                    volumes,
+                }
+            })
+            .collect()
+    })
+}
+
+/// Identities of the volumes the user confirmed for this engine and Compose folder.
+fn confirmed_identities(
+    confirmations: &[config::ComposeDataConfirmation],
+    engine: ContainerEngine,
+    directory: &Path,
+) -> Vec<String> {
+    confirmations
+        .iter()
+        .filter(|confirmation| {
+            confirmation.engine == engine.program()
+                && same_folder(&confirmation.directory, directory)
         })
+        .flat_map(|confirmation| confirmation.volumes.iter().cloned())
         .collect()
 }
 
@@ -100,28 +144,10 @@ fn resolve_compose_names(
                     *cached == fingerprint && matches!(name, ComposeName::Resolved(_))
                 })
                 .map(|(_, name)| name.clone());
-            let name = cached.unwrap_or_else(|| {
-                engines
-                    .iter()
-                    .filter(|engine| engine.state != EngineState::Missing)
-                    .find_map(|engine| resolve_compose_name(engine.engine, project, path).ok())
-                    .map_or_else(
-                        || {
-                            ComposeName::Estimated(
-                                localcodepilot_runtime::containers::estimate_compose_name(project),
-                            )
-                        },
-                        ComposeName::Resolved,
-                    )
-            });
+            let name = cached.unwrap_or_else(|| compose_name(engines, project, path));
             (project.directory.clone(), (fingerprint, name))
         })
         .collect()
-}
-
-fn same_folder(left: &Path, right: &Path) -> bool {
-    localcodepilot_core::containers::path_is_within(left, right)
-        && localcodepilot_core::containers::path_is_within(right, left)
 }
 
 fn engine_of(command: &ContainerCommand) -> ContainerEngine {
@@ -263,6 +289,10 @@ pub(super) struct ContainerState {
     host: Option<ContainerHostFacts>,
     engine_runtime: Vec<EngineRuntime>,
     compose_names: ComposeNames,
+    /// Built from `compose_names` and the engine state whenever either changes, so screens
+    /// read classifications instead of recomputing them on every frame.
+    compose_catalog: Vec<ComposeEnvironment>,
+    compose_safety: HashMap<(ContainerEngine, PathBuf), ComposeSafety>,
     volume_confirmation: Option<VolumeConfirmation>,
     pending: Option<Receiver<ContainerSnapshot>>,
     selected_engine: ContainerEngine,
@@ -281,6 +311,8 @@ impl Default for ContainerState {
             host: None,
             engine_runtime: vec![],
             compose_names: HashMap::new(),
+            compose_catalog: vec![],
+            compose_safety: HashMap::new(),
             volume_confirmation: None,
             pending: None,
             selected_engine: ContainerEngine::Docker,
@@ -292,27 +324,42 @@ impl Default for ContainerState {
 }
 
 impl LocalCodePilot {
-    fn compose_catalog(&self) -> Vec<ComposeEnvironment> {
-        self.container_state
+    fn confirmed_volumes(&self, engine: ContainerEngine, directory: &Path) -> Vec<String> {
+        confirmed_identities(
+            &self.workspace_state.compose_data_confirmations,
+            engine,
+            directory,
+        )
+    }
+
+    /// Classifies every catalogued environment on both engines. Runs when a snapshot arrives
+    /// or a confirmation changes, not on every frame.
+    fn recompute_compose_safety(&mut self) {
+        let catalog = self
+            .container_state
             .compose_names
             .iter()
             .map(|(directory, (_, name))| ComposeEnvironment {
                 directory: directory.clone(),
                 name: name.clone(),
             })
-            .collect()
-    }
-
-    fn confirmed_volumes(&self, engine: ContainerEngine, directory: &Path) -> Vec<String> {
-        self.workspace_state
-            .compose_data_confirmations
-            .iter()
-            .filter(|confirmation| {
-                confirmation.engine == engine.program()
-                    && same_folder(&confirmation.directory, directory)
-            })
-            .flat_map(|confirmation| confirmation.volumes.iter().cloned())
-            .collect()
+            .collect::<Vec<_>>();
+        let mut safety = HashMap::new();
+        for runtime in &self.container_state.engine_runtime {
+            for environment in &catalog {
+                let classified = classify_environment(
+                    environment,
+                    &catalog,
+                    runtime.engine,
+                    runtime.containers.as_deref(),
+                    runtime.volumes.as_deref(),
+                    &self.confirmed_volumes(runtime.engine, &environment.directory),
+                );
+                safety.insert((runtime.engine, environment.directory.clone()), classified);
+            }
+        }
+        self.container_state.compose_catalog = catalog;
+        self.container_state.compose_safety = safety;
     }
 
     fn compose_environment_safety(
@@ -320,33 +367,22 @@ impl LocalCodePilot {
         directory: &Path,
         engine: ContainerEngine,
     ) -> ComposeSafety {
-        let Some((_, name)) = self
-            .container_state
-            .compose_names
-            .iter()
-            .find(|(folder, _)| same_folder(folder, directory))
-            .map(|(_, entry)| entry)
-        else {
-            return ComposeSafety::Unverifiable {
+        self.container_state
+            .compose_safety
+            .get(&(engine, directory.to_path_buf()))
+            .or_else(|| {
+                self.container_state
+                    .compose_safety
+                    .iter()
+                    .find(|((cached, folder), _)| {
+                        *cached == engine && same_folder(folder, directory)
+                    })
+                    .map(|(_, safety)| safety)
+            })
+            .cloned()
+            .unwrap_or_else(|| ComposeSafety::Unverifiable {
                 reason: "A verificação deste ambiente ainda não terminou.".into(),
-            };
-        };
-        let runtime = self
-            .container_state
-            .engine_runtime
-            .iter()
-            .find(|runtime| runtime.engine == engine);
-        classify_environment(
-            &ComposeEnvironment {
-                directory: directory.to_path_buf(),
-                name: name.clone(),
-            },
-            &self.compose_catalog(),
-            engine,
-            runtime.and_then(|runtime| runtime.containers.as_deref()),
-            runtime.and_then(|runtime| runtime.volumes.as_deref()),
-            &self.confirmed_volumes(engine, directory),
-        )
+            })
     }
 
     fn container_action_guard(
@@ -354,21 +390,29 @@ impl LocalCodePilot {
         action: ContainerAction,
         container: &RuntimeContainer,
     ) -> Result<(), BlockedAction> {
+        if !matches!(
+            action,
+            ContainerAction::StartExisting
+                | ContainerAction::StopExisting
+                | ContainerAction::RestartExisting
+        ) {
+            return Ok(());
+        }
         let environment_safety = container
             .project_directory
             .as_deref()
             .filter(|folder| {
                 self.container_state
-                    .compose_names
-                    .keys()
-                    .any(|directory| same_folder(directory, folder))
+                    .compose_catalog
+                    .iter()
+                    .any(|environment| same_folder(&environment.directory, folder))
             })
             .map(|folder| self.compose_environment_safety(folder, container.engine));
         guard_container_action(
             action,
             container,
             &self.container_state.runtime_containers,
-            &self.compose_catalog(),
+            &self.container_state.compose_catalog,
             environment_safety.as_ref(),
         )
     }
@@ -378,7 +422,7 @@ impl LocalCodePilot {
     fn container_precheck(&self, command: &ContainerCommand) -> Option<Precheck> {
         let engine = engine_of(command);
         let path = self.environment_path.clone();
-        let catalog = self.compose_catalog();
+        let catalog = self.container_state.compose_catalog.clone();
         match command.action {
             ContainerAction::Start | ContainerAction::Stop => {
                 let action = command.action;
@@ -428,14 +472,8 @@ impl LocalCodePilot {
                     });
                     let safety = environment.map(|environment| {
                         let volumes = list_compose_volumes(engine, path.as_deref()).ok();
-                        let confirmed = confirmations
-                            .iter()
-                            .filter(|confirmation| {
-                                confirmation.engine == engine.program()
-                                    && same_folder(&confirmation.directory, &environment.directory)
-                            })
-                            .flat_map(|confirmation| confirmation.volumes.iter().cloned())
-                            .collect::<Vec<_>>();
+                        let confirmed =
+                            confirmed_identities(&confirmations, engine, &environment.directory);
                         classify_environment(
                             environment,
                             &catalog,
@@ -478,7 +516,7 @@ impl LocalCodePilot {
                     display_path(&request.directory)
                 ));
                 for volume in &request.volumes {
-                    ui.label(RichText::new(volume).monospace());
+                    ui.label(RichText::new(&volume.name).monospace());
                 }
                 ui.label(
                     RichText::new(
@@ -504,25 +542,32 @@ impl LocalCodePilot {
         }
         if confirm && let Some(request) = self.container_state.volume_confirmation.take() {
             let engine = request.engine.program().to_owned();
+            // Name and creation time: a volume recreated later under the same name is new data.
+            let identities = request
+                .volumes
+                .iter()
+                .filter_map(ComposeVolume::identity)
+                .collect::<Vec<_>>();
             let confirmations = &mut self.workspace_state.compose_data_confirmations;
             match confirmations.iter_mut().find(|confirmation| {
                 confirmation.engine == engine
                     && same_folder(&confirmation.directory, &request.directory)
             }) {
                 Some(existing) => {
-                    for volume in request.volumes {
-                        if !existing.volumes.contains(&volume) {
-                            existing.volumes.push(volume);
+                    for identity in identities {
+                        if !existing.volumes.contains(&identity) {
+                            existing.volumes.push(identity);
                         }
                     }
                 }
                 None => confirmations.push(config::ComposeDataConfirmation {
                     engine,
                     directory: request.directory,
-                    volumes: request.volumes,
+                    volumes: identities,
                 }),
             }
             self.workspace_dirty = true;
+            self.recompute_compose_safety();
             self.notify("Dados confirmados para este ambiente");
             self.refresh_containers(ctx.clone());
         }
@@ -703,6 +748,13 @@ impl LocalCodePilot {
         let path = self.environment_path.clone();
         let reread_path = rereads_registry_path(scope, &self.container_state.engines);
         let name_cache = self.container_state.compose_names.clone();
+        let known_missing = self
+            .container_state
+            .engines
+            .iter()
+            .filter(|engine| engine.state == EngineState::Missing)
+            .map(|engine| engine.engine)
+            .collect::<Vec<_>>();
         let (sender, receiver) = mpsc::channel();
         self.container_state.pending = Some(receiver);
         self.container_state.error = None;
@@ -711,6 +763,7 @@ impl LocalCodePilot {
                 .then(|| refreshed_environment_path().ok())
                 .flatten();
             let path = refreshed_path.clone().or(path);
+            let mut missing = known_missing;
             let (projects, engines, compose_names) = match scope {
                 ContainerRefresh::Full => {
                     let mut seen = HashSet::new();
@@ -729,15 +782,22 @@ impl LocalCodePilot {
                     );
                     let names =
                         resolve_compose_names(&projects, &name_cache, &engines, path.as_deref());
+                    missing = engines
+                        .iter()
+                        .filter(|engine| engine.state == EngineState::Missing)
+                        .map(|engine| engine.engine)
+                        .collect();
                     (Some(projects), Some((engines, host)), Some(names))
                 }
                 ContainerRefresh::RuntimeOnly => (None, None, None),
             };
-            let runtime = query_engine_runtime(path.as_deref());
+            let volumes_refreshed = scope == ContainerRefresh::Full;
+            let runtime = query_engine_runtime(path.as_deref(), &missing, volumes_refreshed);
             let _ = sender.send(ContainerSnapshot {
                 projects,
                 engines,
                 runtime,
+                volumes_refreshed,
                 compose_names,
                 refreshed_path,
             });
@@ -762,7 +822,8 @@ impl LocalCodePilot {
                 Ok(ContainerSnapshot {
                     projects,
                     engines,
-                    runtime,
+                    mut runtime,
+                    volumes_refreshed,
                     compose_names,
                     refreshed_path,
                 }) => {
@@ -770,10 +831,21 @@ impl LocalCodePilot {
                         .iter()
                         .flat_map(|engine| engine.containers.iter().flatten().cloned())
                         .collect::<Vec<_>>();
+                    if !volumes_refreshed {
+                        for current in &mut runtime {
+                            current.volumes = self
+                                .container_state
+                                .engine_runtime
+                                .iter()
+                                .find(|previous| previous.engine == current.engine)
+                                .and_then(|previous| previous.volumes.clone());
+                        }
+                    }
                     self.container_state.engine_runtime = runtime;
                     if let Some(compose_names) = compose_names {
                         self.container_state.compose_names = compose_names;
                     }
+                    self.recompute_compose_safety();
                     if refreshed_path.is_some() {
                         self.environment_path = refreshed_path;
                     }

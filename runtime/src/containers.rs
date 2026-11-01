@@ -40,59 +40,6 @@ pub fn wordpress_uses_compose(project_root: &Path, site: &Path) -> bool {
         })
 }
 
-/// Local estimate of the Compose project name, following Compose's precedence:
-/// `COMPOSE_PROJECT_NAME` (environment, then `.env` next to the manifest), top-level `name:`,
-/// folder name. Used only to *find* conflicts when the provider cannot answer; actions are
-/// never allowed on an estimate.
-pub fn estimate_compose_name(project: &ContainerProject) -> String {
-    let from_dotenv = || {
-        fs::read_to_string(project.directory.join(".env"))
-            .ok()?
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("COMPOSE_PROJECT_NAME="))
-            .map(|value| value.trim().trim_matches(['"', '\'']).to_owned())
-            .next_back()
-    };
-    let from_manifest = || {
-        let contents = fs::read_to_string(project.compose_file.as_ref()?).ok()?;
-        serde_yaml_ng::from_str::<Value>(&contents)
-            .ok()?
-            .get("name")?
-            .as_str()
-            .filter(|name| !name.contains('$'))
-            .map(str::to_owned)
-    };
-    let name = std::env::var("COMPOSE_PROJECT_NAME")
-        .ok()
-        .filter(|name| !name.is_empty())
-        .or_else(from_dotenv)
-        .or_else(from_manifest)
-        .unwrap_or_else(|| {
-            project
-                .directory
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        });
-    normalize_compose_name(&name)
-}
-
-/// Compose's project-name normalization: lowercase; only letters, digits, `-` and `_`; no
-/// leading `-` or `_`.
-fn normalize_compose_name(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .filter(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '-' | '_')
-        })
-        .collect::<String>()
-        .trim_start_matches(['-', '_'])
-        .to_owned()
-}
-
 pub fn detect_container_projects(root: &Path) -> Vec<ContainerProject> {
     let mut projects = Vec::new();
     let mut seen = HashSet::new();
@@ -277,45 +224,6 @@ fn port_label(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn estimates_the_compose_name_with_compose_precedence() {
-        if std::env::var_os("COMPOSE_PROJECT_NAME").is_some() {
-            return; // The variable would take precedence over every case below.
-        }
-        let root = std::env::temp_dir().join(format!(
-            "lcp-compose-name-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let directory = root.join("Minha Loja").join("Docker");
-        fs::create_dir_all(&directory).unwrap();
-        let manifest = directory.join("compose.yaml");
-        fs::write(&manifest, "services:\n  web:\n    image: nginx\n").unwrap();
-        let project = ContainerProject {
-            directory: directory.clone(),
-            dockerfile: None,
-            compose_file: Some(manifest.clone()),
-            compose_overrides: vec![],
-            services: vec![],
-            warnings: vec![],
-            error: None,
-        };
-        assert_eq!(estimate_compose_name(&project), "docker");
-        fs::write(
-            &manifest,
-            "name: Loja_Web\nservices:\n  web:\n    image: nginx\n",
-        )
-        .unwrap();
-        assert_eq!(estimate_compose_name(&project), "loja_web");
-        fs::write(
-            directory.join(".env"),
-            "COMPOSE_PROJECT_NAME=\"-Via-Env\"\n",
-        )
-        .unwrap();
-        assert_eq!(estimate_compose_name(&project), "via-env");
-        fs::remove_dir_all(root).unwrap();
-    }
 
     #[test]
     fn classifies_container_projects_and_retains_native_stack() {

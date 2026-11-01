@@ -6,7 +6,7 @@
 //! Compose provider resolves and the folder the containers were created from. Anything that
 //! cannot be confirmed blocks the actions that change the environment (fail-closed).
 
-use crate::containers::{ContainerAction, ContainerEngine, RuntimeContainer, path_is_within};
+use crate::containers::{ContainerAction, ContainerEngine, RuntimeContainer, same_folder};
 use std::path::{Path, PathBuf};
 
 /// Project name of a Compose environment in the catalog.
@@ -39,6 +39,34 @@ pub struct ComposeEnvironment {
 pub struct ComposeVolume {
     pub name: String,
     pub project: String,
+    /// Creation time reported by the engine. A volume removed and recreated under the same
+    /// name gets a new one, so a confirmation never carries over to someone else's data.
+    pub created_at: Option<String>,
+}
+
+impl ComposeVolume {
+    /// What a confirmation remembers: name and creation time. `None` when the engine did not
+    /// report the creation time, in which case the volume cannot be confirmed.
+    pub fn identity(&self) -> Option<String> {
+        self.created_at
+            .as_ref()
+            .map(|created_at| format!("{}@{created_at}", self.name))
+    }
+}
+
+/// Compose's project-name normalization: lowercase; only letters, digits, `-` and `_`; no
+/// leading `-` or `_`.
+pub fn normalize_compose_name(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .filter(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '-' | '_')
+        })
+        .collect::<String>()
+        .trim_start_matches(['-', '_'])
+        .to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +85,7 @@ pub enum ComposeSafety {
     /// Volumes with this name exist and no container shows where they came from.
     UnconfirmedData {
         name: String,
-        volumes: Vec<String>,
+        volumes: Vec<ComposeVolume>,
     },
     Unverifiable {
         reason: String,
@@ -65,8 +93,8 @@ pub enum ComposeSafety {
 }
 
 /// Classifies `environment` on `engine`. `containers` and `volumes` are that engine's
-/// query results; `None` means the query failed. `confirmed_volumes` lists volumes the
-/// user explicitly confirmed as belonging to this environment.
+/// query results; `None` means the query failed. `confirmed_volumes` lists the
+/// [`ComposeVolume::identity`] of volumes the user confirmed as belonging to this environment.
 pub fn classify_environment(
     environment: &ComposeEnvironment,
     catalog: &[ComposeEnvironment],
@@ -127,8 +155,13 @@ pub fn classify_environment(
     };
     let unconfirmed = volumes
         .iter()
-        .filter(|volume| volume.project == *name && !confirmed_volumes.contains(&volume.name))
-        .map(|volume| volume.name.clone())
+        .filter(|volume| {
+            volume.project == *name
+                && !volume
+                    .identity()
+                    .is_some_and(|identity| confirmed_volumes.contains(&identity))
+        })
+        .cloned()
         .collect::<Vec<_>>();
     if unconfirmed.is_empty() {
         ComposeSafety::Safe
@@ -247,7 +280,18 @@ pub fn guard_container_action(
 
 /// User-facing explanation for an unsafe environment.
 pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
-    let suggestion = suggested_project_name(directory);
+    let suggestion = match safety {
+        ComposeSafety::SharedName { name, other } => {
+            suggested_project_name(directory, Some(other), name)
+        }
+        ComposeSafety::UsedByAnotherFolder { name, folder } => {
+            suggested_project_name(directory, Some(folder), name)
+        }
+        ComposeSafety::UnconfirmedData { name, .. } => {
+            suggested_project_name(directory, None, name)
+        }
+        ComposeSafety::Safe | ComposeSafety::Unverifiable { .. } => String::new(),
+    };
     let rename_steps = |name: &str| {
         vec![
             "Adicione no topo do arquivo Compose deste projeto o trecho abaixo, com um nome que só ele use. O nome também vale quando você usa o terminal.".to_owned(),
@@ -284,19 +328,33 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
             snippet: Some(format!("name: {suggestion}")),
             can_confirm_volumes: false,
         },
-        ComposeSafety::UnconfirmedData { name, volumes } => BlockedAction {
-            title: "Dados de origem não confirmada".into(),
-            explanation: format!(
-                "Existem volumes do ambiente \"{name}\" ({}) e nenhum container mostra de qual pasta eles vieram. Iniciar aqui faria este projeto usar esses dados.",
-                volumes.join(", ")
-            ),
-            steps: vec![
-                "Se os dados são deste projeto (por exemplo, depois de um \"compose down\"), confirme abaixo.".into(),
-                "Se não forem, dê a este ambiente um nome que só ele use, com o trecho abaixo.".into(),
-            ],
-            snippet: Some(format!("name: {suggestion}")),
-            can_confirm_volumes: true,
-        },
+        ComposeSafety::UnconfirmedData { name, volumes } => {
+            let can_confirm = volumes.iter().all(|volume| volume.identity().is_some());
+            let mut steps = Vec::new();
+            if can_confirm {
+                steps.push("Se os dados são deste projeto (por exemplo, depois de um \"compose down\"), confirme abaixo.".to_owned());
+            } else {
+                steps.push("O motor não informou quando esses volumes foram criados, então não é possível confirmá-los com segurança.".to_owned());
+            }
+            steps.push(
+                "Se não forem deste projeto, dê a este ambiente um nome que só ele use, com o trecho abaixo."
+                    .to_owned(),
+            );
+            BlockedAction {
+                title: "Dados de origem não confirmada".into(),
+                explanation: format!(
+                    "Existem volumes do ambiente \"{name}\" ({}) e nenhum container mostra de qual pasta eles vieram. Iniciar aqui faria este projeto usar esses dados.",
+                    volumes
+                        .iter()
+                        .map(|volume| volume.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                steps,
+                snippet: Some(format!("name: {suggestion}")),
+                can_confirm_volumes: can_confirm,
+            }
+        }
         ComposeSafety::Unverifiable { reason } => BlockedAction {
             title: "Não foi possível confirmar o ambiente".into(),
             explanation: format!(
@@ -313,9 +371,11 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
 }
 
 /// Name to suggest for `name:`. Generic Compose folders (`docker/`, `infra/`) take the name of
-/// the project folder above them. Normalized like Compose: lowercase letters, digits, `-`
-/// and `_`.
-pub fn suggested_project_name(directory: &Path) -> String {
+/// the project folder above them. When `other` is the folder it collides with, the nearest
+/// folder above that tells them apart is added (`cliente1/wordpress` and
+/// `cliente2/wordpress` become `cliente1-wordpress`), so following the suggestion in both
+/// projects cannot recreate the collision. Never returns `taken`, the colliding name.
+pub fn suggested_project_name(directory: &Path, other: Option<&Path>, taken: &str) -> String {
     const GENERIC: &[&str] = &[
         "docker",
         ".docker",
@@ -326,37 +386,40 @@ pub fn suggested_project_name(directory: &Path) -> String {
         "ops",
         "containers",
     ];
-    let mut folders = directory
-        .components()
-        .rev()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
-            _ => None,
-        });
-    let folder = folders.next().unwrap_or_default();
-    let chosen = if GENERIC.contains(&folder.as_str()) {
-        folders.next().unwrap_or(folder)
-    } else {
-        folder
+    // Folder names from the leaf up, as Compose would normalize them.
+    let folders = |path: &Path| {
+        path.components()
+            .rev()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(name) => {
+                    Some(normalize_compose_name(&name.to_string_lossy()))
+                }
+                _ => None,
+            })
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>()
     };
-    let normalized = chosen
-        .chars()
-        .filter(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '-' | '_')
-        })
-        .skip_while(|character| !character.is_ascii_alphanumeric())
-        .collect::<String>();
-    if normalized.is_empty() {
-        "meu-projeto".into()
-    } else {
-        normalized
+    let mine = folders(directory);
+    let base = usize::from(
+        mine.first()
+            .is_some_and(|leaf| GENERIC.contains(&leaf.as_str())),
+    );
+    let mut suggestion = mine
+        .get(base)
+        .or(mine.first())
+        .cloned()
+        .unwrap_or_else(|| "meu-projeto".into());
+    if let Some(other) = other {
+        let theirs = folders(other);
+        let differs_at = (0..mine.len()).find(|&depth| mine.get(depth) != theirs.get(depth));
+        if let Some(depth) = differs_at.filter(|&depth| depth > base) {
+            suggestion = format!("{}-{suggestion}", mine[depth]);
+        }
     }
-}
-
-fn same_folder(left: &Path, right: &Path) -> bool {
-    path_is_within(left, right) && path_is_within(right, left)
+    if suggestion == normalize_compose_name(taken) {
+        suggestion.push_str("-projeto");
+    }
+    suggestion
 }
 
 #[cfg(test)]
@@ -390,11 +453,18 @@ mod tests {
         }
     }
 
+    const CREATED: &str = "2026-11-01T10:00:00Z";
+
     fn volume(name: &str, project: &str) -> ComposeVolume {
         ComposeVolume {
             name: name.into(),
             project: project.into(),
+            created_at: Some(CREATED.into()),
         }
+    }
+
+    fn confirmed(name: &str) -> String {
+        format!("{name}@{CREATED}")
     }
 
     fn resolved(name: &str) -> ComposeName {
@@ -536,7 +606,7 @@ mod tests {
             ),
             ComposeSafety::UnconfirmedData {
                 name: "docker".into(),
-                volumes: vec!["docker_dados".into()]
+                volumes: vec![volume("docker_dados", "docker")]
             }
         );
         assert_eq!(
@@ -546,10 +616,42 @@ mod tests {
                 ContainerEngine::Docker,
                 Some(&[]),
                 Some(&data),
-                &["docker_dados".into()]
+                &[confirmed("docker_dados")]
             ),
             ComposeSafety::Safe
         );
+        // A volume removed and recreated under the same name (by another folder) is new data:
+        // the earlier confirmation does not apply.
+        let recreated = [ComposeVolume {
+            created_at: Some("2026-12-24T08:00:00Z".into()),
+            ..volume("docker_dados", "docker")
+        }];
+        assert!(matches!(
+            classify_environment(
+                &blog,
+                std::slice::from_ref(&blog),
+                ContainerEngine::Docker,
+                Some(&[]),
+                Some(&recreated),
+                &[confirmed("docker_dados")]
+            ),
+            ComposeSafety::UnconfirmedData { .. }
+        ));
+        // Without a creation time the volume can never be confirmed, not even by name.
+        let unknown = [ComposeVolume {
+            created_at: None,
+            ..volume("docker_dados", "docker")
+        }];
+        let safety = classify_environment(
+            &blog,
+            std::slice::from_ref(&blog),
+            ContainerEngine::Docker,
+            Some(&[]),
+            Some(&unknown),
+            &["docker_dados".into()],
+        );
+        assert!(matches!(safety, ComposeSafety::UnconfirmedData { .. }));
+        assert!(!explain(&safety, &blog.directory).can_confirm_volumes);
         // A confirmation never overrides a shared name.
         let shop = environment("loja", resolved("docker"));
         assert!(matches!(
@@ -559,7 +661,7 @@ mod tests {
                 ContainerEngine::Docker,
                 Some(&[]),
                 Some(&data),
-                &["docker_dados".into()]
+                &[confirmed("docker_dados")]
             ),
             ComposeSafety::SharedName { .. }
         ));
@@ -707,17 +809,63 @@ mod tests {
 
     #[test]
     fn suggests_names_from_the_project_folder() {
+        let suggest = |path: &Path| suggested_project_name(path, None, "docker");
+        assert_eq!(suggest(&root().join("wp-blog").join("docker")), "wp-blog");
         assert_eq!(
-            suggested_project_name(&root().join("wp-blog").join("docker")),
-            "wp-blog"
-        );
-        assert_eq!(
-            suggested_project_name(&root().join("Minha Loja").join("infra")),
+            suggest(&root().join("Minha Loja").join("infra")),
             "minhaloja"
         );
-        assert_eq!(suggested_project_name(&root().join("Ação_2")), "ao_2");
-        assert_eq!(suggested_project_name(&root().join("api")), "api");
-        assert_eq!(suggested_project_name(Path::new("")), "meu-projeto");
+        assert_eq!(suggest(&root().join("Ação_2")), "ao_2");
+        assert_eq!(suggest(&root().join("api")), "api");
+        assert_eq!(suggest(Path::new("")), "meu-projeto");
+    }
+
+    #[test]
+    fn suggestions_never_repeat_the_colliding_name_or_each_other() {
+        // Same leaf folder in two clients: the plain folder name is the colliding name.
+        let first = root().join("cliente1").join("wordpress");
+        let second = root().join("cliente2").join("wordpress");
+        let first_suggestion = suggested_project_name(&first, Some(&second), "wordpress");
+        let second_suggestion = suggested_project_name(&second, Some(&first), "wordpress");
+        assert_eq!(first_suggestion, "cliente1-wordpress");
+        assert_eq!(second_suggestion, "cliente2-wordpress");
+
+        // Generic folders under projects with the same name.
+        let a = root().join("a").join("site").join("docker");
+        let b = root().join("b").join("site").join("docker");
+        assert_eq!(suggested_project_name(&a, Some(&b), "docker"), "a-site");
+        assert_eq!(suggested_project_name(&b, Some(&a), "docker"), "b-site");
+
+        // Different project folders keep the short name.
+        let blog = root().join("wp-blog").join("docker");
+        let shop = root().join("loja").join("docker");
+        assert_eq!(
+            suggested_project_name(&blog, Some(&shop), "docker"),
+            "wp-blog"
+        );
+
+        // Never the colliding name itself.
+        let alone = root().join("wordpress");
+        assert_eq!(
+            suggested_project_name(&alone, None, "wordpress"),
+            "wordpress-projeto"
+        );
+
+        // explain() uses the colliding folder.
+        let blocked = explain(
+            &ComposeSafety::SharedName {
+                name: "wordpress".into(),
+                other: second.clone(),
+            },
+            &first,
+        );
+        assert_eq!(blocked.snippet.as_deref(), Some("name: cliente1-wordpress"));
+    }
+
+    #[test]
+    fn normalizes_names_like_compose() {
+        assert_eq!(normalize_compose_name("-Minha Loja_2"), "minhaloja_2");
+        assert_eq!(normalize_compose_name("WP.Blog"), "wpblog");
     }
 
     #[test]
@@ -734,7 +882,7 @@ mod tests {
             },
             ComposeSafety::UnconfirmedData {
                 name: "docker".into(),
-                volumes: vec!["docker_dados".into()],
+                volumes: vec![volume("docker_dados", "docker")],
             },
             ComposeSafety::Unverifiable {
                 reason: "Motor indisponível.".into(),

@@ -34,31 +34,23 @@ fn compose_states(
     projects: &[localcodepilot_core::containers::ContainerProject],
     engines: &[localcodepilot_core::containers::EngineDiagnosis],
 ) -> Vec<ComposeState> {
-    use localcodepilot_core::compose_safety::{ComposeEnvironment, ComposeName};
+    use localcodepilot_core::compose_safety::ComposeEnvironment;
     use localcodepilot_platform::containers as platform;
+    // The naming rules are the same on both engines: resolve each project once.
+    let catalog = projects
+        .iter()
+        .filter(|project| project.compose_file.is_some())
+        .map(|project| ComposeEnvironment {
+            directory: project.directory.clone(),
+            name: platform::compose_name(engines, project, None),
+        })
+        .collect::<Vec<_>>();
     engines
         .iter()
         .filter(|diagnosis| diagnosis.state == localcodepilot_core::containers::EngineState::Ready)
         .map(|diagnosis| ComposeState {
             engine: diagnosis.engine,
-            catalog: projects
-                .iter()
-                .filter(|project| project.compose_file.is_some())
-                .map(|project| ComposeEnvironment {
-                    directory: project.directory.clone(),
-                    name: platform::resolve_compose_name(diagnosis.engine, project, None)
-                        .map_or_else(
-                            |_| {
-                                ComposeName::Estimated(
-                                    localcodepilot_runtime::containers::estimate_compose_name(
-                                        project,
-                                    ),
-                                )
-                            },
-                            ComposeName::Resolved,
-                        ),
-                })
-                .collect(),
+            catalog: catalog.clone(),
             containers: platform::query_engine_containers(diagnosis.engine, None).ok(),
             volumes: platform::list_compose_volumes(diagnosis.engine, None).ok(),
         })
@@ -103,6 +95,11 @@ fn print_compose_safety(
         }
         if let Some(snippet) = &blocked.snippet {
             println!("       {snippet}");
+        }
+        if matches!(safety, ComposeSafety::UnconfirmedData { .. }) {
+            println!(
+                "  Nota: a CLI não lê os dados confirmados no aplicativo desktop; o aplicativo pode já permitir iniciar este ambiente."
+            );
         }
     }
 }
