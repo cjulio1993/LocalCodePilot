@@ -472,6 +472,7 @@ pub struct LocalCodePilot {
     update_install_error: Option<String>,
     container_state: container_ui::ContainerState,
     project_ui: project_ui::ProjectUiState,
+    help: help_ui::HelpState,
 }
 
 impl LocalCodePilot {
@@ -561,6 +562,7 @@ impl LocalCodePilot {
             update_install_error: None,
             container_state: container_ui::ContainerState::default(),
             project_ui: project_ui::ProjectUiState::default(),
+            help: help_ui::HelpState::default(),
         }
     }
 
