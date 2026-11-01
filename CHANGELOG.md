@@ -23,6 +23,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Um `package.json` inválido mostra o que fazer: corrigir o arquivo para iniciar o projeto.
 - O aplicativo e a CLI apresentam sites WordPress como projetos PHP; a detecção continua decidindo como o site inicia e onde está o banco.
 - A Ajuda foi reescrita para quem está começando: primeiros passos, estados, o que fazer quando algo não funciona, sites e logs, containers e bancos, com os detalhes técnicos num bloco recolhido.
+- O menu lateral pode ser recolhido para mostrar só os ícones, com o nome de cada página na dica; a escolha fica salva. O menu rola quando não cabe na janela, e seus itens e os filtros de Projetos funcionam pelo teclado (Tab e Enter) e informam o nome e a página atual a leitores de tela.
+- Projetos ficou mais compacto: "Ver 1 pasta examinada" abre as pastas onde o aplicativo procura projetos, com "Adicionar pasta" e "Restaurar pastas padrão"; busca, filtros e a escolha entre cartões e lista ficam numa linha. Em janelas de 760×520, o nome, o estado e a ação principal do primeiro projeto aparecem sem rolar.
+- Saíram da interface itens que não faziam nada ou não eram verdadeiros: a página Plugins, o sino de notificações e o rodapé "Todos os serviços online", que não verificava nenhum serviço. Containers ganhou um ícone próprio.
+- Botões com ícone, a estrela de favoritos e os campos de busca passaram a ter nomes claros para leitores de tela.
 - A Ajuda ficou interativa: o campo **Qual é a sua dúvida?** mostra só os trechos que respondem, ignorando acentos e maiúsculas e destacando o termo; atalhos levam direto a "O site não abre", "Porta ocupada", "Docker ou Podman parado" e aos estados; as seções abrem e fecham, e um aviso leva à Visão geral quando há projetos com problema.
 - Visão geral e Projetos atualizam o estado dos containers a cada 30 segundos, consultando apenas a lista de containers, para manter cartões e diagnóstico de banco atualizados.
 - URLs candidatas de containers reconhecem mais portas de servidores de desenvolvimento, como 3001, 4000, 4200, 5000 e 8025, e não repetem a mesma URL publicada em IPv4 e IPv6.

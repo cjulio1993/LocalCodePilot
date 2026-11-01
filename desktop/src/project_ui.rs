@@ -130,6 +130,14 @@ pub(super) struct ProjectFacts<'a> {
     pub container_url: Option<&'a str>,
 }
 
+/// Name of a state filter for assistive technologies, with its count.
+fn filter_name(label: &str, count: usize) -> String {
+    match count {
+        1 => format!("{label}, 1 projeto"),
+        _ => format!("{label}, {count} projetos"),
+    }
+}
+
 pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     let environment = facts.environment;
     let summary = |state, reason: Option<String>, primary| ProjectSummary {
@@ -307,10 +315,13 @@ impl ProjectFilter {
     }
 }
 
-/// Transient view state: which project cards have their details open.
+/// Transient view state: which project cards have their details open, and whether the
+/// scanned folders are listed.
 #[derive(Default)]
 pub(super) struct ProjectUiState {
     expanded: HashSet<PathBuf>,
+    /// The list of scanned folders is open on Projects.
+    pub(super) show_roots: bool,
 }
 
 /// Projects with their summaries, in display order.
@@ -604,17 +615,17 @@ impl LocalCodePilot {
                     .size(13.0),
                 );
                 ui.add_space(10.0);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("{PLUS}  Adicionar pasta"))
-                                .color(Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(theme::PRIMARY)
-                        .min_size(egui::vec2(180.0, 34.0)),
-                    )
-                    .clicked()
+                let add = format!("{PLUS}  Adicionar pasta");
+                if announced(
+                    ui.add(
+                        egui::Button::new(RichText::new(&add).color(Color32::WHITE).strong())
+                            .fill(theme::PRIMARY)
+                            .min_size(egui::vec2(180.0, 34.0)),
+                    ),
+                    egui::Role::Button,
+                    &add,
+                )
+                .clicked()
                     && let Some(path) = rfd::FileDialog::new()
                         .set_title("Escolha uma pasta com projetos")
                         .pick_folder()
@@ -632,12 +643,12 @@ impl LocalCodePilot {
         let mut list = self.workspace_state.project_view == "list";
         let (old_filter, old_list) = (filter, list);
         ui.horizontal_wrapped(|ui| {
-            ui.add(
+            let search = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
                     .hint_text("Buscar por nome...")
-                    .desired_width(220.0),
+                    .desired_width(ui.available_width().min(200.0)),
             );
-            ui.add_space(8.0);
+            name_search_field(&search, "Buscar projetos por nome", &self.search);
             for (option, label) in [
                 (ProjectFilter::All, "Todos"),
                 (ProjectFilter::Running, "Rodando"),
@@ -648,20 +659,34 @@ impl LocalCodePilot {
                     .iter()
                     .filter(|(_, summary)| option.matches(summary.state))
                     .count();
-                ui.selectable_value(&mut filter, option, format!("{label} {count}"));
+                let response = ui.selectable_value(&mut filter, option, format!("{label} {count}"));
+                let name = filter_name(label, count);
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::Button, true, filter == option, &name)
+                });
             }
-            ui.add_space(8.0);
-            ui.selectable_value(&mut list, false, format!("{SQUARES_FOUR} Cartões"))
-                .on_hover_text("Ver como cartões");
-            ui.selectable_value(&mut list, true, format!("{LIST} Lista"))
-                .on_hover_text("Ver como lista compacta");
+            // The two view buttons wrap together.
+            if ui.available_size_before_wrap().x < 90.0 {
+                ui.end_row();
+            }
+            for (cards, icon, name) in [
+                (true, SQUARES_FOUR, "Ver como cartões"),
+                (false, LIST, "Ver como lista"),
+            ] {
+                let response = ui
+                    .selectable_value(&mut list, !cards, RichText::new(icon).size(15.0))
+                    .on_hover_text(name);
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::Button, true, list != cards, name)
+                });
+            }
         });
         if (filter, list) != (old_filter, old_list) {
             self.workspace_state.project_filter = filter.key().to_owned();
             self.workspace_state.project_view = if list { "list".into() } else { String::new() };
             self.workspace_dirty = true;
         }
-        ui.add_space(14.0);
+        ui.add_space(10.0);
 
         let visible = summaries
             .into_iter()
@@ -861,10 +886,29 @@ fn primary_button(ui: &mut egui::Ui, action: &PrimaryAction, width: f32) -> bool
         ui.spinner();
         return false;
     };
-    ui.add(
-        egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
-            .fill(theme::PRIMARY)
-            .min_size(egui::vec2(width, 32.0)),
+    announced(
+        ui.add(
+            egui::Button::new(RichText::new(&label).color(Color32::WHITE).strong())
+                .fill(theme::PRIMARY)
+                .min_size(egui::vec2(width, 32.0)),
+        ),
+        egui::Role::Button,
+        &label,
+    )
+    .clicked()
+}
+
+fn logs_button(ui: &mut egui::Ui) -> bool {
+    let label = format!("{TERMINAL}  Ver logs");
+    announced(ui.button(&label), egui::Role::Button, &label).clicked()
+}
+
+fn stop_button(ui: &mut egui::Ui, summary: &ProjectSummary) -> bool {
+    let label = stop_label(summary);
+    announced(
+        ui.button(RichText::new(&label).color(theme::DANGER)),
+        egui::Role::Button,
+        &label,
     )
     .clicked()
 }
@@ -921,15 +965,10 @@ fn project_row(
                     action = Some(primary_to_card_action(project, summary));
                 }
                 if summary.state == ProjectState::Running {
-                    if !matches!(summary.primary, PrimaryAction::ViewLogs)
-                        && ui.button(format!("{TERMINAL}  Ver logs")).clicked()
-                    {
+                    if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
                         action = Some(logs_action(project, summary));
                     }
-                    if ui
-                        .button(RichText::new(stop_label(summary)).color(theme::DANGER))
-                        .clicked()
-                    {
+                    if stop_button(ui, summary) {
                         action = Some(stop_action(project, summary));
                     }
                 }
@@ -974,19 +1013,27 @@ impl ProjectCard<'_> {
                     ui.label(RichText::new(&project.name).strong().size(16.0))
                         .on_hover_text(display_path(&project.path));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
+                        let name = if self.favorite {
+                            "Remover dos favoritos"
+                        } else {
+                            "Adicionar aos favoritos"
+                        };
+                        let star = ui
                             .button(RichText::new(STAR).color(if self.favorite {
                                 theme::PRIMARY
                             } else {
                                 theme::MUTED
                             }))
-                            .on_hover_text(if self.favorite {
-                                "Remover dos favoritos"
-                            } else {
-                                "Adicionar aos favoritos"
-                            })
-                            .clicked()
-                        {
+                            .on_hover_text(name);
+                        star.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::Role::Button,
+                                true,
+                                self.favorite,
+                                format!("{name}: {}", project.name),
+                            )
+                        });
+                        if star.clicked() {
                             action = Some(ProjectCardAction::ToggleFavorite(path()));
                         }
                     });
@@ -1031,15 +1078,10 @@ impl ProjectCard<'_> {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     if summary.state == ProjectState::Running {
-                        if !matches!(summary.primary, PrimaryAction::ViewLogs)
-                            && ui.button(format!("{TERMINAL}  Ver logs")).clicked()
-                        {
+                        if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
                             action = Some(logs_action(project, summary));
                         }
-                        if ui
-                            .button(RichText::new(stop_label(summary)).color(theme::DANGER))
-                            .clicked()
-                        {
+                        if stop_button(ui, summary) {
                             action = Some(stop_action(project, summary));
                         }
                     }
@@ -1109,10 +1151,8 @@ impl ProjectCard<'_> {
             }
         }
         ui.add_space(4.0);
-        if ui
-            .link(format!("{TERMINAL}  Ver logs e processos"))
-            .clicked()
-        {
+        let logs = format!("{TERMINAL}  Ver logs e processos");
+        if announced(ui.link(&logs), egui::Role::Link, &logs).clicked() {
             action = Some(logs_action(project, self.summary));
         }
         if project.technologies.contains(&TechnologyKind::Containers)
@@ -1130,10 +1170,8 @@ impl ProjectCard<'_> {
         {
             action = Some(ProjectCardAction::PrepareLaravelMigration(path()));
         }
-        if ui
-            .link(format!("{CODE_SIMPLE}  Abrir no VS Code"))
-            .clicked()
-        {
+        let vs_code = format!("{CODE_SIMPLE}  Abrir no VS Code");
+        if announced(ui.link(&vs_code), egui::Role::Link, &vs_code).clicked() {
             action = Some(ProjectCardAction::Open(path()));
         }
         if !is_localcodepilot_qa_project(&project.path)
@@ -1177,6 +1215,13 @@ mod tests {
             container_running: false,
             container_url: None,
         }
+    }
+
+    #[test]
+    fn filters_are_named_with_their_count() {
+        assert_eq!(filter_name("Rodando", 1), "Rodando, 1 projeto");
+        assert_eq!(filter_name("Parados", 3), "Parados, 3 projetos");
+        assert_eq!(filter_name("Com problema", 0), "Com problema, 0 projetos");
     }
 
     #[test]

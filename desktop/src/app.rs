@@ -11,8 +11,8 @@ use crate::{
 };
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
-    ARROW_SQUARE_OUT, BELL, BOOK_OPEN, CARET_RIGHT, CIRCLE, CODE_SIMPLE, FOLDER_OPEN, GEAR, LAYOUT,
-    PLAY, PLUS, STAR, TERMINAL,
+    ARROW_SQUARE_OUT, BOOK_OPEN, CARET_DOUBLE_LEFT, CARET_DOUBLE_RIGHT, CIRCLE, CODE_SIMPLE, CUBE,
+    FOLDER_OPEN, GEAR, LAYOUT, PLAY, PLUS, STAR, TERMINAL,
 };
 use localcodepilot_core::{
     discovery::DiscoveryService,
@@ -77,7 +77,6 @@ enum Page {
     Projects,
     Processes,
     Containers,
-    Plugins,
     Help,
     Settings,
 }
@@ -89,7 +88,6 @@ impl Page {
             Self::Projects => "projects",
             Self::Processes => "processes",
             Self::Containers => "containers",
-            Self::Plugins => "plugins",
             Self::Help => "help",
             Self::Settings => "settings",
         }
@@ -100,7 +98,6 @@ impl Page {
             "projects" => Self::Projects,
             "processes" => Self::Processes,
             "containers" => Self::Containers,
-            "plugins" => Self::Plugins,
             "help" => Self::Help,
             "settings" => Self::Settings,
             _ => Self::Overview,
@@ -980,8 +977,10 @@ impl LocalCodePilot {
     }
 
     fn sidebar(&mut self, root_ui: &mut egui::Ui) {
+        let collapsed = self.workspace_state.sidebar_collapsed;
         egui::Panel::left("sidebar")
-            .exact_size(248.0)
+            .resizable(false)
+            .exact_size(if collapsed { 68.0 } else { 248.0 })
             .frame(
                 Frame::new()
                     .fill(theme::SIDEBAR)
@@ -989,122 +988,118 @@ impl LocalCodePilot {
                     .stroke(Stroke::new(1.0_f32, theme::BORDER)),
             )
             .show(root_ui, |ui| {
-                ui.add_space(6.0);
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::Image::new(&self.logo_texture)
-                            .fit_to_exact_size(egui::vec2(42.0, 42.0))
-                            .alt_text("Logo do LocalCodePilot"),
-                    );
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("LocalCodePilot").strong().size(14.0));
-                        ui.label(
-                            RichText::new("Workspace manager")
-                                .color(theme::MUTED)
-                                .size(11.0),
+                    if !collapsed {
+                        ui.add(
+                            egui::Image::new(&self.logo_texture)
+                                .fit_to_exact_size(egui::vec2(36.0, 36.0))
+                                .alt_text("Logo do LocalCodePilot"),
                         );
-                    });
-                });
-                ui.add_space(24.0);
-                ui.label(
-                    RichText::new("WORKSPACE")
-                        .color(Color32::from_rgb(111, 119, 135))
-                        .strong()
-                        .size(10.0),
-                );
-                ui.add_space(4.0);
-                self.nav_button(ui, Page::Overview, LAYOUT, "Visão geral", None);
-                self.nav_button(
-                    ui,
-                    Page::Projects,
-                    FOLDER_OPEN,
-                    "Projetos",
-                    Some(self.projects.len()),
-                );
-                self.nav_button(ui, Page::Processes, TERMINAL, "Processos", None);
-                self.nav_button(ui, Page::Containers, LAYOUT, "Containers", None);
-                ui.add_space(18.0);
-                ui.label(
-                    RichText::new("SISTEMA")
-                        .color(Color32::from_rgb(111, 119, 135))
-                        .strong()
-                        .size(10.0),
-                );
-                ui.add_space(4.0);
-                self.nav_button(ui, Page::Plugins, CODE_SIMPLE, "Plugins", None);
-                self.nav_button(ui, Page::Help, BOOK_OPEN, "Ajuda", None);
-                self.nav_button(ui, Page::Settings, GEAR, "Configurações", None);
-
-                ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.colored_label(theme::SUCCESS, CIRCLE);
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new("Ambiente local").strong().size(11.0));
-                            ui.label(
-                                RichText::new("Todos os serviços online")
-                                    .color(theme::MUTED)
-                                    .size(10.0),
-                            );
+                        ui.label(RichText::new("LocalCodePilot").strong().size(14.0));
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let (icon, name) = if collapsed {
+                            (CARET_DOUBLE_RIGHT, "Expandir menu")
+                        } else {
+                            (CARET_DOUBLE_LEFT, "Recolher menu")
+                        };
+                        let toggle = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(icon).color(theme::MUTED).size(16.0),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(36.0, 36.0)),
+                            )
+                            .on_hover_text(name);
+                        toggle.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, name)
                         });
+                        if toggle.clicked() {
+                            self.workspace_state.sidebar_collapsed = !collapsed;
+                            self.workspace_dirty = true;
+                        }
                     });
-                    ui.separator();
                 });
+                ui.add_space(18.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        nav_group(ui, collapsed, "Trabalho");
+                        self.nav_button(ui, Page::Overview, LAYOUT, "Visão geral", None);
+                        self.nav_button(
+                            ui,
+                            Page::Projects,
+                            FOLDER_OPEN,
+                            "Projetos",
+                            Some(self.projects.len()),
+                        );
+                        self.nav_button(ui, Page::Processes, TERMINAL, "Processos", None);
+                        self.nav_button(ui, Page::Containers, CUBE, "Containers", None);
+                        ui.add_space(14.0);
+                        nav_group(ui, collapsed, "Aplicativo");
+                        self.nav_button(ui, Page::Help, BOOK_OPEN, "Ajuda", None);
+                        self.nav_button(ui, Page::Settings, GEAR, "Configurações", None);
+                    });
             });
     }
 
+    /// One page in the sidebar: a real button, so it takes keyboard focus, activates with
+    /// Enter and tells assistive technologies its name and whether it is the current page.
     fn nav_button(
         &mut self,
         ui: &mut egui::Ui,
         page: Page,
         icon: &str,
         label: &str,
-        count: Option<usize>,
+        projects: Option<usize>,
     ) {
+        let collapsed = self.workspace_state.sidebar_collapsed;
         let selected = self.page == page;
-        let fill = if selected {
-            theme::PRIMARY.gamma_multiply(0.13)
+        let color = if selected {
+            Color32::WHITE
         } else {
-            Color32::TRANSPARENT
+            theme::MUTED
         };
-        let response = Frame::new()
-            .fill(fill)
-            .corner_radius(8)
-            .inner_margin(Margin::symmetric(10, 9))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(icon)
-                            .color(if selected {
-                                Color32::WHITE
-                            } else {
-                                theme::MUTED
-                            })
-                            .size(16.0),
-                    );
-                    ui.label(
-                        RichText::new(label)
-                            .color(if selected {
-                                Color32::WHITE
-                            } else {
-                                theme::MUTED
-                            })
-                            .size(13.0),
-                    );
-                    if let Some(count) = count {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(count.to_string())
-                                    .color(theme::MUTED)
-                                    .size(10.0),
-                            );
-                        });
-                    }
-                });
-            })
-            .response
-            .interact(Sense::click());
+        let name = nav_name(label, projects);
+        let size = egui::vec2(ui.available_width(), 38.0);
+        let mut button = if collapsed {
+            egui::Button::selectable(selected, RichText::new(icon).color(color).size(18.0))
+        } else {
+            egui::Button::selectable(
+                selected,
+                RichText::new(format!("{icon}   {label}"))
+                    .color(color)
+                    .size(13.0),
+            )
+            .right_text(
+                RichText::new(projects.map(|count| count.to_string()).unwrap_or_default())
+                    .color(theme::MUTED)
+                    .size(11.0),
+            )
+        }
+        .min_size(size)
+        .corner_radius(8);
+        if selected {
+            button = button.fill(theme::PRIMARY.gamma_multiply(0.13));
+        }
+        let mut response = ui.add(button);
+        // The visible text starts with an icon glyph; give assistive technologies plain words.
+        response
+            .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
+        if collapsed {
+            if let Some(count) = projects {
+                ui.painter().text(
+                    response.rect.right_top() + egui::vec2(-4.0, 3.0),
+                    egui::Align2::RIGHT_TOP,
+                    count.to_string(),
+                    egui::FontId::proportional(10.0),
+                    theme::MUTED,
+                );
+            }
+            response = response.on_hover_text(&name);
+        }
         if response.clicked() {
             self.page = page;
             if matches!(page, Page::Processes | Page::Containers) {
@@ -1121,21 +1116,16 @@ impl LocalCodePilot {
 
     fn topbar(&mut self, root_ui: &mut egui::Ui) {
         egui::Panel::top("topbar")
-            .exact_size(64.0)
+            .exact_size(52.0)
             .frame(
                 Frame::new()
                     .fill(theme::BACKGROUND)
-                    .inner_margin(Margin::symmetric(26, 14))
+                    .inner_margin(Margin::symmetric(26, 9))
                     .stroke(Stroke::new(1.0_f32, theme::BORDER)),
             )
             .show(root_ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("Workspace  {CARET_RIGHT}"))
-                            .color(theme::MUTED)
-                            .size(12.0),
-                    );
-                    ui.label(RichText::new(self.page_title()).size(12.0));
+                    ui.label(RichText::new(self.page_title()).size(13.0));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         Frame::new()
                             .fill(Color32::from_rgb(38, 53, 82))
@@ -1148,23 +1138,22 @@ impl LocalCodePilot {
                             .response
                             .on_hover_text(&self.username);
 
-                        ui.label(RichText::new(BELL).color(theme::PRIMARY).size(16.0));
-
                         let search_hint = match self.page {
                             Page::Overview => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
-                            Page::Projects
-                            | Page::Plugins
-                            | Page::Help
-                            | Page::Settings
-                            | Page::Containers => None,
+                            Page::Projects | Page::Help | Page::Settings | Page::Containers => None,
                         };
                         if let Some(search_hint) = search_hint {
-                            ui.add_sized(
+                            let search = ui.add_sized(
                                 [220.0, 32.0],
                                 egui::TextEdit::singleline(&mut self.search)
                                     .hint_text(search_hint)
                                     .align(egui::Align2::CENTER_CENTER),
+                            );
+                            name_search_field(
+                                &search,
+                                search_hint.trim_end_matches('.'),
+                                &self.search,
                             );
                         }
                     });
@@ -1178,7 +1167,6 @@ impl LocalCodePilot {
             Page::Projects => "Projetos",
             Page::Processes => "Processos",
             Page::Containers => "Containers",
-            Page::Plugins => "Plugins",
             Page::Help => "Ajuda",
             Page::Settings => "Configurações",
         }
@@ -1298,95 +1286,149 @@ impl LocalCodePilot {
 
     fn projects_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let has_active_processes = self.has_active_processes();
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.heading("Projetos");
-                ui.label(
-                    RichText::new(format!(
-                        "{} projeto(s) em {} pasta(s) de busca",
-                        self.projects.len(),
-                        self.scan_roots.len()
-                    ))
-                    .color(theme::MUTED),
-                );
+        let scanning = self.discovery.is_some();
+        let can_change_roots = !scanning && !has_active_processes;
+        let mut add_folder = false;
+        let mut refresh = false;
+        let mut toggle_roots = false;
+        let mut summary = |ui: &mut egui::Ui| {
+            ui.label(RichText::new("Projetos").strong().size(22.0));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("{} ·", project_count_text(self.projects.len())))
+                    .color(theme::MUTED)
+                    .size(13.0),
+            );
+            if ui.link(scan_roots_text(self.scan_roots.len())).clicked() {
+                toggle_roots = true;
+            }
+            if scanning {
+                ui.spinner();
+                ui.label(RichText::new("Procurando...").color(theme::MUTED));
+            }
+        };
+        let add_label = format!("{PLUS}  Adicionar pasta");
+        let mut buttons = |ui: &mut egui::Ui| {
+            add_folder = announced(
+                ui.add_enabled(
+                    can_change_roots,
+                    egui::Button::new(&add_label).fill(theme::PRIMARY),
+                ),
+                egui::Role::Button,
+                &add_label,
+            )
+            .clicked();
+            refresh = ui
+                .add_enabled(can_change_roots, egui::Button::new("Atualizar"))
+                .clicked();
+        };
+        // One line when it fits; in a small window the buttons move to their own line. The
+        // buttons are added left to right in both cases, so Tab follows the reading order.
+        if ui.available_width() >= 640.0 {
+            ui.horizontal(|ui| {
+                summary(ui);
+                let width = button_width(ui, &add_label)
+                    + button_width(ui, "Atualizar")
+                    + ui.spacing().item_spacing.x;
+                ui.add_space((ui.available_width() - width).max(0.0));
+                buttons(ui);
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let scanning = self.discovery.is_some();
-                let can_change_roots = !scanning && !has_active_processes;
-                if ui
-                    .add_enabled(can_change_roots, egui::Button::new("Atualizar"))
-                    .clicked()
-                {
-                    self.refresh_projects(ctx);
-                }
-                if ui
-                    .add_enabled(
-                        can_change_roots,
-                        egui::Button::new(format!("{PLUS}  Adicionar pasta")).fill(theme::PRIMARY),
-                    )
-                    .clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .set_title("Escolha uma pasta com projetos")
-                        .pick_folder()
-                {
-                    self.add_scan_root(ctx, path);
-                }
-                if scanning {
-                    ui.spinner();
-                    ui.label(RichText::new("Procurando...").color(theme::MUTED));
-                }
-                if has_active_processes {
-                    ui.label(
-                        RichText::new(
-                            "Pare os projetos em execução para adicionar uma pasta ou atualizar a lista.",
-                        )
-                        .color(theme::WARNING)
-                        .size(12.0),
-                    );
-                }
-            });
-        });
+        } else {
+            ui.horizontal_wrapped(|ui| summary(ui));
+            ui.horizontal(|ui| buttons(ui));
+        }
+        if has_active_processes {
+            ui.label(
+                RichText::new(
+                    "Pare os projetos em execução para adicionar uma pasta ou atualizar a lista.",
+                )
+                .color(theme::WARNING)
+                .size(12.0),
+            );
+        }
+        if toggle_roots {
+            self.project_ui.show_roots = !self.project_ui.show_roots;
+        }
         let mut root_to_remove = None;
-        ui.collapsing(
-            format!("Pastas examinadas ({})", self.scan_roots.len()),
-            |ui| {
-                for root in &self.scan_roots {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(display_path(root))
-                                .color(theme::MUTED)
-                                .monospace()
-                                .size(10.0),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    self.discovery.is_none() && !has_active_processes,
-                                    egui::Button::new("Remover").small(),
-                                )
-                                .clicked()
-                            {
-                                root_to_remove = Some(root.clone());
-                            }
+        if self.project_ui.show_roots {
+            ui.add_space(6.0);
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0, theme::BORDER))
+                .corner_radius(8)
+                .inner_margin(Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(
+                        RichText::new("O LocalCodePilot procura projetos nestas pastas:")
+                            .size(13.0),
+                    );
+                    ui.add_space(4.0);
+                    for root in &self.scan_roots {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .add_enabled(
+                                        can_change_roots,
+                                        egui::Button::new("Remover").small(),
+                                    )
+                                    .clicked()
+                                {
+                                    root_to_remove = Some(root.clone());
+                                }
+                                // A long path is cut to the space left, never widening the page.
+                                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(display_path(root))
+                                                .color(theme::MUTED)
+                                                .monospace()
+                                                .size(12.0),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(display_path(root));
+                                });
+                            });
                         });
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if announced(
+                            ui.add_enabled(can_change_roots, egui::Button::new(&add_label)),
+                            egui::Role::Button,
+                            &add_label,
+                        )
+                        .clicked()
+                        {
+                            add_folder = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                can_change_roots,
+                                egui::Button::new("Restaurar pastas padrão"),
+                            )
+                            .clicked()
+                        {
+                            self.reset_scan_roots(ctx);
+                        }
                     });
-                }
-                ui.add_space(6.0);
-                if ui
-                    .add_enabled(
-                        self.discovery.is_none() && !has_active_processes,
-                        egui::Button::new("Restaurar pastas padrão"),
-                    )
-                    .clicked()
-                {
-                    self.reset_scan_roots(ctx);
-                }
-            },
-        );
+                });
+        }
         if let Some(root) = root_to_remove {
             self.remove_scan_root(ctx, &root);
         }
-        ui.add_space(16.0);
+        if refresh {
+            self.refresh_projects(ctx);
+        }
+        if add_folder
+            && let Some(path) = rfd::FileDialog::new()
+                .set_title("Escolha uma pasta com projetos")
+                .pick_folder()
+        {
+            self.add_scan_root(ctx, path);
+        }
+        ui.add_space(10.0);
         self.project_catalog(ui);
     }
 
@@ -4057,17 +4099,6 @@ impl LocalCodePilot {
                     Page::Settings => self.settings_page(ui),
                     Page::Containers => self.containers_page(ui),
                     Page::Help => self.help_page(ui),
-                    Page::Plugins => {
-                        ui.heading(self.page_title());
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new(format!(
-                                "A área de {} está pronta para a próxima etapa.",
-                                "plugins"
-                            ))
-                            .color(theme::MUTED),
-                        );
-                    }
                 });
             });
     }
@@ -6451,6 +6482,73 @@ fn runtime_color(runtime: RuntimeKind) -> Color32 {
     }
 }
 
+fn project_count_text(count: usize) -> String {
+    if count == 1 {
+        "1 projeto".into()
+    } else {
+        format!("{count} projetos")
+    }
+}
+
+fn scan_roots_text(count: usize) -> String {
+    if count == 1 {
+        "Ver 1 pasta examinada".into()
+    } else {
+        format!("Ver {count} pastas examinadas")
+    }
+}
+
+/// Words of a label that starts with an icon glyph, for assistive technologies.
+pub(crate) fn words(text: &str) -> &str {
+    text.trim_start_matches(|c: char| !c.is_alphanumeric())
+}
+
+/// Announces a button or link by its words only; the icon glyph would be read as noise.
+pub(crate) fn announced(response: egui::Response, role: egui::Role, text: &str) -> egui::Response {
+    let enabled = response.enabled();
+    response.widget_info(|| egui::WidgetInfo::labeled(role, enabled, words(text)));
+    response
+}
+
+/// Width a button needs for `text`, to lay buttons out right-aligned in reading order.
+fn button_width(ui: &egui::Ui, text: &str) -> f32 {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    galley.size().x + 2.0 * ui.spacing().button_padding.x
+}
+
+/// Gives a search field without a visible label a name for assistive technologies.
+pub(crate) fn name_search_field(response: &egui::Response, name: &str, value: &str) {
+    response.widget_info(|| {
+        let mut info = egui::WidgetInfo::text_edit(true, value, value, "");
+        info.label = Some(name.to_owned());
+        info
+    });
+}
+
+/// Sidebar group title; collapsed, only a separator remains.
+fn nav_group(ui: &mut egui::Ui, collapsed: bool, title: &str) {
+    if collapsed {
+        ui.separator();
+    } else {
+        ui.label(RichText::new(title).color(theme::MUTED).strong().size(11.0));
+    }
+    ui.add_space(4.0);
+}
+
+/// Name read by assistive technologies and shown as the tooltip of a collapsed item.
+fn nav_name(label: &str, projects: Option<usize>) -> String {
+    match projects {
+        Some(1) => format!("{label}, 1 projeto"),
+        Some(count) => format!("{label}, {count} projetos"),
+        None => label.to_owned(),
+    }
+}
+
 fn technology_color(technology: TechnologyKind) -> Color32 {
     match technology {
         TechnologyKind::Laravel => Color32::from_rgb(255, 70, 70),
@@ -6472,11 +6570,11 @@ mod tests {
         DependencyInstall, DependencyInstallEvent, HttpHealthStatus, Page, ProjectEnvironment,
         classify_http_health, dependency_error_suggestion, executable_available,
         initials_from_username, inspect_project_environment, is_localcodepilot_qa_project,
-        laravel_major, lowercase_hex, prepare_laravel_migration_files, probe_http_health,
+        laravel_major, lowercase_hex, nav_name, prepare_laravel_migration_files, probe_http_health,
         process_error_suggestion, process_exposes_application_url, process_matches_search,
-        project_process_ids, resolve_environment_plan,
+        project_count_text, project_process_ids, resolve_environment_plan,
         resolve_environment_plan_with_tools_directory, run_dependency_installs,
-        runtime_requirement_status,
+        runtime_requirement_status, scan_roots_text, words,
     };
     use localcodepilot_core::{
         environments::{
@@ -6500,6 +6598,46 @@ mod tests {
         thread,
         time::SystemTime,
     };
+
+    #[test]
+    fn a_saved_plugins_page_opens_the_overview() {
+        assert!(Page::from_key("plugins") == Page::Overview);
+        for page in [
+            Page::Overview,
+            Page::Projects,
+            Page::Processes,
+            Page::Containers,
+            Page::Help,
+            Page::Settings,
+        ] {
+            assert!(Page::from_key(page.key()) == page);
+        }
+    }
+
+    #[test]
+    fn sidebar_and_projects_header_read_naturally() {
+        assert_eq!(nav_name("Ajuda", None), "Ajuda");
+        assert_eq!(nav_name("Projetos", Some(1)), "Projetos, 1 projeto");
+        assert_eq!(nav_name("Projetos", Some(5)), "Projetos, 5 projetos");
+        assert_eq!(project_count_text(1), "1 projeto");
+        assert_eq!(project_count_text(0), "0 projetos");
+        assert_eq!(scan_roots_text(1), "Ver 1 pasta examinada");
+        assert_eq!(scan_roots_text(2), "Ver 2 pastas examinadas");
+    }
+
+    #[test]
+    fn icon_buttons_are_announced_by_their_words() {
+        use egui_phosphor::regular::{ARROW_SQUARE_OUT, PLUS};
+        assert_eq!(
+            words(&format!("{ARROW_SQUARE_OUT}  Abrir site")),
+            "Abrir site"
+        );
+        assert_eq!(
+            words(&format!("{PLUS}  Adicionar pasta")),
+            "Adicionar pasta"
+        );
+        assert_eq!(words("Atualizar"), "Atualizar");
+    }
 
     #[test]
     fn restores_help_page_from_workspace_key() {
