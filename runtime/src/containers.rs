@@ -224,6 +224,7 @@ fn port_label(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn classifies_container_projects_and_retains_native_stack() {
         let root = fixture("classification");

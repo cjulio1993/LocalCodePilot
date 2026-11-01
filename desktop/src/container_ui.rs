@@ -1,12 +1,18 @@
 use super::*;
+use localcodepilot_core::compose_safety::{
+    BlockedAction, ComposeEnvironment, ComposeName, ComposeSafety, ComposeVolume,
+    classify_environment, explain, guard_container_action, guard_environment_action,
+};
 use localcodepilot_core::container_setup::{ContainerHostFacts, EngineGuidance, engine_guidance};
 use localcodepilot_core::containers::{
     ContainerAction, ContainerCommand, ContainerEngine, ContainerProject, EngineDiagnosis,
-    EngineState, RuntimeContainer,
+    EngineState, RuntimeContainer, same_folder,
 };
 use localcodepilot_platform::containers::{
-    ContainerExecution, ContainerExecutionEvent, ContainerExecutionOutcome,
+    ContainerExecution, ContainerExecutionEvent, ContainerExecutionOutcome, Precheck, compose_name,
+    list_compose_volumes, query_engine_containers, verify_compose_action,
 };
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 struct ContainerSession {
     command: ContainerCommand,
@@ -20,9 +26,178 @@ struct ContainerSession {
 struct ContainerSnapshot {
     projects: Option<Vec<ContainerProject>>,
     engines: Option<(Vec<EngineDiagnosis>, ContainerHostFacts)>,
-    containers: Vec<RuntimeContainer>,
+    runtime: Vec<EngineRuntime>,
+    /// Volumes are only listed on full refreshes; otherwise the previous lists are kept.
+    volumes_refreshed: bool,
+    compose_names: Option<ComposeNames>,
     /// Registry PATH re-read while an engine was missing.
     refreshed_path: Option<OsString>,
+}
+
+/// Containers and Compose volumes of one engine; `None` when the query failed, so the
+/// Compose protection can fail closed.
+#[derive(Debug, Clone)]
+struct EngineRuntime {
+    engine: ContainerEngine,
+    containers: Option<Vec<RuntimeContainer>>,
+    volumes: Option<Vec<ComposeVolume>>,
+}
+
+/// Compose project name per environment folder, with the fingerprint of the inputs that
+/// decide it (manifests, `.env`, `COMPOSE_PROJECT_NAME`).
+type ComposeNames = HashMap<PathBuf, (u64, ComposeName)>;
+
+struct VolumeConfirmation {
+    engine: ContainerEngine,
+    directory: PathBuf,
+    volumes: Vec<ComposeVolume>,
+}
+
+/// Queries both engines in parallel. Engines whose CLI is missing are skipped and reported
+/// as failed queries, which keeps the Compose protection closed for them. Volumes are only
+/// listed when `with_volumes` is set.
+fn query_engine_runtime(
+    path: Option<&OsStr>,
+    missing: &[ContainerEngine],
+    with_volumes: bool,
+) -> Vec<EngineRuntime> {
+    std::thread::scope(|scope| {
+        [ContainerEngine::Docker, ContainerEngine::Podman]
+            .map(|engine| {
+                let query = scope.spawn(move || {
+                    if missing.contains(&engine) {
+                        return (None, None);
+                    }
+                    (
+                        query_engine_containers(engine, path).ok(),
+                        with_volumes
+                            .then(|| list_compose_volumes(engine, path).ok())
+                            .flatten(),
+                    )
+                });
+                (engine, query)
+            })
+            .into_iter()
+            .map(|(engine, query)| {
+                let (containers, volumes) = query.join().unwrap_or((None, None));
+                EngineRuntime {
+                    engine,
+                    containers,
+                    volumes,
+                }
+            })
+            .collect()
+    })
+}
+
+/// Identities of the volumes the user confirmed for this engine and Compose folder.
+fn confirmed_identities(
+    confirmations: &[config::ComposeDataConfirmation],
+    engine: ContainerEngine,
+    directory: &Path,
+) -> Vec<String> {
+    confirmations
+        .iter()
+        .filter(|confirmation| {
+            confirmation.engine == engine.program()
+                && same_folder(&confirmation.directory, directory)
+        })
+        .flat_map(|confirmation| confirmation.volumes.iter().cloned())
+        .collect()
+}
+
+fn compose_name_fingerprint(project: &ContainerProject) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for file in project
+        .compose_file
+        .iter()
+        .chain(&project.compose_overrides)
+        .cloned()
+        .chain(std::iter::once(project.directory.join(".env")))
+    {
+        file.hash(&mut hasher);
+        fs::metadata(&file)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .hash(&mut hasher);
+    }
+    std::env::var_os("COMPOSE_PROJECT_NAME").hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Asks the Compose provider for each environment's project name, reusing names whose
+/// inputs did not change. Falls back to an estimate that only serves to find conflicts.
+fn resolve_compose_names(
+    projects: &[ContainerProject],
+    cache: &ComposeNames,
+    engines: &[EngineDiagnosis],
+    path: Option<&OsStr>,
+) -> ComposeNames {
+    projects
+        .iter()
+        .filter(|project| project.compose_file.is_some())
+        .map(|project| {
+            let fingerprint = compose_name_fingerprint(project);
+            let cached = cache
+                .get(&project.directory)
+                .filter(|(cached, name)| {
+                    *cached == fingerprint && matches!(name, ComposeName::Resolved(_))
+                })
+                .map(|(_, name)| name.clone());
+            let name = cached.unwrap_or_else(|| compose_name(engines, project, path));
+            (project.directory.clone(), (fingerprint, name))
+        })
+        .collect()
+}
+
+fn engine_of(command: &ContainerCommand) -> ContainerEngine {
+    match command.program {
+        "podman" => ContainerEngine::Podman,
+        _ => ContainerEngine::Docker,
+    }
+}
+
+enum BlockedPanelAction {
+    Copy(String),
+    ConfirmVolumes,
+}
+
+/// Explains why Compose actions are blocked and how to resolve it.
+fn blocked_panel(ui: &mut egui::Ui, blocked: &BlockedAction) -> Option<BlockedPanelAction> {
+    let warning = Color32::from_rgb(255, 205, 75);
+    let mut action = None;
+    Frame::new()
+        .fill(warning.gamma_multiply(0.08))
+        .stroke(Stroke::new(1.0, warning.gamma_multiply(0.6)))
+        .corner_radius(8)
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(&blocked.title).strong().color(warning));
+            ui.label(&blocked.explanation);
+            ui.label(
+                RichText::new("Iniciar e parar o ambiente ficam bloqueados até resolver.")
+                    .color(theme::MUTED)
+                    .size(11.0),
+            );
+            for (index, step) in blocked.steps.iter().enumerate() {
+                ui.label(RichText::new(format!("{}. {step}", index + 1)).size(12.0));
+            }
+            if let Some(snippet) = &blocked.snippet {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(snippet).monospace());
+                    if ui.small_button("Copiar trecho").clicked() {
+                        ui.ctx().copy_text(snippet.clone());
+                        action = Some(BlockedPanelAction::Copy(snippet.clone()));
+                    }
+                });
+            }
+            if blocked.can_confirm_volumes && ui.button("Estes dados são deste projeto").clicked()
+            {
+                action = Some(BlockedPanelAction::ConfirmVolumes);
+            }
+        });
+    action
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +287,13 @@ pub(super) struct ContainerState {
     last_refresh: Option<std::time::Instant>,
     engines: Vec<EngineDiagnosis>,
     host: Option<ContainerHostFacts>,
+    engine_runtime: Vec<EngineRuntime>,
+    compose_names: ComposeNames,
+    /// Built from `compose_names` and the engine state whenever either changes, so screens
+    /// read classifications instead of recomputing them on every frame.
+    compose_catalog: Vec<ComposeEnvironment>,
+    compose_safety: HashMap<(ContainerEngine, PathBuf), ComposeSafety>,
+    volume_confirmation: Option<VolumeConfirmation>,
     pending: Option<Receiver<ContainerSnapshot>>,
     selected_engine: ContainerEngine,
     confirmation: Option<ContainerCommand>,
@@ -127,6 +309,11 @@ impl Default for ContainerState {
             last_refresh: None,
             engines: vec![],
             host: None,
+            engine_runtime: vec![],
+            compose_names: HashMap::new(),
+            compose_catalog: vec![],
+            compose_safety: HashMap::new(),
+            volume_confirmation: None,
             pending: None,
             selected_engine: ContainerEngine::Docker,
             confirmation: None,
@@ -137,6 +324,255 @@ impl Default for ContainerState {
 }
 
 impl LocalCodePilot {
+    fn confirmed_volumes(&self, engine: ContainerEngine, directory: &Path) -> Vec<String> {
+        confirmed_identities(
+            &self.workspace_state.compose_data_confirmations,
+            engine,
+            directory,
+        )
+    }
+
+    /// Classifies every catalogued environment on both engines. Runs when a snapshot arrives
+    /// or a confirmation changes, not on every frame.
+    fn recompute_compose_safety(&mut self) {
+        let catalog = self
+            .container_state
+            .compose_names
+            .iter()
+            .map(|(directory, (_, name))| ComposeEnvironment {
+                directory: directory.clone(),
+                name: name.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut safety = HashMap::new();
+        for runtime in &self.container_state.engine_runtime {
+            for environment in &catalog {
+                let classified = classify_environment(
+                    environment,
+                    &catalog,
+                    runtime.engine,
+                    runtime.containers.as_deref(),
+                    runtime.volumes.as_deref(),
+                    &self.confirmed_volumes(runtime.engine, &environment.directory),
+                );
+                safety.insert((runtime.engine, environment.directory.clone()), classified);
+            }
+        }
+        self.container_state.compose_catalog = catalog;
+        self.container_state.compose_safety = safety;
+    }
+
+    fn compose_environment_safety(
+        &self,
+        directory: &Path,
+        engine: ContainerEngine,
+    ) -> ComposeSafety {
+        self.container_state
+            .compose_safety
+            .get(&(engine, directory.to_path_buf()))
+            .or_else(|| {
+                self.container_state
+                    .compose_safety
+                    .iter()
+                    .find(|((cached, folder), _)| {
+                        *cached == engine && same_folder(folder, directory)
+                    })
+                    .map(|(_, safety)| safety)
+            })
+            .cloned()
+            .unwrap_or_else(|| ComposeSafety::Unverifiable {
+                reason: "A verificação deste ambiente ainda não terminou.".into(),
+            })
+    }
+
+    fn container_action_guard(
+        &self,
+        action: ContainerAction,
+        container: &RuntimeContainer,
+    ) -> Result<(), BlockedAction> {
+        if !matches!(
+            action,
+            ContainerAction::StartExisting
+                | ContainerAction::StopExisting
+                | ContainerAction::RestartExisting
+        ) {
+            return Ok(());
+        }
+        let environment_safety = container
+            .project_directory
+            .as_deref()
+            .filter(|folder| {
+                self.container_state
+                    .compose_catalog
+                    .iter()
+                    .any(|environment| same_folder(&environment.directory, folder))
+            })
+            .map(|folder| self.compose_environment_safety(folder, container.engine));
+        guard_container_action(
+            action,
+            container,
+            &self.container_state.runtime_containers,
+            &self.container_state.compose_catalog,
+            environment_safety.as_ref(),
+        )
+    }
+
+    /// Fresh verification run on the worker thread right before a command that changes a
+    /// Compose environment or one of its containers. `None` for read-only commands.
+    fn container_precheck(&self, command: &ContainerCommand) -> Option<Precheck> {
+        let engine = engine_of(command);
+        let path = self.environment_path.clone();
+        let catalog = self.container_state.compose_catalog.clone();
+        match command.action {
+            ContainerAction::Start | ContainerAction::Stop => {
+                let action = command.action;
+                let Some(project) = self
+                    .container_state
+                    .projects
+                    .iter()
+                    .find(|project| same_folder(&project.directory, &command.working_directory))
+                    .cloned()
+                else {
+                    return Some(Box::new(|| {
+                        Err("O ambiente Compose não foi encontrado; verifique novamente.".into())
+                    }));
+                };
+                let confirmed = self.confirmed_volumes(engine, &project.directory);
+                Some(Box::new(move || {
+                    verify_compose_action(
+                        action,
+                        engine,
+                        &project,
+                        &catalog,
+                        &confirmed,
+                        path.as_deref(),
+                    )
+                    .map_err(|blocked| format!("{}. {}", blocked.title, blocked.explanation))
+                }))
+            }
+            ContainerAction::StartExisting
+            | ContainerAction::StopExisting
+            | ContainerAction::RestartExisting => {
+                let action = command.action;
+                let id = command.args.last()?.clone();
+                let confirmations = self.workspace_state.compose_data_confirmations.clone();
+                Some(Box::new(move || {
+                    let containers =
+                        query_engine_containers(engine, path.as_deref()).map_err(|error| {
+                            format!("Não foi possível consultar os containers: {error}")
+                        })?;
+                    let container = containers
+                        .iter()
+                        .find(|container| container.id == id)
+                        .ok_or("O container não existe mais.")?;
+                    let environment = container.project_directory.as_deref().and_then(|folder| {
+                        catalog
+                            .iter()
+                            .find(|environment| same_folder(&environment.directory, folder))
+                    });
+                    let safety = environment.map(|environment| {
+                        let volumes = list_compose_volumes(engine, path.as_deref()).ok();
+                        let confirmed =
+                            confirmed_identities(&confirmations, engine, &environment.directory);
+                        classify_environment(
+                            environment,
+                            &catalog,
+                            engine,
+                            Some(&containers),
+                            volumes.as_deref(),
+                            &confirmed,
+                        )
+                    });
+                    guard_container_action(
+                        action,
+                        container,
+                        &containers,
+                        &catalog,
+                        safety.as_ref(),
+                    )
+                    .map_err(|blocked| format!("{}. {}", blocked.title, blocked.explanation))
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    fn volume_confirmation_dialog(&mut self, ctx: &egui::Context) {
+        let Some(request) = &self.container_state.volume_confirmation else {
+            return;
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new("Confirmar dados do ambiente")
+            .id(egui::Id::unique("compose-volume-confirmation"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - 48.0).clamp(240.0, 520.0));
+                ui.label(format!(
+                    "Confirme que estes volumes do {} pertencem ao ambiente em {}:",
+                    request.engine,
+                    display_path(&request.directory)
+                ));
+                for volume in &request.volumes {
+                    ui.label(RichText::new(&volume.name).monospace());
+                }
+                ui.label(
+                    RichText::new(
+                        "Ao iniciar, o ambiente vai usar esses dados. Confirme só se eles foram criados por este projeto.",
+                    )
+                    .color(Color32::from_rgb(255, 205, 75)),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancelar").clicked() {
+                        cancel = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Confirmar que são deste projeto").fill(theme::PRIMARY))
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                });
+            });
+        if cancel {
+            self.container_state.volume_confirmation = None;
+        }
+        if confirm && let Some(request) = self.container_state.volume_confirmation.take() {
+            let engine = request.engine.program().to_owned();
+            // Name and creation time: a volume recreated later under the same name is new data.
+            let identities = request
+                .volumes
+                .iter()
+                .filter_map(ComposeVolume::identity)
+                .collect::<Vec<_>>();
+            let confirmations = &mut self.workspace_state.compose_data_confirmations;
+            match confirmations.iter_mut().find(|confirmation| {
+                confirmation.engine == engine
+                    && same_folder(&confirmation.directory, &request.directory)
+            }) {
+                Some(existing) => {
+                    for identity in identities {
+                        if !existing.volumes.contains(&identity) {
+                            existing.volumes.push(identity);
+                        }
+                    }
+                }
+                None => confirmations.push(config::ComposeDataConfirmation {
+                    engine,
+                    directory: request.directory,
+                    volumes: identities,
+                }),
+            }
+            self.workspace_dirty = true;
+            self.recompute_compose_safety();
+            self.notify("Dados confirmados para este ambiente");
+            self.refresh_containers(ctx.clone());
+        }
+    }
+
     pub(super) fn project_container_status(&self, project: &Path) -> (bool, Option<String>) {
         let running = self
             .container_state
@@ -246,6 +682,7 @@ impl LocalCodePilot {
                     if let Some(running_for) = &container.running_for {
                         ui.label(format!("Tempo de execução: {running_for}"));
                     }
+                    let mut blocked_reason = None;
                     ui.horizontal_wrapped(|ui| {
                         for action in [
                             ContainerAction::StartExisting,
@@ -253,21 +690,36 @@ impl LocalCodePilot {
                             ContainerAction::RestartExisting,
                             ContainerAction::LogsExisting,
                         ] {
-                            if let Some(command) = container.command(action)
-                                && ui
-                                    .add_enabled(
-                                        self.container_state
-                                            .execution
-                                            .as_ref()
-                                            .is_none_or(|session| session.execution.is_none()),
-                                        egui::Button::new(command.label),
-                                    )
-                                    .clicked()
-                            {
+                            let Some(command) = container.command(action) else {
+                                continue;
+                            };
+                            let guard = self.container_action_guard(action, container);
+                            let idle = self
+                                .container_state
+                                .execution
+                                .as_ref()
+                                .is_none_or(|session| session.execution.is_none());
+                            let response = ui.add_enabled(
+                                idle && guard.is_ok(),
+                                egui::Button::new(command.label),
+                            );
+                            if let Err(blocked) = guard {
+                                response.on_disabled_hover_text(&blocked.explanation);
+                                blocked_reason = Some(blocked.title);
+                            } else if response.clicked() {
                                 requested = Some(command);
                             }
                         }
                     });
+                    if let Some(reason) = blocked_reason {
+                        ui.label(
+                            RichText::new(format!(
+                                "{reason}: iniciar, parar e reiniciar estão bloqueados para não afetar outro projeto. Veja como resolver em Containers."
+                            ))
+                            .color(Color32::from_rgb(255, 205, 75))
+                            .size(11.0),
+                        );
+                    }
                 });
             ui.add_space(8.0);
         }
@@ -295,6 +747,14 @@ impl LocalCodePilot {
             .collect::<Vec<_>>();
         let path = self.environment_path.clone();
         let reread_path = rereads_registry_path(scope, &self.container_state.engines);
+        let name_cache = self.container_state.compose_names.clone();
+        let known_missing = self
+            .container_state
+            .engines
+            .iter()
+            .filter(|engine| engine.state == EngineState::Missing)
+            .map(|engine| engine.engine)
+            .collect::<Vec<_>>();
         let (sender, receiver) = mpsc::channel();
         self.container_state.pending = Some(receiver);
         self.container_state.error = None;
@@ -303,10 +763,11 @@ impl LocalCodePilot {
                 .then(|| refreshed_environment_path().ok())
                 .flatten();
             let path = refreshed_path.clone().or(path);
-            let (projects, engines) = match scope {
+            let mut missing = known_missing;
+            let (projects, engines, compose_names) = match scope {
                 ContainerRefresh::Full => {
                     let mut seen = HashSet::new();
-                    let projects = directories
+                    let projects: Vec<ContainerProject> = directories
                         .iter()
                         .flat_map(|directory| {
                             localcodepilot_runtime::containers::detect_container_projects(directory)
@@ -319,16 +780,25 @@ impl LocalCodePilot {
                     let host = localcodepilot_platform::containers::inspect_container_host(
                         path.as_deref(),
                     );
-                    (Some(projects), Some((engines, host)))
+                    let names =
+                        resolve_compose_names(&projects, &name_cache, &engines, path.as_deref());
+                    missing = engines
+                        .iter()
+                        .filter(|engine| engine.state == EngineState::Missing)
+                        .map(|engine| engine.engine)
+                        .collect();
+                    (Some(projects), Some((engines, host)), Some(names))
                 }
-                ContainerRefresh::RuntimeOnly => (None, None),
+                ContainerRefresh::RuntimeOnly => (None, None, None),
             };
-            let containers =
-                localcodepilot_platform::containers::list_runtime_containers(path.as_deref());
+            let volumes_refreshed = scope == ContainerRefresh::Full;
+            let runtime = query_engine_runtime(path.as_deref(), &missing, volumes_refreshed);
             let _ = sender.send(ContainerSnapshot {
                 projects,
                 engines,
-                containers,
+                runtime,
+                volumes_refreshed,
+                compose_names,
                 refreshed_path,
             });
             ctx.request_repaint();
@@ -352,9 +822,30 @@ impl LocalCodePilot {
                 Ok(ContainerSnapshot {
                     projects,
                     engines,
-                    containers,
+                    mut runtime,
+                    volumes_refreshed,
+                    compose_names,
                     refreshed_path,
                 }) => {
+                    let containers = runtime
+                        .iter()
+                        .flat_map(|engine| engine.containers.iter().flatten().cloned())
+                        .collect::<Vec<_>>();
+                    if !volumes_refreshed {
+                        for current in &mut runtime {
+                            current.volumes = self
+                                .container_state
+                                .engine_runtime
+                                .iter()
+                                .find(|previous| previous.engine == current.engine)
+                                .and_then(|previous| previous.volumes.clone());
+                        }
+                    }
+                    self.container_state.engine_runtime = runtime;
+                    if let Some(compose_names) = compose_names {
+                        self.container_state.compose_names = compose_names;
+                    }
+                    self.recompute_compose_safety();
                     if refreshed_path.is_some() {
                         self.environment_path = refreshed_path;
                     }
@@ -461,10 +952,19 @@ impl LocalCodePilot {
 
     fn start_container_execution(&mut self, command: ContainerCommand) {
         let display = command.display();
-        let execution = localcodepilot_platform::containers::execute_container_command(
-            command.clone(),
-            self.environment_path.as_deref(),
-        );
+        let execution = match self.container_precheck(&command) {
+            Some(precheck) => {
+                localcodepilot_platform::containers::execute_container_command_checked(
+                    command.clone(),
+                    self.environment_path.as_deref(),
+                    precheck,
+                )
+            }
+            None => localcodepilot_platform::containers::execute_container_command(
+                command.clone(),
+                self.environment_path.as_deref(),
+            ),
+        };
         let mut logs = std::collections::VecDeque::new();
         logs.push_back(format!("$ {display}"));
         self.container_state.execution = Some(match execution {
@@ -632,6 +1132,8 @@ impl LocalCodePilot {
         }
 
         let mut requested_command = None;
+        let mut copied_snippet = None;
+        let mut volume_request = None;
         for project in self.container_state.projects.iter().filter(|project| {
             self.focused_project
                 .as_ref()
@@ -661,6 +1163,38 @@ impl LocalCodePilot {
                             .color(theme::MUTED)
                             .size(10.0),
                     );
+                    let engine = self.container_state.selected_engine;
+                    let safety = project
+                        .compose_file
+                        .is_some()
+                        .then(|| self.compose_environment_safety(&project.directory, engine));
+                    if let Some((_, name)) = self.container_state.compose_names.get(&project.directory) {
+                        ui.label(match name {
+                            ComposeName::Resolved(name) => format!("Ambiente Compose: \"{name}\""),
+                            ComposeName::Estimated(name) => format!(
+                                "Ambiente Compose: \"{name}\" (estimado; o provedor Compose não respondeu)"
+                            ),
+                        });
+                    }
+                    if let Some(safety) = &safety
+                        && *safety != ComposeSafety::Safe
+                    {
+                        ui.add_space(6.0);
+                        match blocked_panel(ui, &explain(safety, &project.directory)) {
+                            Some(BlockedPanelAction::Copy(snippet)) => copied_snippet = Some(snippet),
+                            Some(BlockedPanelAction::ConfirmVolumes) => {
+                                if let ComposeSafety::UnconfirmedData { volumes, .. } = safety {
+                                    volume_request = Some(VolumeConfirmation {
+                                        engine,
+                                        directory: project.directory.clone(),
+                                        volumes: volumes.clone(),
+                                    });
+                                }
+                            }
+                            None => {}
+                        }
+                        ui.add_space(6.0);
+                    }
                     for file in project.dockerfile.iter().chain(project.compose_file.iter()) {
                         ui.label(format!(
                             "Arquivo: {}",
@@ -723,11 +1257,22 @@ impl LocalCodePilot {
                                 let available = !executing
                                     && engine_ready
                                     && (project.compose_file.is_none() || compose_ready);
-                                if ui
-                                    .add_enabled(available, egui::Button::new(command.label))
-                                    .on_hover_text(command.action.description())
-                                    .clicked()
-                                {
+                                let guard = safety.as_ref().map(|safety| {
+                                    guard_environment_action(command.action, safety, &project.directory)
+                                });
+                                let blocked = guard.as_ref().and_then(|guard| guard.as_ref().err());
+                                let response = ui
+                                    .add_enabled(
+                                        available && blocked.is_none(),
+                                        egui::Button::new(command.label),
+                                    )
+                                    .on_hover_text(command.action.description());
+                                if let Some(blocked) = blocked {
+                                    response.on_disabled_hover_text(format!(
+                                        "Bloqueado: {}",
+                                        blocked.title
+                                    ));
+                                } else if response.clicked() {
                                     requested_command = Some(command.clone());
                                 }
                             }
@@ -750,7 +1295,14 @@ impl LocalCodePilot {
         if let Some(command) = requested_command {
             self.container_state.confirmation = Some(command);
         }
+        if let Some(snippet) = copied_snippet {
+            self.notify(format!("Trecho copiado: {snippet}"));
+        }
+        if volume_request.is_some() {
+            self.container_state.volume_confirmation = volume_request;
+        }
         self.container_confirmation(ui.ctx());
+        self.volume_confirmation_dialog(ui.ctx());
     }
 
     fn container_execution_panel(&mut self, ui: &mut egui::Ui) {
@@ -950,6 +1502,7 @@ mod tests {
             service: None,
             project_directory: None,
             running_for: None,
+            compose_project: None,
         };
         assert_eq!(container_summary(&container), "Podman · running");
         container.engine = ContainerEngine::Docker;

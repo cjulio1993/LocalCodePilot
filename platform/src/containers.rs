@@ -1,12 +1,18 @@
 use crate::installations::{configure_background_command, find_executable};
+use localcodepilot_core::compose_safety::{
+    BlockedAction, ComposeEnvironment, ComposeName, ComposeVolume, classify_environment,
+    guard_environment_action, normalize_compose_name,
+};
 use localcodepilot_core::container_setup::{ContainerHostFacts, HostOs, PodmanMachine};
 use localcodepilot_core::containers::{
-    ContainerCommand, ContainerEngine, EngineDiagnosis, EngineState, RuntimeContainer,
+    ContainerAction, ContainerCommand, ContainerEngine, ContainerProject, EngineDiagnosis,
+    EngineState, RuntimeContainer,
 };
 use localcodepilot_core::ports::strip_terminal_sequences;
 use std::{
     ffi::OsStr,
     io::{BufRead, BufReader, Read},
+    path::Path,
     process::{Command, Stdio},
     sync::{
         Arc,
@@ -82,8 +88,20 @@ fn read_command_output(
     args: &[&str],
     path: Option<&OsStr>,
 ) -> Result<String, String> {
+    read_command_output_in(program, args, None, path)
+}
+
+fn read_command_output_in(
+    program: &str,
+    args: &[&str],
+    directory: Option<&Path>,
+    path: Option<&OsStr>,
+) -> Result<String, String> {
     let executable = find_executable(program, path).ok_or("CLI indisponível")?;
     let mut command = Command::new(executable);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
     command
         .args(args)
         .stdin(Stdio::null())
@@ -177,6 +195,8 @@ fn parse_container_rows(engine: ContainerEngine, output: &str) -> Vec<RuntimeCon
                     .or_else(|| label("io.podman.compose.project.working_dir"))
                     .map(Into::into),
                 running_for: field("RunningFor").map(str::to_owned),
+                compose_project: label("com.docker.compose.project")
+                    .or_else(|| label("io.podman.compose.project")),
             })
         })
         .collect()
@@ -224,6 +244,218 @@ fn podman_ports(ports: &[serde_json::Value]) -> String {
     }
     mappings.join(", ")
 }
+
+/// Containers of one engine, keeping a failed query apart from an empty list so callers can
+/// fail closed.
+pub fn query_engine_containers(
+    engine: ContainerEngine,
+    path: Option<&OsStr>,
+) -> Result<Vec<RuntimeContainer>, String> {
+    list_engine_containers(engine, path)
+}
+
+/// Volumes labelled by Compose on one engine, with their creation time. `volume ls` does not
+/// report the creation time on Docker, so the labelled volumes are inspected as well. A
+/// failure in either step fails the whole query, which callers treat as unverifiable.
+pub fn list_compose_volumes(
+    engine: ContainerEngine,
+    path: Option<&OsStr>,
+) -> Result<Vec<ComposeVolume>, String> {
+    let names = read_command_output(
+        engine.program(),
+        &[
+            "volume",
+            "ls",
+            "--quiet",
+            "--filter",
+            "label=com.docker.compose.project",
+        ],
+        path,
+    )?;
+    let names = names
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["volume", "inspect", "--format", "{{json .}}"];
+    args.extend(names);
+    let output = read_command_output(engine.program(), &args, path)?;
+    Ok(parse_compose_volumes(&output))
+}
+
+fn parse_compose_volumes(output: &str) -> Vec<ComposeVolume> {
+    output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|row| {
+            let name = row.get("Name")?.as_str()?.to_owned();
+            let labels = row.get("Labels")?;
+            // Docker prints labels as `key=value,...`; Podman returns an object.
+            let project = labels
+                .get("com.docker.compose.project")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    labels.as_str()?.split(',').find_map(|label| {
+                        label
+                            .trim()
+                            .strip_prefix("com.docker.compose.project=")
+                            .map(str::to_owned)
+                    })
+                })?;
+            let created_at = row
+                .get("CreatedAt")
+                .and_then(serde_json::Value::as_str)
+                .filter(|created_at| !created_at.is_empty())
+                .map(str::to_owned);
+            Some(ComposeVolume {
+                name,
+                project,
+                created_at,
+            })
+        })
+        .collect()
+}
+
+/// Project name the Compose provider resolves for `project`, with the same `--file` list,
+/// folder and environment as `up` (`name:`, `COMPOSE_PROJECT_NAME`, `.env`, folder name).
+/// The configuration printed by the provider can hold secrets; only `name` is kept.
+pub fn resolve_compose_name(
+    engine: ContainerEngine,
+    project: &ContainerProject,
+    path: Option<&OsStr>,
+) -> Result<String, String> {
+    let files = project.compose_file_arguments();
+    if files.is_empty() {
+        return Err("Sem arquivo Compose".into());
+    }
+    let mut args = vec!["compose"];
+    args.extend(files.iter().map(String::as_str));
+    let mut json = args.clone();
+    json.extend(["config", "--format", "json"]);
+    if let Ok(output) =
+        read_command_output_in(engine.program(), &json, Some(&project.directory), path)
+        && let Some(name) = serde_json::from_str::<serde_json::Value>(&output)
+            .ok()
+            .and_then(|config| config.get("name")?.as_str().map(str::to_owned))
+    {
+        return Ok(name);
+    }
+    // podman-compose prints YAML only, and omits the project name unless `name:` is set.
+    args.push("config");
+    let output = read_command_output_in(engine.program(), &args, Some(&project.directory), path)?;
+    let config = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&output)
+        .map_err(|_| "O provedor Compose não informou o nome do ambiente".to_owned())?;
+    match config.get("name").and_then(serde_yaml_ng::Value::as_str) {
+        Some(name) if !name.is_empty() => Ok(name.to_owned()),
+        // The provider accepted these files and merged them without a `name:`, so its
+        // documented rule applies: COMPOSE_PROJECT_NAME, then the folder name.
+        _ => Ok(estimate_compose_name(project)),
+    }
+}
+
+/// Project name for the catalog: asked to the provider of the first engine whose CLI is
+/// installed, or a local estimate that only serves to *find* conflicts.
+pub fn compose_name(
+    engines: &[EngineDiagnosis],
+    project: &ContainerProject,
+    path: Option<&OsStr>,
+) -> ComposeName {
+    engines
+        .iter()
+        .filter(|engine| engine.state != EngineState::Missing)
+        .find_map(|engine| resolve_compose_name(engine.engine, project, path).ok())
+        .map_or_else(
+            || ComposeName::Estimated(estimate_compose_name(project)),
+            ComposeName::Resolved,
+        )
+}
+
+/// Local estimate of the Compose project name with Compose's precedence:
+/// `COMPOSE_PROJECT_NAME` (environment, then `.env` next to the manifest), `name:` (an
+/// override file wins over the main file, as in the merge), folder name.
+pub fn estimate_compose_name(project: &ContainerProject) -> String {
+    let from_dotenv = || {
+        std::fs::read_to_string(project.directory.join(".env"))
+            .ok()?
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "COMPOSE_PROJECT_NAME")
+                    .then(|| value.trim().trim_matches(['"', '\'']).to_owned())
+            })
+            .rfind(|value| !value.is_empty())
+    };
+    let from_manifests = || {
+        project
+            .compose_overrides
+            .iter()
+            .rev()
+            .chain(project.compose_file.iter())
+            .find_map(|file| {
+                let contents = std::fs::read_to_string(file).ok()?;
+                let contents = contents.trim_start_matches('\u{feff}');
+                serde_yaml_ng::from_str::<serde_yaml_ng::Value>(contents)
+                    .ok()?
+                    .get("name")?
+                    .as_str()
+                    .filter(|name| !name.is_empty() && !name.contains('$'))
+                    .map(str::to_owned)
+            })
+    };
+    let name = std::env::var("COMPOSE_PROJECT_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .or_else(from_dotenv)
+        .or_else(from_manifests)
+        .unwrap_or_else(|| {
+            project
+                .directory
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        });
+    normalize_compose_name(&name)
+}
+
+/// Fresh check right before `up` or `stop`: resolves the name again and queries the engine,
+/// so containers created from the terminal after the last refresh are taken into account.
+pub fn verify_compose_action(
+    action: ContainerAction,
+    engine: ContainerEngine,
+    project: &ContainerProject,
+    catalog: &[ComposeEnvironment],
+    confirmed_volumes: &[String],
+    path: Option<&OsStr>,
+) -> Result<(), BlockedAction> {
+    let environment = ComposeEnvironment {
+        directory: project.directory.clone(),
+        name: resolve_compose_name(engine, project, path).map_or_else(
+            |_| ComposeName::Estimated(String::new()),
+            ComposeName::Resolved,
+        ),
+    };
+    let containers = query_engine_containers(engine, path).ok();
+    let volumes = list_compose_volumes(engine, path).ok();
+    let safety = classify_environment(
+        &environment,
+        catalog,
+        engine,
+        containers.as_deref(),
+        volumes.as_deref(),
+        confirmed_volumes,
+    );
+    guard_environment_action(action, &safety, &project.directory)
+}
+
+/// Runs right before a container command starts; an error cancels the command.
+pub type Precheck = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -287,13 +519,24 @@ pub fn execute_container_command(
     command: ContainerCommand,
     path: Option<&OsStr>,
 ) -> Result<ContainerExecution, String> {
-    execute_container_command_with_timeout(command, path, EXECUTION_TIMEOUT)
+    execute_container_command_with_timeout(command, path, EXECUTION_TIMEOUT, None)
+}
+
+/// Like [`execute_container_command`], but `precheck` runs on the worker thread first and
+/// cancels the command when it fails.
+pub fn execute_container_command_checked(
+    command: ContainerCommand,
+    path: Option<&OsStr>,
+    precheck: Precheck,
+) -> Result<ContainerExecution, String> {
+    execute_container_command_with_timeout(command, path, EXECUTION_TIMEOUT, Some(precheck))
 }
 
 fn execute_container_command_with_timeout(
     command: ContainerCommand,
     path: Option<&OsStr>,
     timeout: Duration,
+    precheck: Option<Precheck>,
 ) -> Result<ContainerExecution, String> {
     if !matches!(command.program, "docker" | "podman") {
         return Err("Comando de container não permitido".into());
@@ -311,6 +554,23 @@ fn execute_container_command_with_timeout(
     let worker_cancel = Arc::clone(&cancel);
     let (sender, events) = mpsc::channel();
     let worker = std::thread::spawn(move || {
+        if let Some(precheck) = precheck {
+            let checked = precheck();
+            // The precheck can take several engine queries; a cancel or app close during it
+            // must keep the command from starting at all.
+            if worker_cancel.load(Ordering::Relaxed) {
+                let _ = sender.send(ContainerExecutionEvent::Finished(
+                    ContainerExecutionOutcome::Cancelled,
+                ));
+                return;
+            }
+            if let Err(reason) = checked {
+                let _ = sender.send(ContainerExecutionEvent::Finished(
+                    ContainerExecutionOutcome::Failed(reason),
+                ));
+                return;
+            }
+        }
         let mut process = Command::new(executable);
         process
             .args(&command.args)
@@ -485,6 +745,434 @@ fn probe(program: &str, args: &[&str], path: Option<&OsStr>) -> ProbeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use localcodepilot_core::compose_safety::ComposeSafety;
+
+    #[test]
+    fn reads_compose_volumes_from_docker_and_podman() {
+        // Real `volume inspect --format "{{json .}}"` rows (Docker 29.9 and Podman 6.1), plus
+        // a `volume ls` row in Docker's text-label form, which has no creation time.
+        let output = concat!(
+            r#"{"CreatedAt":"2026-10-31T21:35:40Z","Driver":"local","Labels":{"com.docker.compose.config-hash":"5a8d","com.docker.compose.project":"docker","com.docker.compose.volume":"dados"},"Mountpoint":"/var/lib/docker/volumes/docker_dados/_data","Name":"docker_dados","Scope":"local"}"#,
+            "\n",
+            r#"{"Driver":"local","Labels":"com.docker.volume.anonymous=","Name":"2bd5a26c7e71","Scope":"local"}"#,
+            "\n",
+            r#"{"Name":"lcpqa_dados","Driver":"local","CreatedAt":"2026-10-31T17:54:36.129741651-03:00","Labels":{"com.docker.compose.project":"lcpqa","com.docker.compose.volume":"dados"},"Scope":"local"}"#,
+            "\n",
+            r#"{"Driver":"local","Labels":"com.docker.compose.project=antigo","Name":"antigo_dados","Scope":"local"}"#,
+        );
+        let volumes = parse_compose_volumes(output);
+        assert_eq!(
+            volumes,
+            [
+                ComposeVolume {
+                    name: "docker_dados".into(),
+                    project: "docker".into(),
+                    created_at: Some("2026-10-31T21:35:40Z".into()),
+                },
+                ComposeVolume {
+                    name: "lcpqa_dados".into(),
+                    project: "lcpqa".into(),
+                    created_at: Some("2026-10-31T17:54:36.129741651-03:00".into()),
+                },
+                ComposeVolume {
+                    name: "antigo_dados".into(),
+                    project: "antigo".into(),
+                    created_at: None,
+                }
+            ]
+        );
+        assert_eq!(
+            volumes[0].identity().as_deref(),
+            Some("docker_dados@2026-10-31T21:35:40Z")
+        );
+        assert_eq!(volumes[2].identity(), None);
+    }
+
+    #[test]
+    fn estimates_the_compose_name_with_compose_precedence() {
+        if std::env::var_os("COMPOSE_PROJECT_NAME").is_some() {
+            return; // The variable would take precedence over every case below.
+        }
+        let root = std::env::temp_dir().join(format!(
+            "lcp-compose-name-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let directory = root.join("Minha Loja").join("Docker");
+        std::fs::create_dir_all(&directory).unwrap();
+        let manifest = directory.join("compose.yaml");
+        let override_file = directory.join("compose.override.yaml");
+        std::fs::write(&manifest, "services:\n  web:\n    image: nginx\n").unwrap();
+        let project = ContainerProject {
+            directory: directory.clone(),
+            dockerfile: None,
+            compose_file: Some(manifest.clone()),
+            compose_overrides: vec![override_file.clone()],
+            services: vec![],
+            warnings: vec![],
+            error: None,
+        };
+        assert_eq!(estimate_compose_name(&project), "docker");
+        // A BOM does not hide `name:`.
+        std::fs::write(&manifest, "\u{feff}name: Loja_Web\nservices: {}\n").unwrap();
+        assert_eq!(estimate_compose_name(&project), "loja_web");
+        // The override wins, as in Compose's merge.
+        std::fs::write(&override_file, "name: loja-override\n").unwrap();
+        assert_eq!(estimate_compose_name(&project), "loja-override");
+        // `.env` wins over the files, also with `export` and spaces.
+        std::fs::write(
+            directory.join(".env"),
+            "export COMPOSE_PROJECT_NAME = \"-Via-Env\"\n",
+        )
+        .unwrap();
+        assert_eq!(estimate_compose_name(&project), "via-env");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_the_compose_project_label_of_containers() {
+        let docker = r#"{"ID":"abc123def456","Names":"docker-db-1","State":"running","Labels":"com.docker.compose.project=docker,com.docker.compose.project.working_dir=C:\\loja\\docker,com.docker.compose.service=db"}"#;
+        let rows = parse_container_rows(ContainerEngine::Docker, docker);
+        assert_eq!(rows[0].compose_project.as_deref(), Some("docker"));
+        let podman = r#"{"Id":"abcdef987654","Names":["docker-db-1"],"State":"running","Labels":{"com.docker.compose.project":"docker"}}"#;
+        let rows = parse_container_rows(ContainerEngine::Podman, podman);
+        assert_eq!(rows[0].compose_project.as_deref(), Some("docker"));
+    }
+
+    /// Manual check with real engines and disposable data only: two projects whose Compose
+    /// files live in folders with the same name. Covers operations started from a terminal
+    /// and through the app. Requires the engine running and `nginx:alpine` available:
+    /// `LCP_QA_ENGINES=docker,podman cargo test -p localcodepilot-platform -- --ignored compose_name_collision`
+    #[test]
+    #[ignore = "requires Docker and/or Podman running"]
+    fn compose_name_collision_never_lets_one_project_touch_the_other() {
+        let engines = std::env::var("LCP_QA_ENGINES").unwrap_or_else(|_| "docker".into());
+        for engine in engines.split(',').map(str::trim) {
+            let engine = match engine {
+                "podman" => ContainerEngine::Podman,
+                _ => ContainerEngine::Docker,
+            };
+            collision_scenario(engine);
+        }
+    }
+
+    fn collision_scenario(engine: ContainerEngine) {
+        use localcodepilot_core::compose_safety::classify_environment;
+        use std::fs;
+
+        /// Removes only the disposable environments of this scenario, also when it fails.
+        struct Cleanup(ContainerEngine, std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for name in ["lcpqa-compose", "lcpqa-projeto-b"] {
+                    let _ = Command::new(self.0.program())
+                        .args([
+                            "compose",
+                            "-p",
+                            name,
+                            "down",
+                            "--volumes",
+                            "--remove-orphans",
+                        ])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+                let _ = fs::remove_dir_all(&self.1);
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("lcpqa-colisao-{engine}-{}", std::process::id()));
+        drop(Cleanup(engine, root.clone()));
+        let _cleanup = Cleanup(engine, root.clone());
+        // Both folders resolve to the disposable Compose name "lcpqa-compose".
+        let folder_a = root.join("projeto-a").join("lcpqa-compose");
+        let folder_b = root.join("projeto-b").join("lcpqa-compose");
+        let manifest = "services:\n  web:\n    image: docker.io/library/nginx:alpine\n    volumes:\n      - dados:/usr/share/nginx/html\nvolumes:\n  dados:\n";
+        for folder in [&folder_a, &folder_b] {
+            fs::create_dir_all(folder).unwrap();
+            fs::write(folder.join("compose.yaml"), manifest).unwrap();
+        }
+        let project = |folder: &std::path::Path| ContainerProject {
+            directory: folder.to_path_buf(),
+            dockerfile: None,
+            compose_file: Some(folder.join("compose.yaml")),
+            compose_overrides: vec![],
+            services: vec![],
+            warnings: vec![],
+            error: None,
+        };
+        let (a, b) = (project(&folder_a), project(&folder_b));
+        let terminal = |folder: &std::path::Path, args: &[&str]| {
+            let status = Command::new(engine.program())
+                .arg("compose")
+                .args(args)
+                .current_dir(folder)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "{engine} compose {args:?}");
+        };
+        let environment = |project: &ContainerProject| ComposeEnvironment {
+            directory: project.directory.clone(),
+            name: ComposeName::Resolved(resolve_compose_name(engine, project, None).unwrap()),
+        };
+        let ids = || {
+            query_engine_containers(engine, None)
+                .unwrap()
+                .into_iter()
+                .filter(|container| container.compose_project.as_deref() == Some("lcpqa-compose"))
+                .map(|container| (container.id, container.project_directory))
+                .collect::<Vec<_>>()
+        };
+
+        // 1. The provider resolves the same name for both folders.
+        assert_eq!(
+            resolve_compose_name(engine, &a, None).unwrap(),
+            "lcpqa-compose"
+        );
+        assert_eq!(
+            resolve_compose_name(engine, &b, None).unwrap(),
+            "lcpqa-compose"
+        );
+        let catalog = [environment(&a), environment(&b)];
+
+        // 2. Terminal starts A; the app must refuse to start or stop B, and A is untouched.
+        terminal(&folder_a, &["up", "--detach"]);
+        let before = ids();
+        assert_eq!(before.len(), 1);
+        for action in [ContainerAction::Start, ContainerAction::Stop] {
+            let blocked =
+                verify_compose_action(action, engine, &b, &catalog, &[], None).unwrap_err();
+            assert_eq!(blocked.title, "Nome de ambiente compartilhado");
+        }
+        let start_b = b.proposed_commands(engine)[1].clone();
+        assert_eq!(start_b.action, ContainerAction::Start);
+        let (catalog_check, project_b) = (catalog.to_vec(), b.clone());
+        let execution = execute_container_command_checked(
+            start_b,
+            None,
+            Box::new(move || {
+                verify_compose_action(
+                    ContainerAction::Start,
+                    engine,
+                    &project_b,
+                    &catalog_check,
+                    &[],
+                    None,
+                )
+                .map_err(|blocked| blocked.title)
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            finished(&execution.events),
+            ContainerExecutionOutcome::Failed("Nome de ambiente compartilhado".into())
+        );
+        assert_eq!(ids(), before, "A must keep the same container");
+
+        // 3. Giving B its own name resolves the conflict; the app starts B safely.
+        fs::write(
+            folder_b.join("compose.yaml"),
+            format!("name: lcpqa-projeto-b\n{manifest}"),
+        )
+        .unwrap();
+        let catalog = [environment(&a), environment(&b)];
+        assert_eq!(
+            catalog[1].name,
+            ComposeName::Resolved("lcpqa-projeto-b".into())
+        );
+        let (catalog_check, project_b) = (catalog.to_vec(), b.clone());
+        let execution = execute_container_command_checked(
+            b.proposed_commands(engine)[1].clone(),
+            None,
+            Box::new(move || {
+                verify_compose_action(
+                    ContainerAction::Start,
+                    engine,
+                    &project_b,
+                    &catalog_check,
+                    &[],
+                    None,
+                )
+                .map_err(|blocked| blocked.title)
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            finished(&execution.events),
+            ContainerExecutionOutcome::Succeeded
+        );
+        assert_eq!(ids(), before, "starting B must not recreate A");
+        assert!(
+            verify_compose_action(ContainerAction::Stop, engine, &a, &catalog, &[], None).is_ok()
+        );
+
+        // 4. App -> terminal: a third folder with the old name, started from the terminal,
+        //    takes over A's container. The app now refuses to stop A.
+        let folder_c = root.join("projeto-c").join("lcpqa-compose");
+        fs::create_dir_all(&folder_c).unwrap();
+        // A different configuration, as with two real projects: Compose recreates the
+        // container (an identical one would be left untouched).
+        fs::write(
+            folder_c.join("compose.yaml"),
+            manifest.replace(
+                "    volumes:\n      - dados",
+                "    environment:\n      ORIGEM: projeto-c\n    volumes:\n      - dados",
+            ),
+        )
+        .unwrap();
+        terminal(&folder_c, &["up", "--detach"]);
+        let blocked = verify_compose_action(ContainerAction::Stop, engine, &a, &catalog, &[], None)
+            .unwrap_err();
+        assert_eq!(blocked.title, "Ambiente em uso por outra pasta");
+
+        // 5. Data left without containers needs confirmation before A starts again.
+        terminal(&folder_c, &["down"]);
+        let volumes = list_compose_volumes(engine, None).unwrap();
+        let unconfirmed = classify_environment(
+            &catalog[0],
+            &catalog,
+            engine,
+            Some(&query_engine_containers(engine, None).unwrap()),
+            Some(&volumes),
+            &[],
+        );
+        let ComposeSafety::UnconfirmedData { volumes, .. } = unconfirmed else {
+            panic!("expected unconfirmed data, got {unconfirmed:?}");
+        };
+        let pending = volumes
+            .iter()
+            .map(|volume| {
+                volume
+                    .identity()
+                    .expect("the engine reports creation times")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            verify_compose_action(ContainerAction::Start, engine, &a, &catalog, &[], None).is_err()
+        );
+        assert!(
+            verify_compose_action(ContainerAction::Start, engine, &a, &catalog, &pending, None)
+                .is_ok()
+        );
+
+        fn finished(events: &Receiver<ContainerExecutionEvent>) -> ContainerExecutionOutcome {
+            loop {
+                match events.recv_timeout(Duration::from_secs(300)).unwrap() {
+                    ContainerExecutionEvent::Finished(outcome) => return outcome,
+                    ContainerExecutionEvent::Output(_) => {}
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancelling_during_the_precheck_never_starts_the_command() {
+        use localcodepilot_core::containers::ContainerAction;
+        use std::{fs, path::Path};
+
+        let directory = std::env::temp_dir().join(format!(
+            "localcodepilot-precheck-cancel-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/ping.exe"),
+            directory.join("docker.exe"),
+        )
+        .unwrap();
+        let command = ContainerCommand {
+            action: ContainerAction::Start,
+            label: "Iniciar ambiente",
+            program: "docker",
+            args: vec!["-n".into(), "30".into(), "127.0.0.1".into()],
+            working_directory: directory.clone(),
+        };
+        let (started_tx, started_rx) = mpsc::channel();
+        let execution = execute_container_command_with_timeout(
+            command,
+            Some(directory.as_os_str()),
+            Duration::from_secs(60),
+            // A slow but successful verification, cancelled while it runs.
+            Some(Box::new(move || {
+                let _ = started_tx.send(());
+                std::thread::sleep(Duration::from_millis(500));
+                Ok(())
+            })),
+        )
+        .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        execution.cancel();
+        let outcome = match execution
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+        {
+            ContainerExecutionEvent::Finished(outcome) => outcome,
+            ContainerExecutionEvent::Output(line) => panic!("command ran: {line}"),
+        };
+        assert_eq!(outcome, ContainerExecutionOutcome::Cancelled);
+        drop(execution);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_precheck_cancels_the_command_before_it_starts() {
+        use localcodepilot_core::containers::ContainerAction;
+        use std::{fs, path::Path};
+
+        let directory = std::env::temp_dir().join(format!(
+            "localcodepilot-precheck-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        // Any run of the fake engine would create this file.
+        let fake_docker = directory.join("docker.exe");
+        fs::copy(
+            Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/ping.exe"),
+            &fake_docker,
+        )
+        .unwrap();
+        let command = ContainerCommand {
+            action: ContainerAction::Start,
+            label: "Iniciar ambiente",
+            program: "docker",
+            args: vec!["-n".into(), "30".into(), "127.0.0.1".into()],
+            working_directory: directory.clone(),
+        };
+        let started = Instant::now();
+        let execution = execute_container_command_with_timeout(
+            command,
+            Some(directory.as_os_str()),
+            Duration::from_secs(60),
+            Some(Box::new(|| Err("Nome de ambiente compartilhado".into()))),
+        )
+        .unwrap();
+        // The first event must be the cancellation: any output means the command ran.
+        let outcome = match execution
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+        {
+            ContainerExecutionEvent::Finished(outcome) => outcome,
+            ContainerExecutionEvent::Output(line) => panic!("command ran: {line}"),
+        };
+        assert_eq!(
+            outcome,
+            ContainerExecutionOutcome::Failed("Nome de ambiente compartilhado".into())
+        );
+        // ping -n 30 would take ~30 s if it had started.
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(execution);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn reads_real_container_rows_and_compose_project_labels() {
@@ -708,6 +1396,7 @@ mod tests {
             command.clone(),
             Some(directory.as_os_str()),
             Duration::from_secs(10),
+            None,
         )
         .unwrap();
         cancelled.cancel();
@@ -721,6 +1410,7 @@ mod tests {
             command,
             Some(directory.as_os_str()),
             Duration::from_millis(250),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -739,6 +1429,7 @@ mod tests {
             },
             Some(directory.as_os_str()),
             Duration::from_secs(10),
+            None,
         )
         .unwrap();
         let close_started = Instant::now();

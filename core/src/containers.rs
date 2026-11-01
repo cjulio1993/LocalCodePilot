@@ -4,7 +4,7 @@ use std::{
     path::{Component, Path, PathBuf, Prefix},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerEngine {
     Docker,
     Podman,
@@ -54,6 +54,8 @@ pub struct RuntimeContainer {
     pub status: String,
     pub ports: String,
     pub service: Option<String>,
+    /// Compose project name label (`com.docker.compose.project`).
+    pub compose_project: Option<String>,
     pub project_directory: Option<PathBuf>,
     pub running_for: Option<String>,
 }
@@ -206,6 +208,11 @@ pub fn path_is_within(path: &Path, root: &Path) -> bool {
     !root.is_empty() && path_key(path).starts_with(&root)
 }
 
+/// Same folder under the rules of [`path_is_within`].
+pub fn same_folder(left: &Path, right: &Path) -> bool {
+    path_is_within(left, right) && path_is_within(right, left)
+}
+
 fn path_key(path: &Path) -> Vec<String> {
     let mut key = Vec::new();
     for component in path.components() {
@@ -328,23 +335,30 @@ impl ContainerCommand {
 }
 
 impl ContainerProject {
+    /// `--file` arguments for the main manifest and its overrides, relative to `directory`.
+    /// Every Compose call, including the project-name query, uses the same list.
+    pub fn compose_file_arguments(&self) -> Vec<String> {
+        self.compose_file
+            .iter()
+            .chain(&self.compose_overrides)
+            .flat_map(|file| {
+                [
+                    "--file".to_owned(),
+                    file.file_name()
+                        .unwrap_or(file.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                ]
+            })
+            .collect()
+    }
+
     pub fn proposed_commands(&self, engine: ContainerEngine) -> Vec<ContainerCommand> {
         if self.error.is_some() {
             return Vec::new();
         }
-        if let Some(file) = &self.compose_file {
-            let compose_arguments = std::iter::once(file)
-                .chain(&self.compose_overrides)
-                .flat_map(|file| {
-                    [
-                        "--file".to_owned(),
-                        file.file_name()
-                            .unwrap_or(file.as_os_str())
-                            .to_string_lossy()
-                            .into_owned(),
-                    ]
-                })
-                .collect::<Vec<_>>();
+        if self.compose_file.is_some() {
+            let compose_arguments = self.compose_file_arguments();
             let validate_args = match engine {
                 ContainerEngine::Docker => vec!["config", "--quiet"],
                 ContainerEngine::Podman => vec!["config"],
@@ -445,6 +459,7 @@ mod tests {
             service: Some("web".into()),
             project_directory: None,
             running_for: None,
+            compose_project: None,
         };
         assert_eq!(container.browser_urls(), ["http://localhost:8080"]);
         assert_eq!(
@@ -472,6 +487,7 @@ mod tests {
             service: Some("db".into()),
             project_directory: project_directory.map(PathBuf::from),
             running_for: None,
+            compose_project: None,
         }
     }
 

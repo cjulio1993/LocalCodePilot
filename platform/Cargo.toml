@@ -8,3 +8,4 @@ license.workspace = true
 localcodepilot-core.workspace = true
 sysinfo.workspace = true
 serde_json.workspace = true
+serde_yaml_ng.workspace = true
