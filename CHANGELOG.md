@@ -8,7 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
-- Proteção contra conflitos de nome Compose: o aplicativo identifica cada ambiente pelo motor, pelo nome que o provedor Compose resolve (`name:`, `COMPOSE_PROJECT_NAME` no ambiente ou no `.env`, nome da pasta) e pela pasta de origem dos containers. Quando dois projetos resolvem o mesmo nome (por exemplo, dois `docker/compose.yaml`), quando há containers desse nome criados a partir de outra pasta, quando há volumes sem container que comprove a origem ou quando não é possível confirmar, iniciar e parar o ambiente, e iniciar, parar e reiniciar seus containers, ficam bloqueados, com explicação e o trecho `name:` sugerido para copiar. A verificação é refeita logo antes de executar. Validar, consultar estado e logs continuam disponíveis.
+- Proteção contra conflitos de nome Compose: o aplicativo identifica cada ambiente pelo motor, pelo nome que o provedor Compose resolve (`name:`, `COMPOSE_PROJECT_NAME` no ambiente ou no `.env`, nome da pasta) e pela pasta de origem dos containers. Quando dois projetos resolvem o mesmo nome (por exemplo, dois `docker/compose.yaml`), quando há containers desse nome criados a partir de outra pasta, quando há volumes sem container que comprove a origem ou quando não é possível confirmar, iniciar e parar o ambiente, e iniciar, parar e reiniciar seus containers, ficam bloqueados, com explicação e a configuração `name:` sugerida, com o botão **Copiar configuração sugerida**. A verificação é refeita logo antes de executar. Validar, consultar estado e logs continuam disponíveis.
 - Volumes deixados sem containers (por exemplo, após `compose down`) podem ser confirmados como do projeto; a confirmação fica salva por motor e pasta e vale só para aqueles volumes (nome e data de criação).
 - A CLI `containers` mostra o nome Compose efetivo de cada ambiente e os conflitos encontrados.
 - Preparação guiada de Docker e Podman: quando um motor não está pronto, a aba Containers e a CLI `containers` explicam o que falta (WSL, instalação, motor parado, máquina Podman ou provedor Compose) e mostram comandos oficiais para o usuário copiar e rodar, links de documentação e condições de licença. O aplicativo não executa esses comandos.
@@ -16,6 +16,12 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Alterado
 
+- A Visão geral mostra o que está rodando, o que precisa de atenção e o que está parado, com uma ação principal por projeto (Iniciar, Abrir site, Ver logs ou Detalhes). Os estados usam os mesmos nomes em todo o aplicativo: Rodando, Parado, Iniciando e Com problema.
+- Projetos ganhou busca por nome e filtros por estado, com visualização em cartões ou lista; filtro e visualização ficam salvos.
+- O selo do site descreve o resultado da verificação HTTP em linguagem simples (por exemplo, "Servidor respondeu; página não encontrada" para um 404) e mostra o código ao passar o mouse; sem verificação, não aparece selo. Em projetos com containers, o endereço aparece como "Endereço provável".
+- Em projetos com containers, o botão de parar diz **Parar em Containers**, porque a confirmação acontece nessa tela.
+- Um `package.json` inválido mostra o que fazer: corrigir o arquivo para iniciar o projeto.
+- A Ajuda foi reescrita para quem está começando: primeiros passos, estados, o que fazer quando algo não funciona, sites e logs, containers e bancos, com os detalhes técnicos num bloco recolhido.
 - Visão geral e Projetos atualizam o estado dos containers a cada 30 segundos, consultando apenas a lista de containers, para manter cartões e diagnóstico de banco atualizados.
 - URLs candidatas de containers reconhecem mais portas de servidores de desenvolvimento, como 3001, 4000, 4200, 5000 e 8025, e não repetem a mesma URL publicada em IPv4 e IPv6.
 

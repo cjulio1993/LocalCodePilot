@@ -29,6 +29,10 @@ pub struct WorkspaceState {
     /// Compose volumes the user confirmed as belonging to an environment that has no
     /// containers, for example after `compose down`.
     pub compose_data_confirmations: Vec<ComposeDataConfirmation>,
+    /// Last state filter on Projects (`running`, `problem`, `stopped`; empty = all).
+    pub project_filter: String,
+    /// `list` or empty for cards.
+    pub project_view: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +58,8 @@ impl Default for WorkspaceState {
             update_remind_after: 0,
             cached_update: None,
             compose_data_confirmations: Vec::new(),
+            project_filter: String::new(),
+            project_view: String::new(),
         }
     }
 }
