@@ -21,6 +21,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - O selo do site descreve o resultado da verificação HTTP em linguagem simples (por exemplo, "Servidor respondeu; página não encontrada" para um 404) e mostra o código ao passar o mouse; sem verificação, não aparece selo. Em projetos com containers, o endereço aparece como "Endereço provável".
 - Em projetos com containers, o botão de parar diz **Parar em Containers**, porque a confirmação acontece nessa tela.
 - Um `package.json` inválido mostra o que fazer: corrigir o arquivo para iniciar o projeto.
+- O aplicativo e a CLI apresentam sites WordPress como projetos PHP; a detecção continua decidindo como o site inicia e onde está o banco.
 - A Ajuda foi reescrita para quem está começando: primeiros passos, estados, o que fazer quando algo não funciona, sites e logs, containers e bancos, com os detalhes técnicos num bloco recolhido.
 - Visão geral e Projetos atualizam o estado dos containers a cada 30 segundos, consultando apenas a lista de containers, para manter cartões e diagnóstico de banco atualizados.
 - URLs candidatas de containers reconhecem mais portas de servidores de desenvolvimento, como 3001, 4000, 4200, 5000 e 8025, e não repetem a mesma URL publicada em IPv4 e IPv6.
@@ -32,7 +33,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Containers Podman mostram nome, portas e URLs; antes os campos em lista retornados pelo Podman eram ignorados.
 - Copiar texto do aplicativo para a área de transferência voltou a funcionar; o suporte a clipboard do `eframe` estava desativado no build.
 - Com o motor parado, o Compose aparece como "será verificado quando o motor estiver ativo" em vez de ausente.
-- WordPress com o arquivo Compose numa subpasta (como `docker/`) ou com um Compose que declara a imagem do WordPress em outra pasta do projeto não oferece mais "Servidor PHP" (`php -S`): o cartão mostra **Iniciar com Containers**. Um Compose de outro serviço na mesma pasta pai continua sem afetar o site.
+- Um site PHP com o arquivo Compose numa subpasta (como `docker/`) ou com um Compose que declara a imagem do site em outra pasta do projeto não oferece mais "Servidor PHP" (`php -S`): o cartão mostra **Iniciar com Containers**. Um Compose de outro serviço na mesma pasta pai continua sem afetar o site.
 - `DB_HOST` com o nome de um serviço Compose do projeto, como `db`, aparece como banco em container, e não como servidor remoto. A CLI `databases` informa se o container está em execução, parado ou ainda não criado.
 - Caminhos de projetos aparecem sem o prefixo `\\?\` na CLI e no aplicativo.
 - A CLI aceita pastas relativas, como `.`, em `inspect`, `containers` e `databases`; antes, `databases .` não encontrava o container do banco em execução.

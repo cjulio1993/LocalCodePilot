@@ -1594,7 +1594,7 @@ impl LocalCodePilot {
             self.focused_project = Some(project_path.to_path_buf());
             self.page = Page::Containers;
             self.notify(
-                "Este WordPress usa o banco definido no Compose. Inicie os serviços na página Containers.",
+                "Este projeto usa o banco definido no Compose. Inicie os serviços na página Containers.",
             );
             return;
         }
@@ -3394,7 +3394,7 @@ impl LocalCodePilot {
                     {
                         ui.colored_label(
                             Color32::from_rgb(255, 205, 75),
-                            "WordPress: configuração de banco ausente ou DB_HOST dinâmico; confira wp-config.php e o serviço MySQL/MariaDB.",
+                            "Configuração de banco ausente ou DB_HOST dinâmico; confira wp-config.php e o serviço MySQL/MariaDB.",
                         );
                     }
                     if has_dependency_logs

@@ -886,10 +886,14 @@ fn project_row(
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(&project.name).strong().size(15.0))
                     .on_hover_text(display_path(&project.path));
-                if let Some(technology) = project.technologies.first() {
+                // One label only: the stack, not how it runs (the actions already say Containers).
+                if let Some(technology) = project
+                    .shown_technologies()
+                    .find(|technology| *technology != TechnologyKind::Containers)
+                {
                     ui.label(
                         RichText::new(technology.to_string())
-                            .color(technology_color(*technology))
+                            .color(technology_color(technology))
                             .size(12.0),
                     );
                 } else if let Some(runtime) = project.runtimes.first() {
@@ -988,8 +992,8 @@ impl ProjectCard<'_> {
                     });
                 });
                 ui.horizontal_wrapped(|ui| {
-                    for technology in &project.technologies {
-                        runtime_badge(ui, &technology.to_string(), technology_color(*technology));
+                    for technology in project.shown_technologies() {
+                        runtime_badge(ui, &technology.to_string(), technology_color(technology));
                     }
                     for runtime in project
                         .runtimes
@@ -999,7 +1003,8 @@ impl ProjectCard<'_> {
                     {
                         runtime_badge(ui, &runtime.to_string(), runtime_color(runtime));
                     }
-                    if project.runtimes.is_empty() && project.technologies.is_empty() {
+                    if project.runtimes.is_empty() && project.shown_technologies().next().is_none()
+                    {
                         runtime_badge(ui, "Projeto local", theme::MUTED);
                     }
                 });

@@ -54,11 +54,19 @@ impl Project {
         }
     }
 
+    /// Technologies shown to the user. WordPress is still detected, because it decides how
+    /// the site starts and where the database is, but it is presented as the PHP project it is.
+    pub fn shown_technologies(&self) -> impl Iterator<Item = TechnologyKind> + '_ {
+        self.technologies
+            .iter()
+            .copied()
+            .filter(|technology| *technology != TechnologyKind::WordPress)
+    }
+
     pub fn display_stack(&self) -> String {
         let labels = self
-            .technologies
-            .iter()
-            .map(ToString::to_string)
+            .shown_technologies()
+            .map(|technology| technology.to_string())
             .chain(
                 self.runtimes
                     .iter()
@@ -158,6 +166,14 @@ mod tests {
         let project = Project::new(PathBuf::from("project"), vec![RuntimeKind::Rust]);
         assert!(catalog.add(project.clone()));
         assert!(!catalog.add(project));
+    }
+
+    #[test]
+    fn wordpress_is_presented_as_php() {
+        let project = Project::new(PathBuf::from("blog"), vec![RuntimeKind::Php])
+            .with_technologies(vec![TechnologyKind::WordPress, TechnologyKind::Containers]);
+        assert_eq!(project.display_stack(), "Containers + PHP");
+        assert!(project.technologies.contains(&TechnologyKind::WordPress));
     }
 
     #[test]
