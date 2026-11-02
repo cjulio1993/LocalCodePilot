@@ -101,7 +101,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Com problema",
-                "algo impede ou interrompe a execução. Leia o motivo mostrado no projeto e abra Detalhes para investigar.",
+                "algo impede ou interrompe a execução. Leia o motivo mostrado no projeto; Ver logs e Detalhes técnicos mostram o que aconteceu.",
             ),
             Block::Text("Ao lado do endereço, um selo mostra o resultado da verificação do site:"),
             Block::Item("Site respondendo", "o endereço respondeu à verificação."),
@@ -133,14 +133,14 @@ const SECTIONS: &[HelpSection] = &[
                 "porta-ocupada",
                 &Block::Item(
                     "Porta ocupada",
-                    "outro processo pode estar usando a porta. Veja a porta e o processo em Ver logs antes de alterar a configuração.",
+                    "o projeto avisa quando outro programa está usando a porta dele. Qual programa é aparece em Detalhes técnicos e em Ver logs; confira antes de alterar a configuração.",
                 ),
             ),
             Block::Anchor(
                 "motor-parado",
                 &Block::Item(
                     "Docker ou Podman parado",
-                    "abra Containers, siga a orientação mostrada para o motor e use Verificar motores e arquivos novamente.",
+                    "abra Containers. No aviso do motor, Como resolver mostra os passos; depois use Verificar de novo.",
                 ),
             ),
             Block::Item(
@@ -181,7 +181,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Em Containers, escolha o motor, confira os serviços e o comando antes de confirmar. Um container rodando ou uma porta publicada não prova que o site está respondendo.",
             ),
             Block::Text(
-                "Dois projetos com o mesmo nome de ambiente Compose, por exemplo duas pastas docker/ com compose.yaml, ficam bloqueados para iniciar e parar até receberem nomes diferentes. Isso evita que um projeto altere os containers e os dados do outro.",
+                "Dois projetos com o mesmo nome de ambiente Compose, por exemplo duas pastas docker/ com compose.yaml, ficam bloqueados para iniciar e parar até receberem nomes diferentes. Isso evita que um projeto altere os containers e os dados do outro. No aviso do ambiente, Como resolver mostra os passos e a configuração sugerida.",
             ),
         ],
         link: Some((Page::Containers, "Abrir Containers")),
@@ -204,8 +204,8 @@ const SECTIONS: &[HelpSection] = &[
         title: "Detalhes técnicos",
         blocks: &[
             Block::Item(
-                "Detalhes do projeto",
-                "pasta do projeto, comandos detectados e diagnóstico completo.",
+                "Detalhes técnicos do projeto",
+                "pasta, comandos detectados e, quando o projeto falha, o processo, o comando e o código de saída.",
             ),
             Block::Item(
                 "Processos",

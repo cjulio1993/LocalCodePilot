@@ -160,44 +160,63 @@ fn engine_of(command: &ContainerCommand) -> ContainerEngine {
 enum BlockedPanelAction {
     Copy(String),
     ConfirmVolumes,
+    CheckAgain,
 }
 
-/// Explains why Compose actions are blocked and how to resolve it.
-fn blocked_panel(ui: &mut egui::Ui, blocked: &BlockedAction) -> Option<BlockedPanelAction> {
-    let warning = Color32::from_rgb(255, 205, 75);
+/// Identifies the Compose notice of an environment, so other screens can open it.
+fn compose_notice_id(directory: &Path) -> egui::Id {
+    egui::Id::unique(("compose-notice", directory))
+}
+
+/// Why Compose actions are blocked: one sentence first, the steps under "Como resolver" and
+/// names, folders and volumes under "Detalhes técnicos".
+fn blocked_panel(
+    ui: &mut egui::Ui,
+    directory: &Path,
+    blocked: &BlockedAction,
+    can_check: bool,
+) -> Option<BlockedPanelAction> {
     let mut action = None;
-    Frame::new()
-        .fill(warning.gamma_multiply(0.08))
-        .stroke(Stroke::new(1.0, warning.gamma_multiply(0.6)))
-        .corner_radius(8)
-        .inner_margin(Margin::same(12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(&blocked.title).strong().color(warning));
-            ui.label(&blocked.explanation);
-            ui.label(
-                RichText::new("Iniciar e parar o ambiente ficam bloqueados até resolver.")
-                    .color(theme::MUTED)
-                    .size(11.0),
-            );
-            for (index, step) in blocked.steps.iter().enumerate() {
-                ui.label(RichText::new(format!("{}. {step}", index + 1)).size(12.0));
-            }
-            if let Some(snippet) = &blocked.snippet {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(snippet).monospace());
-                    if ui.small_button("Copiar configuração sugerida").clicked() {
-                        ui.ctx().copy_text(snippet.clone());
-                        action = Some(BlockedPanelAction::Copy(snippet.clone()));
-                    }
-                });
-            }
-            if blocked.can_confirm_volumes && ui.button("Estes dados são deste projeto").clicked()
-            {
-                action = Some(BlockedPanelAction::ConfirmVolumes);
-            }
-        });
-    action
+    let sentence = format!("{} Iniciar e parar estão bloqueados.", blocked.summary);
+    // Nothing to change in the file when the environment could not be verified: check again.
+    let unverifiable = blocked.snippet.is_none() && !blocked.can_confirm_volumes;
+    let mut notice = notice::Notice::new(compose_notice_id(directory), &sentence);
+    if unverifiable {
+        notice = notice.action("Verificar de novo", can_check);
+    }
+    let mut resolve = |ui: &mut egui::Ui| {
+        for (index, step) in blocked.steps.iter().enumerate() {
+            ui.label(RichText::new(format!("{}. {step}", index + 1)).size(12.0));
+        }
+        if let Some(snippet) = &blocked.snippet {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(snippet).monospace());
+                if ui.small_button("Copiar configuração sugerida").clicked() {
+                    ui.ctx().copy_text(snippet.clone());
+                    action = Some(BlockedPanelAction::Copy(snippet.clone()));
+                }
+            });
+        }
+        if blocked.can_confirm_volumes && ui.button("Estes dados são deste projeto").clicked() {
+            action = Some(BlockedPanelAction::ConfirmVolumes);
+        }
+    };
+    let mut details = |ui: &mut egui::Ui| {
+        ui.label(RichText::new(&blocked.title).strong().size(12.0));
+        notice::detail_line(ui, &blocked.explanation);
+    };
+    let check = notice.show(
+        ui,
+        notice::NoticeParts {
+            resolve: Some(&mut resolve),
+            details: Some(&mut details),
+        },
+    );
+    if check {
+        Some(BlockedPanelAction::CheckAgain)
+    } else {
+        action
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,12 +260,88 @@ fn container_summary(container: &RuntimeContainer) -> String {
     summary
 }
 
+/// First layer of an engine that is not ready to use.
+#[derive(Debug, PartialEq, Eq)]
+struct EngineMessage {
+    sentence: String,
+    action: Option<&'static str>,
+    resolve: &'static str,
+    /// Shown above the preparation steps.
+    hint: Option<&'static str>,
+}
+
+/// `None` when the engine and Compose are ready. The diagnosis only knows whether the CLI ran
+/// and whether `info` answered, so a failed `info` is not called "stopped": a missing
+/// permission or a wrong connection fail the same way.
+fn engine_message(diagnosis: &EngineDiagnosis) -> Option<EngineMessage> {
+    let engine = diagnosis.engine;
+    let check = Some("Verificar de novo");
+    let (sentence, action, resolve, hint) = match diagnosis.state {
+        EngineState::Ready if diagnosis.compose_available => return None,
+        EngineState::Ready => (
+            format!("O {engine} está pronto, mas o Compose não foi confirmado."),
+            check,
+            "Como resolver",
+            None,
+        ),
+        EngineState::Missing => (
+            format!("Não foi possível encontrar o {engine} neste computador."),
+            None,
+            "Como instalar",
+            None,
+        ),
+        EngineState::Unavailable => (
+            format!("O {engine} foi encontrado, mas não foi possível acessá-lo."),
+            check,
+            "Como resolver",
+            Some("Ele pode estar parado. Siga os passos e clique em Verificar de novo."),
+        ),
+        EngineState::TimedOut => (
+            format!("O {engine} demorou para responder."),
+            check,
+            "Como resolver",
+            None,
+        ),
+        EngineState::QueryFailed => (
+            format!("O {engine} respondeu com erro."),
+            check,
+            "Como resolver",
+            None,
+        ),
+    };
+    Some(EngineMessage {
+        sentence,
+        action,
+        resolve,
+        hint,
+    })
+}
+
+/// What the diagnosis found, for "Detalhes técnicos".
+fn engine_status(state: EngineState) -> &'static str {
+    match state {
+        EngineState::Ready => "Motor disponível",
+        EngineState::Missing => "CLI não encontrada no PATH",
+        EngineState::Unavailable => "CLI encontrada; a consulta de informações do motor falhou",
+        EngineState::TimedOut => "Consulta excedeu o tempo limite",
+        EngineState::QueryFailed => "A CLI não respondeu corretamente",
+    }
+}
+
+fn compose_status(diagnosis: &EngineDiagnosis) -> &'static str {
+    if diagnosis.compose_available {
+        "Compose disponível"
+    } else if diagnosis.state == EngineState::Ready {
+        "Compose não confirmado; verifique o plugin ou provedor"
+    } else {
+        "Compose será verificado quando o motor estiver ativo"
+    }
+}
+
 /// Numbered preparation steps for an engine. Commands are only copied for the user to run.
 /// Returns the command copied in this frame.
 fn engine_guidance_panel(ui: &mut egui::Ui, guidance: &EngineGuidance) -> Option<&'static str> {
     let mut copied = None;
-    ui.add_space(8.0);
-    ui.label(RichText::new(guidance.summary).strong().size(12.0));
     for (index, step) in guidance.steps.iter().enumerate() {
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -619,10 +714,10 @@ impl LocalCodePilot {
             {
                 self.refresh_containers(ui.ctx().clone());
             }
+            if self.container_state.pending.is_some() {
+                ui.spinner();
+            }
         });
-        if self.container_state.pending.is_some() {
-            ui.spinner();
-        }
         if self.container_state.pending.is_none()
             && !self
                 .container_state
@@ -645,6 +740,7 @@ impl LocalCodePilot {
         }
         self.container_execution_panel(ui);
         let mut requested = None;
+        let mut resolve_in = None;
         for container in self
             .container_state
             .runtime_containers
@@ -704,21 +800,26 @@ impl LocalCodePilot {
                                 egui::Button::new(command.label),
                             );
                             if let Err(blocked) = guard {
-                                response.on_disabled_hover_text(&blocked.explanation);
-                                blocked_reason = Some(blocked.title);
+                                response.on_disabled_hover_text(blocked.summary);
+                                blocked_reason = Some(blocked.summary);
                             } else if response.clicked() {
                                 requested = Some(command);
                             }
                         }
                     });
                     if let Some(reason) = blocked_reason {
-                        ui.label(
-                            RichText::new(format!(
-                                "{reason}: iniciar, parar e reiniciar estão bloqueados para não afetar outro projeto. Veja como resolver em Containers."
-                            ))
-                            .color(Color32::from_rgb(255, 205, 75))
-                            .size(11.0),
-                        );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{reason} Iniciar, parar e reiniciar estão bloqueados."
+                                ))
+                                .color(theme::WARNING)
+                                .size(12.0),
+                            );
+                            if ui.link("Como resolver").clicked() {
+                                resolve_in = container.project_directory.clone();
+                            }
+                        });
                     }
                 });
             ui.add_space(8.0);
@@ -730,8 +831,34 @@ impl LocalCodePilot {
                 self.start_container_execution(command);
             }
         }
+        if let Some(folder) = resolve_in {
+            self.show_compose_notice(ui.ctx(), &folder);
+        }
         self.container_confirmation(ui.ctx());
         ui.add_space(8.0);
+    }
+
+    /// Opens Containers on the environment created from `folder`, with "Como resolver" open.
+    fn show_compose_notice(&mut self, ctx: &egui::Context, folder: &Path) {
+        let directory = self
+            .container_state
+            .projects
+            .iter()
+            .find(|project| same_folder(&project.directory, folder))
+            .map_or_else(|| folder.to_path_buf(), |project| project.directory.clone());
+        notice::open_resolve(ctx, compose_notice_id(&directory));
+        if self.focused_project.is_none() {
+            // The project the Compose folder belongs to (`wp-blog`, not its `docker/`).
+            self.focused_project = Some(
+                self.projects
+                    .iter()
+                    .map(|project| &project.path)
+                    .find(|path| directory.starts_with(path))
+                    .cloned()
+                    .unwrap_or(directory),
+            );
+        }
+        self.page = Page::Containers;
     }
 
     pub(super) fn refresh_containers(&mut self, ctx: egui::Context) {
@@ -1010,20 +1137,27 @@ impl LocalCodePilot {
             .execution
             .as_ref()
             .is_some_and(|session| session.execution.is_some());
-        if ui
-            .add_enabled(
-                !checking && !executing && self.discovery.is_none(),
-                egui::Button::new("Verificar motores e arquivos"),
-            )
-            .clicked()
-        {
+        // The progress sits beside the button: a line of its own would push the page down
+        // every 15 seconds and move the buttons under the pointer.
+        let check = ui
+            .horizontal(|ui| {
+                let clicked = ui
+                    .add_enabled(
+                        !checking && !executing && self.discovery.is_none(),
+                        egui::Button::new("Verificar motores e arquivos"),
+                    )
+                    .clicked();
+                if checking {
+                    ui.spinner();
+                    ui.label("Verificando em segundo plano...");
+                }
+                clicked
+            })
+            .inner;
+        if check {
             self.refresh_containers(ui.ctx().clone());
         }
         if checking {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Verificando em segundo plano...");
-            });
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         if let Some(error) = &self.container_state.error {
@@ -1033,6 +1167,7 @@ impl LocalCodePilot {
         self.container_execution_panel(ui);
         ui.add_space(12.0);
         let mut copied = None;
+        let mut check_engines = false;
         for diagnosis in &self.container_state.engines {
             let guidance = self
                 .container_state
@@ -1046,39 +1181,52 @@ impl LocalCodePilot {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new(diagnosis.engine.to_string()).strong());
-                    let (status, color) = match diagnosis.state {
-                        EngineState::Ready => ("Motor disponível", theme::SUCCESS),
-                        EngineState::Missing => ("CLI não encontrada no PATH", theme::MUTED),
-                        EngineState::Unavailable => (
-                            "CLI encontrada; motor parado ou inacessível",
-                            Color32::from_rgb(255, 205, 75),
-                        ),
-                        EngineState::TimedOut => (
-                            "Consulta excedeu o tempo limite; tente novamente",
-                            Color32::from_rgb(255, 205, 75),
-                        ),
-                        EngineState::QueryFailed => (
-                            "A CLI não respondeu corretamente",
-                            Color32::from_rgb(255, 205, 75),
-                        ),
+                    let Some(message) = engine_message(diagnosis) else {
+                        ui.colored_label(theme::SUCCESS, "Pronto para usar, com Compose");
+                        return;
                     };
-                    ui.colored_label(color, status);
-                    if diagnosis.state != EngineState::Missing {
-                        ui.label(if diagnosis.compose_available {
-                            "Compose disponível"
-                        } else if diagnosis.state == EngineState::Ready {
-                            "Compose não confirmado; verifique o plugin ou provedor"
-                        } else {
-                            "Compose será verificado quando o motor estiver ativo"
-                        });
+                    let mut notice = notice::Notice::new(
+                        egui::Id::unique(("engine-notice", diagnosis.engine.to_string())),
+                        &message.sentence,
+                    )
+                    .resolve_label(message.resolve);
+                    if let Some(action) = message.action {
+                        notice = notice.action(action, !checking && !executing);
                     }
-                    if let Some(guidance) = &guidance
-                        && let Some(command) = engine_guidance_panel(ui, guidance)
-                    {
-                        copied = Some(command);
+                    let mut resolve = |ui: &mut egui::Ui| {
+                        if let Some(hint) = message.hint {
+                            ui.label(RichText::new(hint).size(12.0));
+                        }
+                        if let Some(guidance) = &guidance
+                            && let Some(command) = engine_guidance_panel(ui, guidance)
+                        {
+                            copied = Some(command);
+                        }
+                    };
+                    let mut details = |ui: &mut egui::Ui| {
+                        notice::detail_line(ui, engine_status(diagnosis.state));
+                        if diagnosis.state != EngineState::Missing {
+                            notice::detail_line(ui, compose_status(diagnosis));
+                        }
+                    };
+                    if notice.show(
+                        ui,
+                        notice::NoticeParts {
+                            resolve: if guidance.is_some() {
+                                Some(&mut resolve)
+                            } else {
+                                None
+                            },
+                            details: Some(&mut details),
+                        },
+                    ) {
+                        check_engines = true;
                     }
                 });
             ui.add_space(6.0);
+        }
+        if check_engines {
+            self.refresh_containers(ui.ctx().clone());
         }
         if let Some(command) = copied {
             self.notify(format!("Comando copiado: {command}"));
@@ -1134,6 +1282,7 @@ impl LocalCodePilot {
         let mut requested_command = None;
         let mut copied_snippet = None;
         let mut volume_request = None;
+        let mut check_again = false;
         for project in self.container_state.projects.iter().filter(|project| {
             self.focused_project
                 .as_ref()
@@ -1180,8 +1329,14 @@ impl LocalCodePilot {
                         && *safety != ComposeSafety::Safe
                     {
                         ui.add_space(6.0);
-                        match blocked_panel(ui, &explain(safety, &project.directory)) {
+                        match blocked_panel(
+                            ui,
+                            &project.directory,
+                            &explain(safety, &project.directory),
+                            !checking && !executing,
+                        ) {
                             Some(BlockedPanelAction::Copy(snippet)) => copied_snippet = Some(snippet),
+                            Some(BlockedPanelAction::CheckAgain) => check_again = true,
                             Some(BlockedPanelAction::ConfirmVolumes) => {
                                 if let ComposeSafety::UnconfirmedData { volumes, .. } = safety {
                                     volume_request = Some(VolumeConfirmation {
@@ -1294,6 +1449,9 @@ impl LocalCodePilot {
         }
         if let Some(command) = requested_command {
             self.container_state.confirmation = Some(command);
+        }
+        if check_again {
+            self.refresh_containers(ui.ctx().clone());
         }
         if let Some(snippet) = copied_snippet {
             self.notify(format!("Trecho copiado: {snippet}"));
@@ -1466,6 +1624,41 @@ mod tests {
         }
         for page in [Page::Help, Page::Settings] {
             assert_eq!(container_refresh_schedule(page), None);
+        }
+    }
+
+    #[test]
+    fn engine_messages_do_not_claim_more_than_the_diagnosis() {
+        let diagnosis = |state, compose_available| EngineDiagnosis {
+            engine: ContainerEngine::Docker,
+            state,
+            compose_available,
+        };
+        assert_eq!(engine_message(&diagnosis(EngineState::Ready, true)), None);
+        let missing = engine_message(&diagnosis(EngineState::Missing, false)).unwrap();
+        assert_eq!(
+            missing.sentence,
+            "Não foi possível encontrar o Docker neste computador."
+        );
+        // The app does not install engines: no action, only the steps.
+        assert_eq!((missing.action, missing.resolve), (None, "Como instalar"));
+        let unavailable = engine_message(&diagnosis(EngineState::Unavailable, false)).unwrap();
+        assert_eq!(
+            unavailable.sentence,
+            "O Docker foi encontrado, mas não foi possível acessá-lo."
+        );
+        assert_eq!(unavailable.action, Some("Verificar de novo"));
+        for state in [
+            EngineState::Ready,
+            EngineState::Missing,
+            EngineState::Unavailable,
+            EngineState::TimedOut,
+            EngineState::QueryFailed,
+        ] {
+            if let Some(message) = engine_message(&diagnosis(state, false)) {
+                assert!(!message.sentence.contains("parado"), "{state:?}");
+                assert!(!message.sentence.contains("CLI"), "{state:?}");
+            }
         }
     }
 
