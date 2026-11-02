@@ -37,6 +37,9 @@ pub struct ContainerHostFacts {
     pub os: HostOs,
     pub wsl_ready: Option<bool>,
     pub podman_machine: Option<PodmanMachine>,
+    /// Whether `podman compose` runs Docker Compose, the provider whose `stop` reach was
+    /// tested. `None` when Podman did not answer.
+    pub podman_uses_docker_compose: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +284,7 @@ mod tests {
             os,
             wsl_ready: (os == HostOs::Windows).then_some(true),
             podman_machine: None,
+            podman_uses_docker_compose: None,
         }
     }
 

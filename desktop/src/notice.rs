@@ -138,6 +138,12 @@ pub(super) fn heading_disclosure(
         )
         .frame(false),
     );
+    if ui
+        .data_mut(|data| data.remove_temp::<bool>(key.with("reveal")))
+        .is_some()
+    {
+        response.scroll_to_me(Some(Align::TOP));
+    }
     remember(ui, key, response, label, &mut open);
     open
 }
@@ -145,6 +151,14 @@ pub(super) fn heading_disclosure(
 /// Opens a group made with `disclosure` or `heading_disclosure`, for links that lead to it.
 pub(super) fn open(ctx: &egui::Context, key: egui::Id) {
     ctx.data_mut(|data| data.insert_temp(key, true));
+}
+
+/// Opens a group made with `heading_disclosure` and scrolls to it once.
+pub(super) fn reveal(ctx: &egui::Context, key: egui::Id) {
+    ctx.data_mut(|data| {
+        data.insert_temp(key, true);
+        data.insert_temp(key.with("reveal"), true);
+    });
 }
 
 fn is_open(ui: &egui::Ui, key: egui::Id) -> bool {

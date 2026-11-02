@@ -4,7 +4,8 @@ use localcodepilot_core::compose_safety::{
     classify_environment, explain, guard_container_action, guard_environment_action,
 };
 use localcodepilot_core::container_groups::{
-    EnvironmentGroup, EnvironmentState, ProjectGroup, ServiceRow, ServiceState, group_containers,
+    EnvironmentGroup, EnvironmentState, ProjectGroup, ServiceRow, ServiceState, StopScope,
+    group_containers,
 };
 use localcodepilot_core::container_setup::{ContainerHostFacts, EngineGuidance, engine_guidance};
 use localcodepilot_core::containers::{
@@ -24,6 +25,8 @@ struct ContainerSession {
     outcome: Option<ContainerExecutionOutcome>,
     /// Whether the result panel already scrolled into view.
     shown: bool,
+    /// Told when the command succeeds, such as what a stop left running.
+    done_message: Option<String>,
 }
 
 /// `projects` and `engines` are `None` after a runtime-only refresh, which keeps the
@@ -227,6 +230,40 @@ fn blocked_panel(
 /// Identifies a project group in Containers, so links can open it.
 fn container_group_id(root: &Path) -> egui::Id {
     egui::Id::unique(("container-group", root))
+}
+
+/// Identifies the "Outras ações" part of an environment, so the card can open it.
+fn environment_more_id(directory: &Path) -> egui::Id {
+    egui::Id::unique(("environment-more", directory))
+}
+
+/// "web", "web e db", "web, db e cache".
+fn join_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [name] => name.clone(),
+        [rest @ .., last] => format!("{} e {last}", rest.join(", ")),
+    }
+}
+
+/// What the confirmation of a stop says will happen, and what to tell afterwards.
+fn stop_summary(scope: &StopScope) -> String {
+    let mut text = match scope.will_stop.as_slice() {
+        [] => String::new(),
+        [name] => format!("{name} foi parado."),
+        names => format!("{} foram parados.", join_names(names)),
+    };
+    let keeps = scope
+        .keeps_running
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    match keeps.as_slice() {
+        [] => {}
+        [name] => text.push_str(&format!(" {name} continua rodando.")),
+        names => text.push_str(&format!(" {} continuam rodando.", join_names(names))),
+    }
+    text
 }
 
 /// What the Containers page asks for after drawing a frame.
@@ -485,10 +522,8 @@ enum ContainerRefresh {
 /// Pages that show container state and how often they refresh it.
 fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)> {
     match page {
-        Page::Processes | Page::Containers => {
-            Some((Duration::from_secs(15), ContainerRefresh::Full))
-        }
-        Page::Overview | Page::Projects => {
+        Page::Containers => Some((Duration::from_secs(15), ContainerRefresh::Full)),
+        Page::Overview | Page::Projects | Page::Processes => {
             Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
         }
         Page::Help | Page::Settings => None,
@@ -955,144 +990,35 @@ impl LocalCodePilot {
     pub(super) fn container_refresh_pending(&self) -> bool {
         self.container_state.pending.is_some()
     }
-    pub(super) fn container_processes_panel(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Containers Docker e Podman")
-                    .strong()
-                    .size(16.0),
-            );
-            if ui
-                .add_enabled(
-                    self.container_state.pending.is_none(),
-                    egui::Button::new("Atualizar containers"),
-                )
-                .clicked()
-            {
-                self.refresh_containers(ui.ctx().clone());
-            }
-            if self.container_state.pending.is_some() {
-                ui.spinner();
-            }
-        });
-        if self.container_state.pending.is_none()
-            && !self
-                .container_state
-                .runtime_containers
-                .iter()
-                .any(|container| {
-                    self.focused_project
-                        .as_ref()
-                        .is_none_or(|path| container.belongs_to(path))
-                })
-        {
-            ui.label(
-                RichText::new(if self.focused_project.is_some() {
-                    "Nenhum container deste projeto encontrado. Inicie os serviços em Containers."
-                } else {
-                    "Nenhum container retornado pelos motores disponíveis."
-                })
-                .color(theme::MUTED),
-            );
-        }
-        self.container_execution_panel(ui);
-        let mut requested = None;
-        let mut resolve_in = None;
-        for container in self
+    /// Containers live in Containers; Processes only says how many are up and leads there.
+    pub(super) fn container_processes_summary(&mut self, ui: &mut egui::Ui) {
+        let running = self
             .container_state
             .runtime_containers
             .iter()
             .filter(|container| {
-                self.focused_project
-                    .as_ref()
-                    .is_none_or(|path| container.belongs_to(path))
+                ServiceState::of(container).is_active()
+                    && self
+                        .focused_project
+                        .as_ref()
+                        .is_none_or(|path| container.belongs_to(path))
             })
-        {
-            Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0, theme::BORDER))
-                .corner_radius(10)
-                .inner_margin(Margin::same(14))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(&container.name).strong());
-                    ui.label(container_summary(container));
-                    ui.label(format!("Imagem: {}", container.image));
-                    if let Some(service) = &container.service {
-                        ui.label(format!("Serviço: {service}"));
-                    }
-                    if let Some(directory) = &container.project_directory {
-                        ui.label(format!("Projeto: {}", display_path(directory)));
-                    }
-                    if !container.ports.is_empty() {
-                        ui.label(format!("Portas: {}", container.ports));
-                    }
-                    for url in container.browser_urls() {
-                        if ui.link(format!("URL provável · abrir: {url}")).clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
-                        }
-                    }
-                    if let Some(running_for) = &container.running_for {
-                        ui.label(format!("Tempo de execução: {running_for}"));
-                    }
-                    let mut blocked_reason = None;
-                    ui.horizontal_wrapped(|ui| {
-                        for action in [
-                            ContainerAction::StartExisting,
-                            ContainerAction::StopExisting,
-                            ContainerAction::RestartExisting,
-                            ContainerAction::LogsExisting,
-                        ] {
-                            let Some(command) = container.command(action) else {
-                                continue;
-                            };
-                            let guard = self.container_action_guard(action, container);
-                            let idle = self
-                                .container_state
-                                .execution
-                                .as_ref()
-                                .is_none_or(|session| session.execution.is_none());
-                            let response = ui.add_enabled(
-                                idle && guard.is_ok(),
-                                egui::Button::new(command.label),
-                            );
-                            if let Err(blocked) = guard {
-                                response.on_disabled_hover_text(blocked.summary);
-                                blocked_reason = Some(blocked.summary);
-                            } else if response.clicked() {
-                                requested = Some(command);
-                            }
-                        }
-                    });
-                    if let Some(reason) = blocked_reason {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{reason} Iniciar, parar e reiniciar estão bloqueados."
-                                ))
-                                .color(theme::WARNING)
-                                .size(12.0),
-                            );
-                            if ui.link("Como resolver").clicked() {
-                                resolve_in = container.project_directory.clone();
-                            }
-                        });
-                    }
-                });
-            ui.add_space(8.0);
+            .count();
+        if running == 0 {
+            return;
         }
-        if let Some(command) = requested {
-            if command.action.changes_environment() {
-                self.container_state.confirmation = Some(command);
-            } else {
-                self.start_container_execution(command);
+        let text = match (running, self.focused_project.is_some()) {
+            (1, true) => "1 container rodando neste projeto".to_owned(),
+            (count, true) => format!("{count} containers rodando neste projeto"),
+            (1, false) => "1 container rodando".to_owned(),
+            (count, false) => format!("{count} containers rodando"),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(text).color(theme::MUTED));
+            if ui.link("Ver em Containers").clicked() {
+                self.page = Page::Containers;
             }
-        }
-        if let Some(folder) = resolve_in {
-            self.show_compose_notice(ui.ctx(), &folder);
-        }
-        self.container_confirmation(ui.ctx());
+        });
         ui.add_space(8.0);
     }
 
@@ -1271,9 +1197,12 @@ impl LocalCodePilot {
                         .execution
                         .as_ref()
                         .is_some_and(|session| {
+                            // A stop the person asked for is told once, not per container.
                             matches!(
                                 session.command.action,
-                                ContainerAction::StopExisting | ContainerAction::RestartExisting
+                                ContainerAction::Stop
+                                    | ContainerAction::StopExisting
+                                    | ContainerAction::RestartExisting
                             )
                         })
                     {
@@ -1295,6 +1224,7 @@ impl LocalCodePilot {
             return;
         };
         let mut refresh_after_action = false;
+        let mut finished = None;
         loop {
             let event = session
                 .execution
@@ -1317,6 +1247,13 @@ impl LocalCodePilot {
                 }
                 Some(Ok(ContainerExecutionEvent::Finished(outcome))) => {
                     refresh_after_action = session.command.action.changes_environment();
+                    finished = Some(match &outcome {
+                        ContainerExecutionOutcome::Succeeded => session.done_message.clone(),
+                        _ => Some(format!(
+                            "{}: não foi concluído. Veja o resultado em Containers.",
+                            session.command.label
+                        )),
+                    });
                     session.outcome = Some(outcome);
                     session.execution = None;
                     ctx.request_repaint();
@@ -1337,6 +1274,12 @@ impl LocalCodePilot {
         }
         if refresh_after_action {
             self.refresh_containers(ctx.clone());
+        }
+        // Outside Containers the result panel is not visible, so failures are told here too.
+        if let Some(message) = finished.flatten().filter(|message| {
+            !message.ends_with("Veja o resultado em Containers.") || self.page != Page::Containers
+        }) {
+            self.notify(message);
         }
     }
 
@@ -1364,6 +1307,7 @@ impl LocalCodePilot {
                 logs,
                 outcome: None,
                 shown: false,
+                done_message: None,
             },
             Err(error) => ContainerSession {
                 command,
@@ -1371,6 +1315,7 @@ impl LocalCodePilot {
                 logs,
                 outcome: Some(ContainerExecutionOutcome::Failed(error)),
                 shown: false,
+                done_message: None,
             },
         });
     }
@@ -1436,7 +1381,6 @@ impl LocalCodePilot {
         self.engine_overview(ui, checking || executing);
         ui.add_space(12.0);
         self.container_groups(ui, checking, executing);
-        self.container_confirmation(ui.ctx());
         self.volume_confirmation_dialog(ui.ctx());
     }
 
@@ -1567,6 +1511,178 @@ impl LocalCodePilot {
         }
     }
 
+    fn compose_name_map(&self) -> HashMap<PathBuf, ComposeName> {
+        self.container_state
+            .compose_names
+            .iter()
+            .map(|(folder, (_, name))| (folder.clone(), name.clone()))
+            .collect()
+    }
+
+    /// Runs `f` on the environment created from `directory`, grouped as Containers shows it.
+    fn with_environment<R>(
+        &self,
+        directory: &Path,
+        f: impl FnOnce(&ProjectGroup, &EnvironmentGroup) -> R,
+    ) -> Option<R> {
+        let catalog = self
+            .projects
+            .iter()
+            .map(|project| (project.name.as_str(), project.path.as_path()))
+            .collect::<Vec<_>>();
+        let names = self.compose_name_map();
+        let overview = group_containers(
+            &catalog,
+            &self.container_state.projects,
+            &names,
+            &self.container_state.runtime_containers,
+        );
+        let (group, environment) = overview.projects.iter().find_map(|group| {
+            group
+                .environments
+                .iter()
+                .find(|environment| same_folder(&environment.project.directory, directory))
+                .map(|environment| (group, environment))
+        })?;
+        Some(f(group, environment))
+    }
+
+    /// What a confirmation acts on: the project (and folder) of a Compose command, or the
+    /// container of a per-container command.
+    fn confirmation_target(&self, command: &ContainerCommand) -> Option<String> {
+        if matches!(
+            command.action,
+            ContainerAction::StartExisting
+                | ContainerAction::StopExisting
+                | ContainerAction::RestartExisting
+                | ContainerAction::LogsExisting
+        ) {
+            let id = command.args.last()?;
+            let container = self
+                .container_state
+                .runtime_containers
+                .iter()
+                .find(|container| &container.id == id)?;
+            return Some(match &container.service {
+                Some(service) => format!("Container: {service} ({})", container.name),
+                None => format!("Container: {}", container.name),
+            });
+        }
+        self.with_environment(&command.working_directory, |group, environment| match group
+            .relative_folder(environment)
+        {
+            folder if folder.is_empty() => format!("Projeto: {}", group.name),
+            folder => format!("Projeto: {} · pasta {folder}/", group.name),
+        })
+    }
+
+    /// Asks to confirm a container command, wherever it was requested.
+    pub(super) fn confirm_container_command(&mut self, command: ContainerCommand) {
+        self.container_state.confirmation = Some(command);
+    }
+
+    /// What stopping the environment reaches. The reach was tested with Docker Compose as the
+    /// provider, so Podman with another provider cannot be stated.
+    fn environment_stop_scope(
+        &self,
+        environment: &EnvironmentGroup,
+        engine: ContainerEngine,
+    ) -> Option<StopScope> {
+        if engine == ContainerEngine::Podman
+            && self
+                .container_state
+                .host
+                .as_ref()
+                .and_then(|host| host.podman_uses_docker_compose)
+                != Some(true)
+        {
+            return None;
+        }
+        environment.stop_scope(engine)
+    }
+
+    /// The stop a project card can confirm on its own: one environment up on one engine,
+    /// allowed by the Compose checks, whose stop reaches at least one service.
+    pub(super) fn card_container_stop(&self, root: &Path) -> Option<ContainerCommand> {
+        let catalog = self
+            .projects
+            .iter()
+            .map(|project| (project.name.as_str(), project.path.as_path()))
+            .collect::<Vec<_>>();
+        let names = self.compose_name_map();
+        let overview = group_containers(
+            &catalog,
+            &self.container_state.projects,
+            &names,
+            &self.container_state.runtime_containers,
+        );
+        let group = overview
+            .projects
+            .iter()
+            .find(|group| same_folder(group.root, root))?;
+        let mut up = group
+            .environments
+            .iter()
+            .filter(|environment| !environment.engines_in_use().is_empty());
+        let environment = up.next()?;
+        if up.next().is_some() {
+            return None;
+        }
+        let [engine] = environment.engines_in_use()[..] else {
+            return None;
+        };
+        let scope = self.environment_stop_scope(environment, engine)?;
+        let (ready, compose) = self.engine_readiness(engine);
+        let directory = &environment.project.directory;
+        let safety = self.compose_environment_safety(directory, engine);
+        if scope.will_stop.is_empty()
+            || !ready
+            || !compose
+            || guard_environment_action(ContainerAction::Stop, &safety, directory).is_err()
+        {
+            return None;
+        }
+        environment
+            .project
+            .proposed_commands(engine)
+            .into_iter()
+            .find(|command| command.action == ContainerAction::Stop)
+    }
+
+    /// Opens a project in Containers with the parts that need a choice: the blocked notice,
+    /// or "Outras ações" of each environment that is up.
+    pub(super) fn choose_containers_to_stop(&mut self, ctx: &egui::Context, root: &Path) {
+        let environments = self
+            .container_state
+            .projects
+            .iter()
+            .filter(|project| path_is_within(&project.directory, root))
+            .map(|project| project.directory.clone())
+            .collect::<Vec<_>>();
+        if let Some(blocked) = environments.iter().find(|directory| {
+            [ContainerEngine::Docker, ContainerEngine::Podman]
+                .into_iter()
+                .any(|engine| {
+                    self.container_state
+                        .compose_safety
+                        .get(&(engine, (*directory).clone()))
+                        .is_some_and(|safety| *safety != ComposeSafety::Safe)
+                })
+        }) {
+            let blocked = blocked.clone();
+            self.show_compose_notice(ctx, &blocked);
+            return;
+        }
+        for directory in &environments {
+            notice::open(ctx, environment_more_id(directory));
+        }
+        notice::reveal(ctx, container_group_id(root));
+        self.container_state.filter.clear();
+        self.focused_project = Some(root.to_path_buf());
+        self.page = Page::Containers;
+        self.notify("Escolha em Containers o que parar.");
+    }
+
     /// Engine an environment's actions use: the one already running it, or the selected one.
     fn action_engine(&self, environment: &EnvironmentGroup) -> ContainerEngine {
         match environment.engines_in_use().as_slice() {
@@ -1625,12 +1741,7 @@ impl LocalCodePilot {
             .iter()
             .map(|project| (project.name.as_str(), project.path.as_path()))
             .collect::<Vec<_>>();
-        let names = self
-            .container_state
-            .compose_names
-            .iter()
-            .map(|(folder, (_, name))| (folder.clone(), name.clone()))
-            .collect::<HashMap<_, _>>();
+        let names = self.compose_name_map();
         let overview = group_containers(
             &catalog,
             &self.container_state.projects,
@@ -1816,17 +1927,30 @@ impl LocalCodePilot {
             ui.label(RichText::new("Bloqueado").color(theme::WARNING));
         }
         let project = environment.project;
-        let main = if project.compose_file.is_none() {
-            ContainerAction::Build
-        } else if environment
+        let active = environment
             .services
             .iter()
-            .any(|row| row.state().is_active())
-        {
+            .any(|row| row.state().is_active());
+        // Only optional-profile services or containers no longer in the file are up: a stop
+        // of the environment would not reach them.
+        let out_of_reach = active
+            && self
+                .environment_stop_scope(environment, self.action_engine(environment))
+                .is_some_and(|scope| scope.will_stop.is_empty());
+        let main = if project.compose_file.is_none() {
+            ContainerAction::Build
+        } else if active && !out_of_reach {
             ContainerAction::Stop
         } else {
             ContainerAction::Start
         };
+        if out_of_reach {
+            ui.label(
+                RichText::new("O que continua rodando para em Outras ações")
+                    .color(theme::MUTED)
+                    .size(12.0),
+            );
+        }
         // Containers of one environment running on both engines get one stop per engine.
         let engines = match environment.engines_in_use() {
             engines if main == ContainerAction::Stop && engines.len() > 1 => engines,
@@ -1951,12 +2075,7 @@ impl LocalCodePilot {
         let (more, details) = ui
             .horizontal_wrapped(|ui| {
                 (
-                    notice::disclosure(
-                        ui,
-                        egui::Id::unique(("environment-more", directory)),
-                        "Outras ações",
-                        false,
-                    ),
+                    notice::disclosure(ui, environment_more_id(directory), "Outras ações", false),
                     notice::disclosure(
                         ui,
                         egui::Id::unique(("environment-details", directory)),
@@ -2215,12 +2334,26 @@ impl LocalCodePilot {
         }
     }
 
-    fn container_confirmation(&mut self, ctx: &egui::Context) {
+    pub(super) fn container_confirmation(&mut self, ctx: &egui::Context) {
         let Some(command) = self.container_state.confirmation.clone() else {
             return;
         };
         let mut confirm = false;
         let mut cancel = false;
+        let scope = (command.action == ContainerAction::Stop)
+            .then(|| {
+                self.with_environment(&command.working_directory, |_, environment| {
+                    self.environment_stop_scope(environment, engine_of(&command))
+                })
+                .flatten()
+            })
+            .flatten();
+        let target = self.confirmation_target(&command);
+        let confirm_label = match scope.as_ref().map(|scope| scope.will_stop.as_slice()) {
+            Some(names @ [_, ..]) if names.len() <= 3 => format!("Parar {}", join_names(names)),
+            Some([_, ..]) => "Parar serviços".to_owned(),
+            _ => "Confirmar e executar".to_owned(),
+        };
         egui::Window::new("Confirmar ação de container")
             .id(egui::Id::unique("container-command-confirmation"))
             .collapsible(false)
@@ -2229,29 +2362,88 @@ impl LocalCodePilot {
             .show(ctx, |ui| {
                 ui.set_width((ctx.content_rect().width() - 48.0).clamp(240.0, 520.0));
                 ui.label(RichText::new(command.label).strong().size(16.0));
+                if let Some(target) = &target {
+                    ui.label(RichText::new(target).strong());
+                }
                 ui.label(command.action.description());
                 if command.action.changes_environment() {
                     ui.label(
                         RichText::new("Esta ação altera o ambiente de containers do projeto.")
-                            .color(Color32::from_rgb(255, 205, 75)),
+                            .color(theme::WARNING),
                     );
                 }
-                ui.add_space(8.0);
-                ui.label("Comando:");
-                ui.label(RichText::new(command.display()).monospace());
-                ui.label("Pasta:");
-                ui.label(
-                    RichText::new(display_path(&command.working_directory))
-                        .monospace()
-                        .size(10.0),
-                );
+                if command.action == ContainerAction::Stop {
+                    ui.add_space(4.0);
+                    match &scope {
+                        Some(scope) => {
+                            if !scope.will_stop.is_empty() {
+                                ui.label(format!(
+                                    "Serão parados: {}",
+                                    join_names(&scope.will_stop)
+                                ));
+                            }
+                            if !scope.already_stopped.is_empty() {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Já estão parados: {}",
+                                        join_names(&scope.already_stopped)
+                                    ))
+                                    .color(theme::MUTED),
+                                );
+                            }
+                            if !scope.keeps_running.is_empty() {
+                                let kept = scope
+                                    .keeps_running
+                                    .iter()
+                                    .map(|(name, reason)| format!("{name} ({})", reason.label()))
+                                    .collect::<Vec<_>>();
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Continuarão rodando: {}. Para parar, use Outras ações em Containers.",
+                                        join_names(&kept)
+                                    ))
+                                    .color(theme::WARNING),
+                                );
+                            }
+                        }
+                        None => {
+                            ui.label(
+                                RichText::new(
+                                    "Não foi possível determinar quais containers serão parados.",
+                                )
+                                .color(theme::WARNING),
+                            );
+                        }
+                    }
+                }
+                ui.add_space(4.0);
+                if notice::disclosure(
+                    ui,
+                    egui::Id::unique("container-confirmation-details"),
+                    "Detalhes técnicos",
+                    false,
+                ) {
+                    notice::detail_line(ui, "Comando:");
+                    ui.label(RichText::new(command.display()).monospace());
+                    notice::detail_line(ui, "Pasta:");
+                    ui.label(
+                        RichText::new(display_path(&command.working_directory))
+                            .monospace()
+                            .size(10.0),
+                    );
+                }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancelar").clicked() {
                         cancel = true;
                     }
                     if ui
-                        .add(egui::Button::new("Confirmar e executar").fill(theme::PRIMARY))
+                        .add(
+                            egui::Button::new(
+                                RichText::new(&confirm_label).color(Color32::WHITE).strong(),
+                            )
+                            .fill(theme::PRIMARY),
+                        )
                         .clicked()
                     {
                         confirm = true;
@@ -2264,6 +2456,9 @@ impl LocalCodePilot {
         if confirm {
             self.container_state.confirmation = None;
             self.start_container_execution(command);
+            if let (Some(scope), Some(session)) = (&scope, &mut self.container_state.execution) {
+                session.done_message = Some(stop_summary(scope));
+            }
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -2275,18 +2470,16 @@ mod tests {
 
     #[test]
     fn project_cards_keep_container_state_current_with_a_light_refresh() {
-        for page in [Page::Overview, Page::Projects] {
+        for page in [Page::Overview, Page::Projects, Page::Processes] {
             assert_eq!(
                 container_refresh_schedule(page),
                 Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
             );
         }
-        for page in [Page::Processes, Page::Containers] {
-            assert_eq!(
-                container_refresh_schedule(page),
-                Some((Duration::from_secs(15), ContainerRefresh::Full))
-            );
-        }
+        assert_eq!(
+            container_refresh_schedule(Page::Containers),
+            Some((Duration::from_secs(15), ContainerRefresh::Full))
+        );
         for page in [Page::Help, Page::Settings] {
             assert_eq!(container_refresh_schedule(page), None);
         }

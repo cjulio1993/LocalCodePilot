@@ -54,6 +54,11 @@ pub fn inspect_container_host(path: Option<&OsStr>) -> ContainerHostFacts {
         .then(|| read_command_output("podman", &["machine", "list", "--format", "json"], path).ok())
         .flatten()
         .and_then(|output| parse_podman_machines(&output));
+    // Podman runs an external provider and says which one: Docker Compose prints
+    // "Docker Compose version", podman-compose its own name.
+    let podman_uses_docker_compose = read_command_output("podman", &["compose", "version"], path)
+        .ok()
+        .map(|output| output.contains("Docker Compose"));
     ContainerHostFacts {
         os,
         wsl_ready: match wsl_ready {
@@ -62,6 +67,7 @@ pub fn inspect_container_host(path: Option<&OsStr>) -> ContainerHostFacts {
             Some(ProbeResult::TimedOut) | None => None,
         },
         podman_machine,
+        podman_uses_docker_compose,
     }
 }
 

@@ -90,6 +90,29 @@ pub enum EnvironmentState {
     ImageOnly,
 }
 
+/// Why a running service is out of reach of `compose stop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeepReason {
+    OptionalProfile,
+    NotInFile,
+}
+
+impl KeepReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OptionalProfile => "perfil opcional",
+            Self::NotInFile => "não está mais no arquivo",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopScope {
+    pub will_stop: Vec<String>,
+    pub already_stopped: Vec<String>,
+    pub keeps_running: Vec<(String, KeepReason)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EnvironmentGroup<'a> {
     pub project: &'a ContainerProject,
@@ -139,13 +162,62 @@ impl EnvironmentGroup<'_> {
             if self.services.iter().any(|row| {
                 row.container.is_some_and(|container| {
                     container.engine == engine
-                        && ServiceState::of(container) != ServiceState::Stopped
+                        && matches!(
+                            ServiceState::of(container),
+                            ServiceState::Running | ServiceState::Restarting | ServiceState::Paused
+                        )
                 })
             }) {
                 engines.push(engine);
             }
         }
         engines
+    }
+
+    /// What `compose stop` on `engine` reaches, as tested on Docker Compose with both engines:
+    /// only services of the file without a profile. Running services of an optional profile
+    /// and containers the file no longer declares keep running. `None` when that cannot be
+    /// stated: no name confirmed by Compose, a paused service, or containers of this
+    /// environment up on the other engine.
+    pub fn stop_scope(&self, engine: ContainerEngine) -> Option<StopScope> {
+        if !matches!(self.name, Some(ComposeName::Resolved(_)))
+            || self.project.compose_file.is_none()
+        {
+            return None;
+        }
+        let mut scope = StopScope::default();
+        for row in &self.services {
+            let Some(container) = row.container else {
+                continue;
+            };
+            let state = ServiceState::of(container);
+            if container.engine != engine {
+                if state != ServiceState::Stopped && state != ServiceState::Problem {
+                    return None;
+                }
+                continue;
+            }
+            if state == ServiceState::Paused {
+                return None;
+            }
+            let reached = row
+                .declared
+                .is_some_and(|service| service.profiles.is_empty());
+            match (state.is_active(), reached) {
+                (true, true) => scope.will_stop.push(row.name.clone()),
+                (false, true) => scope.already_stopped.push(row.name.clone()),
+                (true, false) => scope.keeps_running.push((
+                    row.name.clone(),
+                    if row.declared.is_some() {
+                        KeepReason::OptionalProfile
+                    } else {
+                        KeepReason::NotInFile
+                    },
+                )),
+                (false, false) => {}
+            }
+        }
+        Some(scope)
     }
 
     fn matches(&self, filter: &str) -> bool {
@@ -495,6 +567,58 @@ mod tests {
             ServiceState::NotCreated
         );
         assert_eq!(overview.others.len(), 1);
+    }
+
+    /// Mirrors a disposable run on Docker and Podman: `compose stop` without `--profile`
+    /// stopped `web` only; `extra` (optional profile) and `old` (removed from the file) kept
+    /// running.
+    #[test]
+    fn stop_reaches_only_services_of_the_file_without_a_profile() {
+        let catalog = [("app", Path::new("C:/dev/app"))];
+        let mut file = environment("C:/dev/app", &["web", "extra", "db"]);
+        file.services[1].profiles = vec!["extra".into()];
+        let environments = [file];
+        let names = HashMap::from([(
+            PathBuf::from("C:/dev/app"),
+            ComposeName::Resolved("app".into()),
+        )]);
+        let docker = ContainerEngine::Docker;
+        let mut containers = vec![
+            container(docker, "web", "app", "C:/dev/app", "running", "Up"),
+            container(docker, "extra", "app", "C:/dev/app", "running", "Up"),
+            container(docker, "db", "app", "C:/dev/app", "exited", "Exited (0)"),
+            container(docker, "old", "app", "C:/dev/app", "running", "Up"),
+        ];
+        let scope = |containers: &[RuntimeContainer], names: &HashMap<PathBuf, ComposeName>| {
+            group_containers(&catalog, &environments, names, containers).projects[0].environments[0]
+                .stop_scope(docker)
+        };
+        assert_eq!(
+            scope(&containers, &names),
+            Some(StopScope {
+                will_stop: vec!["web".into()],
+                already_stopped: vec!["db".into()],
+                keeps_running: vec![
+                    ("extra".into(), KeepReason::OptionalProfile),
+                    ("old".into(), KeepReason::NotInFile),
+                ],
+            })
+        );
+
+        // Cannot be stated: a paused service, the other engine running it, or a name the
+        // Compose provider did not confirm.
+        containers[0].state = "paused".into();
+        assert_eq!(scope(&containers, &names), None);
+        containers[0].state = "running".into();
+        containers[2].engine = ContainerEngine::Podman;
+        containers[2].state = "running".into();
+        assert_eq!(scope(&containers, &names), None);
+        containers[2].state = "exited".into();
+        let estimated = HashMap::from([(
+            PathBuf::from("C:/dev/app"),
+            ComposeName::Estimated("app".into()),
+        )]);
+        assert_eq!(scope(&containers, &estimated), None);
     }
 
     #[test]
