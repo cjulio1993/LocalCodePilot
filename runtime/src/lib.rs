@@ -648,16 +648,28 @@ pub fn detect_technologies(path: &Path) -> Vec<TechnologyKind> {
             }
         }
     }
-    // Folders without Git are not walked above, so a WordPress Compose file in `docker/`
-    // would otherwise leave the project without its Containers action.
-    if found.contains(&TechnologyKind::WordPress)
-        && !found.contains(&TechnologyKind::Containers)
-        && containers::wordpress_uses_compose(path, path)
-    {
+    // Folders without Git are not walked above, so a Compose file in `docker/` would otherwise
+    // leave a PHP site without its Containers action.
+    if !found.contains(&TechnologyKind::Containers) && site_uses_compose(&found, path, path) {
         push_unique(&mut found, TechnologyKind::Containers);
     }
     found.sort_by_key(|technology| technology_priority(*technology));
     found
+}
+
+/// Whether the PHP site in `site` starts through Compose instead of `php -S`. Laravel and Lumen
+/// keep their own servers.
+fn site_uses_compose(technologies: &[TechnologyKind], project_root: &Path, site: &Path) -> bool {
+    if technologies.contains(&TechnologyKind::WordPress) {
+        containers::wordpress_uses_compose(project_root, site)
+    } else if technologies.contains(&TechnologyKind::Laravel)
+        || technologies.contains(&TechnologyKind::Lumen)
+        || !site.join("index.php").is_file()
+    {
+        false
+    } else {
+        containers::php_site_uses_compose(project_root, site)
+    }
 }
 
 pub fn detect_processes(project: &Project) -> Vec<ProjectProcess> {
@@ -770,8 +782,7 @@ fn detect_processes_in_directory(
                 && project.runtimes.contains(&RuntimeKind::Php)
                 && directory.join("index.html").is_file()))
         // Checked last: it scans the project for Compose manifests.
-        && !(project.technologies.contains(&TechnologyKind::WordPress)
-            && containers::wordpress_uses_compose(&project.path, directory))
+        && !site_uses_compose(&project.technologies, &project.path, directory)
     {
         push_process(
             processes,
@@ -1833,6 +1844,68 @@ version = "0.1.0"
             &monorepo,
             &monorepo.join("wordpress")
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_php_site_runs_through_compose_only_when_compose_serves_it() {
+        let root = std::env::temp_dir().join(format!(
+            "lcp-php-compose-layouts-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let php_servers = |project: &Project| {
+            detect_processes(project)
+                .iter()
+                .filter(|process| process.name == "Servidor PHP")
+                .count()
+        };
+        let site = root.join("loja");
+        fs::create_dir_all(site.join("docker")).unwrap();
+        fs::write(site.join("index.php"), "<?php echo 'loja';").unwrap();
+        let loja = Project::new(site.clone(), vec![RuntimeKind::Php]);
+        assert_eq!(php_servers(&loja), 1);
+        assert!(!detect_technologies(&site).contains(&TechnologyKind::Containers));
+
+        // Only the database in Compose: the site still runs with PHP on the machine.
+        let compose = site.join("docker").join("compose.yaml");
+        fs::write(
+            &compose,
+            "services:\n  db:\n    image: mariadb:11\n  admin:\n    image: phpmyadmin:5\n",
+        )
+        .unwrap();
+        assert_eq!(php_servers(&loja), 1);
+        assert!(!detect_technologies(&site).contains(&TechnologyKind::Containers));
+
+        // A web server in Compose serves the site: start it through Containers.
+        fs::write(
+            &compose,
+            "services:\n  web:\n    image: docker.io/library/nginx:alpine\n  db:\n    image: mariadb:11\n",
+        )
+        .unwrap();
+        assert_eq!(php_servers(&loja), 0);
+        assert!(detect_technologies(&site).contains(&TechnologyKind::Containers));
+
+        // So does a service that builds its own image.
+        fs::write(&compose, "services:\n  app:\n    build: ..\n").unwrap();
+        assert_eq!(php_servers(&loja), 0);
+
+        // A PHP image in an unrelated sibling folder does not hijack the site.
+        let monorepo = root.join("monorepo");
+        fs::create_dir_all(monorepo.join(".git")).unwrap();
+        fs::create_dir_all(monorepo.join("site")).unwrap();
+        fs::create_dir_all(monorepo.join("outro")).unwrap();
+        fs::write(monorepo.join("site").join("index.php"), "<?php").unwrap();
+        fs::write(
+            monorepo.join("outro").join("compose.yaml"),
+            "services:\n  app:\n    image: php:8.3-apache\n",
+        )
+        .unwrap();
+        let project = Project::new(monorepo.clone(), vec![RuntimeKind::Php]);
+        assert_eq!(php_servers(&project), 1);
         fs::remove_dir_all(root).unwrap();
     }
 

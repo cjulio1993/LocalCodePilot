@@ -33,6 +33,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Um site PHP com o Compose numa subpasta (como `docker/`) inicia pelos containers quando o Compose serve o site (serviço com `build:` próprio ou imagem de PHP, Apache, Nginx ou Caddy), não só no WordPress. Um Compose só com o banco ou com phpMyAdmin mantém o servidor PHP local.
+- Um `compose.yaml` salvo com BOM, comum em editores no Windows, não aparece mais como "YAML inválido".
+- No Windows, quando o sistema informa qual programa usa a porta, um projeto só é marcado como Rodando, e só recebe o selo do site, se a porta for do processo dele ou de um processo filho. Se outro programa ocupar a porta, o motivo diz isso, e o log informa qual programa é.
 - Containers aparecem no projeto correto no Windows mesmo quando o Compose registrou a pasta com letra de unidade ou nomes em outra caixa, outro separador, prefixo `\\?\` ou caminho WSL `/mnt/<unidade>`.
 - O banco em container é associado ao projeto quando o Compose está em uma subpasta e quando o `DB_HOST` usa o nome do container em vez do serviço.
 - Containers Podman mostram nome, portas e URLs; antes os campos em lista retornados pelo Podman eram ignorados.
