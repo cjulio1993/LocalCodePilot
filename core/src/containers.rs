@@ -72,6 +72,38 @@ impl RuntimeContainer {
         urls
     }
 
+    /// Ports published on this computer that are not web addresses, such as a database port
+    /// for a client.
+    pub fn other_local_ports(&self) -> Vec<u16> {
+        let mut ports = Vec::new();
+        for mapping in self.ports.split(',') {
+            if runtime_browser_url(mapping).is_some() {
+                continue;
+            }
+            let Some((published, target)) = mapping.trim().split_once("->") else {
+                continue;
+            };
+            if !target.ends_with("/tcp") {
+                continue;
+            }
+            let Some((host, port)) = published.rsplit_once(':') else {
+                continue;
+            };
+            if !matches!(
+                host,
+                "0.0.0.0" | "" | "::" | "[::]" | "127.0.0.1" | "localhost"
+            ) {
+                continue;
+            }
+            if let Some(port) = port.parse::<u16>().ok().filter(|port| *port > 0)
+                && !ports.contains(&port)
+            {
+                ports.push(port);
+            }
+        }
+        ports
+    }
+
     /// Whether the Compose working directory recorded by the engine is the project or one of
     /// its subfolders.
     pub fn belongs_to(&self, project: &Path) -> bool {
@@ -462,6 +494,7 @@ mod tests {
             compose_project: None,
         };
         assert_eq!(container.browser_urls(), ["http://localhost:8080"]);
+        assert_eq!(container.other_local_ports(), [3306]);
         assert_eq!(
             container
                 .command(ContainerAction::StopExisting)
@@ -507,6 +540,8 @@ mod tests {
                 "http://localhost:8025"
             ]
         );
+        // Ranges and other interfaces are not addresses on this computer to point a client at.
+        assert_eq!(container.other_local_ports(), [9000, 3307]);
     }
 
     #[test]

@@ -109,6 +109,44 @@ pub(super) fn detail_line(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).color(theme::MUTED).size(12.0));
 }
 
+/// A collapsible part outside a notice, closed or open by `default` until the user toggles
+/// it. Returns whether it is open.
+pub(super) fn disclosure(ui: &mut egui::Ui, key: egui::Id, label: &str, default: bool) -> bool {
+    let mut open = ui
+        .data(|data| data.get_temp::<bool>(key))
+        .unwrap_or(default);
+    toggle(ui, key, label, &mut open);
+    open
+}
+
+/// The title of a group that opens and closes, such as a project in Containers.
+pub(super) fn heading_disclosure(
+    ui: &mut egui::Ui,
+    key: egui::Id,
+    label: &str,
+    default: bool,
+) -> bool {
+    let mut open = ui
+        .data(|data| data.get_temp::<bool>(key))
+        .unwrap_or(default);
+    let caret = if open { CARET_DOWN } else { CARET_RIGHT };
+    let response = ui.add(
+        egui::Button::new(
+            RichText::new(format!("{caret}  {label}"))
+                .strong()
+                .size(16.0),
+        )
+        .frame(false),
+    );
+    remember(ui, key, response, label, &mut open);
+    open
+}
+
+/// Opens a group made with `disclosure` or `heading_disclosure`, for links that lead to it.
+pub(super) fn open(ctx: &egui::Context, key: egui::Id) {
+    ctx.data_mut(|data| data.insert_temp(key, true));
+}
+
 fn is_open(ui: &egui::Ui, key: egui::Id) -> bool {
     ui.data(|data| data.get_temp::<bool>(key)).unwrap_or(false)
 }
@@ -117,6 +155,16 @@ fn is_open(ui: &egui::Ui, key: egui::Id) -> bool {
 fn toggle(ui: &mut egui::Ui, key: egui::Id, label: &str, open: &mut bool) {
     let caret = if *open { CARET_DOWN } else { CARET_RIGHT };
     let response = ui.add(egui::Button::selectable(*open, format!("{caret}  {label}")));
+    remember(ui, key, response, label, open);
+}
+
+fn remember(
+    ui: &mut egui::Ui,
+    key: egui::Id,
+    response: egui::Response,
+    label: &str,
+    open: &mut bool,
+) {
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, *open, label));
     if response.clicked() {
         *open = !*open;
