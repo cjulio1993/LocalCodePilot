@@ -416,6 +416,7 @@ mod tests {
             dockerfile: None,
             compose_file: Some(PathBuf::from(directory).join("compose.yaml")),
             compose_overrides: vec![],
+            base_images: vec![],
             services: services.iter().map(|name| service(name)).collect(),
             warnings: vec![],
             error: None,

@@ -2,6 +2,8 @@
 mod container_ui;
 #[path = "help_ui.rs"]
 mod help_ui;
+#[path = "language_ui.rs"]
+mod language_ui;
 #[path = "notice.rs"]
 mod notice;
 #[path = "project_ui.rs"]
@@ -555,6 +557,7 @@ pub struct LocalCodePilot {
     container_state: container_ui::ContainerState,
     project_ui: project_ui::ProjectUiState,
     help: help_ui::HelpState,
+    languages: language_ui::LanguageState,
 }
 
 impl LocalCodePilot {
@@ -646,6 +649,7 @@ impl LocalCodePilot {
             container_state: container_ui::ContainerState::default(),
             project_ui: project_ui::ProjectUiState::default(),
             help: help_ui::HelpState::default(),
+            languages: language_ui::LanguageState::default(),
         }
     }
 
@@ -4104,68 +4108,7 @@ impl LocalCodePilot {
             self.start_update_install(&update, ui.ctx().clone());
         }
         ui.add_space(24.0);
-        ui.heading("Runtimes");
-        ui.label(
-            RichText::new("Inventário usado pelos projetos deste workspace").color(theme::MUTED),
-        );
-        ui.add_space(16.0);
-
-        let mut installations: HashMap<(String, String, PathBuf), Vec<String>> = HashMap::new();
-        for project in &self.projects {
-            let Some(environment) = self.project_environments.get(&project.path) else {
-                continue;
-            };
-            for requirement in &environment.runtime_requirements {
-                if let RequirementStatus::Available { version, path } = &requirement.status {
-                    installations
-                        .entry((
-                            requirement.runtime.to_string(),
-                            version.clone(),
-                            path.clone(),
-                        ))
-                        .or_default()
-                        .push(project.name.clone());
-                }
-            }
-        }
-        let mut installations = installations.into_iter().collect::<Vec<_>>();
-        installations.sort_by(|left, right| left.0.cmp(&right.0));
-
-        if installations.is_empty() {
-            ui.label(
-                RichText::new("Nenhum runtime foi validado nos projetos encontrados.")
-                    .color(theme::MUTED),
-            );
-        } else {
-            for ((runtime, version, path), mut projects) in installations {
-                projects.sort();
-                projects.dedup();
-                Frame::new()
-                    .fill(theme::SURFACE)
-                    .stroke(Stroke::new(1.0, theme::BORDER))
-                    .corner_radius(8)
-                    .inner_margin(Margin::same(16))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(runtime).strong().size(13.0));
-                            ui.label(RichText::new(version).color(theme::SUCCESS).size(11.0));
-                        });
-                        ui.label(
-                            RichText::new(path.display().to_string())
-                                .color(theme::MUTED)
-                                .monospace()
-                                .size(10.0),
-                        );
-                        ui.label(
-                            RichText::new(format!("Projetos: {}", projects.join(", ")))
-                                .color(theme::MUTED)
-                                .size(10.0),
-                        );
-                    });
-                ui.add_space(8.0);
-            }
-        }
+        self.languages_section(ui);
 
         ui.add_space(18.0);
         ui.heading("Histórico de preparação");
@@ -4280,6 +4223,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_update_check();
         self.poll_update_install(ctx);
         self.poll_containers(ctx);
+        self.poll_languages(ctx);
         self.persist_workspace_state(false);
     }
 
@@ -4814,7 +4758,9 @@ fn resolve_environment_plan_with_tools_directory(
             RuntimeKind::Dart => {
                 provider.resolve_dart_installation(&constraint_label, project_path, matches_all)?
             }
-            RuntimeKind::Rust | RuntimeKind::Node | RuntimeKind::Flutter => continue,
+            // Not installed by the app: Rust, Node and Flutter have their own installers, and
+            // the other languages are only recognized for now.
+            _ => continue,
         };
         let selected_version = command_argument_after(&install_step, "--version")
             .ok_or_else(|| format!("O plano de {runtime} não informou a versão selecionada"))?;
@@ -4835,7 +4781,7 @@ fn resolve_environment_plan_with_tools_directory(
             ),
             RuntimeKind::Go => ("go", vec!["version".into()]),
             RuntimeKind::Dart => ("dart", vec!["--version".into()]),
-            RuntimeKind::Rust | RuntimeKind::Node | RuntimeKind::Flutter => continue,
+            _ => continue,
         };
         steps.push(InstallationStep {
             label: format!("Validar {runtime}"),
@@ -6645,6 +6591,21 @@ fn runtime_color(runtime: RuntimeKind) -> Color32 {
         RuntimeKind::Go => Color32::from_rgb(0, 173, 216),
         RuntimeKind::Dart => Color32::from_rgb(0, 180, 171),
         RuntimeKind::Flutter => Color32::from_rgb(84, 197, 248),
+        RuntimeKind::Dotnet => Color32::from_rgb(162, 125, 230),
+        RuntimeKind::Ruby => Color32::from_rgb(224, 76, 76),
+        RuntimeKind::Kotlin => Color32::from_rgb(169, 123, 255),
+        RuntimeKind::Elixir => Color32::from_rgb(155, 111, 191),
+        RuntimeKind::Deno => Color32::from_rgb(112, 255, 175),
+        RuntimeKind::Cpp => Color32::from_rgb(101, 154, 210),
+        RuntimeKind::Swift => Color32::from_rgb(240, 81, 56),
+        RuntimeKind::Scala => Color32::from_rgb(220, 50, 47),
+        RuntimeKind::Clojure => Color32::from_rgb(99, 177, 50),
+        RuntimeKind::Haskell => Color32::from_rgb(140, 120, 200),
+        RuntimeKind::Perl => Color32::from_rgb(57, 69, 126).gamma_multiply(1.8),
+        RuntimeKind::Lua => Color32::from_rgb(80, 110, 230),
+        RuntimeKind::R => Color32::from_rgb(39, 109, 195).gamma_multiply(1.4),
+        RuntimeKind::Julia => Color32::from_rgb(149, 88, 178),
+        RuntimeKind::Zig => Color32::from_rgb(247, 164, 29),
     }
 }
 

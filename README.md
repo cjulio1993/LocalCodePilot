@@ -81,21 +81,27 @@ O aplicativo salva localmente pastas de busca, favoritos, recentes, histórico d
 
 Reconhecer um projeto não significa que todo o fluxo de preparação, execução e abertura já esteja concluído. A matriz abaixo descreve o estado real da versão alpha:
 
-| Ecossistema | Reconhecimento | Preparação assistida no Windows | Execução e abertura |
-| --- | --- | --- | --- |
-| Rust / Cargo | Sim | Não | Experimental |
-| Node.js / JavaScript | Sim | Experimental | Experimental |
-| PHP / Laravel / Lumen | Sim | Experimental | Experimental com `php -S` ou Artisan, conforme o framework |
-| PHP com Compose | Sim | Docker/Podman instalados pelo usuário | Iniciar os serviços em Containers |
-| Python / Django | Sim | Experimental | Experimental |
-| Java / Spring Boot | Sim | Experimental | Experimental |
-| Go | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
-| Dart | Experimental | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
-| Flutter | Experimental | Não | Ainda não suportada de ponta a ponta |
-| Site estático / JavaScript sem framework | Experimental | Requer um servidor local disponível | Experimental |
-| Containers / Docker / Podman | Experimental | Não instala o motor | Docker e Podman validados pela interface no Windows 11 |
+| Ecossistema | Reconhece no projeto | Verifica no computador | Preparação assistida no Windows | Inicia e abre |
+| --- | --- | --- | --- | --- |
+| Rust / Cargo | Sim | Sim | Não | Experimental |
+| Node.js / JavaScript | Sim | Sim | Experimental | Experimental |
+| PHP / Laravel / Lumen | Sim | Sim | Experimental | Experimental com `php -S` ou Artisan, conforme o framework |
+| PHP com Compose | Sim | Docker/Podman instalados pelo usuário | Não instala o motor | Iniciar os serviços em Containers |
+| Python / Django | Sim | Sim | Experimental | Experimental |
+| Java / Spring Boot | Sim | Sim | Experimental | Experimental |
+| Go | Sim | Sim | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
+| Dart | Sim | Sim | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
+| Flutter | Sim | Sim | Não | Ainda não suportada de ponta a ponta |
+| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Ainda não |
+| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Sim | Sim | Não | Ainda não |
+| Site estático / JavaScript sem framework | Experimental | Requer um servidor local disponível | Não | Experimental |
+| Containers / Docker / Podman | Experimental | Não instala o motor | Não | Docker e Podman validados pela interface no Windows 11 |
 
-Go, Dart e Flutter aparecem no diagnóstico porque seus arquivos e manifests já podem ser reconhecidos. Isso ainda não deve ser interpretado como suporte funcional para iniciar e abrir esses aplicativos.
+"Reconhece no projeto" usa manifests e arquivos de código; uma linguagem que o aplicativo ainda não inicia precisa de um manifest ou de dois arquivos de código na mesma pasta. A linguagem também é reconhecida pela imagem de um serviço do Compose ou pelo `FROM` do Dockerfile (por exemplo, `python:3.12-slim`), e o cartão diz de onde ela veio: "nos arquivos do projeto" ou "na imagem do serviço api". Bancos, servidores web e outras imagens que não são de linguagem não contam.
+
+"Verifica no computador" é a seção **Linguagens neste computador**, em Configurações: o aplicativo procura o programa de cada linguagem no `PATH` e nas pastas padrão de instalação, pergunta a versão com tempo limite de 10 segundos e mostra "Instalado · versão", "Instalado · Versão indisponível" ou "Não encontrado nos locais verificados"; os locais verificados e o caminho do programa ficam em Detalhes técnicos. O atalho `python.exe` da Microsoft Store, sem Python instalado por trás, conta como não encontrado. Nada é instalado por essa seção.
+
+Go, Dart e Flutter têm comandos detectados, mas ainda não foram validados de ponta a ponta. Para as linguagens marcadas "Ainda não", o cartão diz que a linguagem foi reconhecida e que o LocalCodePilot ainda não inicia projetos dela.
 
 ### Classificação e execução
 
@@ -375,21 +381,27 @@ The app locally stores scan folders, favorites, recent projects, service history
 
 Recognizing a project does not mean that its preparation, execution, and browser-opening workflow is complete. This matrix describes the actual alpha status:
 
-| Ecosystem | Recognition | Assisted Windows setup | Execution and opening |
-| --- | --- | --- | --- |
-| Rust / Cargo | Yes | No | Experimental |
-| Node.js / JavaScript | Yes | Experimental | Experimental |
-| PHP / Laravel / Lumen | Yes | Experimental | Experimental with `php -S` or Artisan, depending on the framework |
-| PHP with Compose | Yes | User-provided Docker/Podman | Start services in Containers |
-| Python / Django | Yes | Experimental | Experimental |
-| Java / Spring Boot | Yes | Experimental | Experimental |
-| Go | Experimental | Initial implementation, not validated | Not yet supported end to end |
-| Dart | Experimental | Initial implementation, not validated | Not yet supported end to end |
-| Flutter | Experimental | No | Not yet supported end to end |
-| Static site / frameworkless JavaScript | Experimental | Requires an available local server | Experimental |
-| Containers / Docker / Podman | Experimental | Does not install the engine | Docker and Podman validated in the Windows 11 UI |
+| Ecosystem | Recognized in the project | Checked on this computer | Assisted Windows setup | Starts and opens |
+| --- | --- | --- | --- | --- |
+| Rust / Cargo | Yes | Yes | No | Experimental |
+| Node.js / JavaScript | Yes | Yes | Experimental | Experimental |
+| PHP / Laravel / Lumen | Yes | Yes | Experimental | Experimental with `php -S` or Artisan, depending on the framework |
+| PHP with Compose | Yes | User-provided Docker/Podman | Does not install the engine | Start services in Containers |
+| Python / Django | Yes | Yes | Experimental | Experimental |
+| Java / Spring Boot | Yes | Yes | Experimental | Experimental |
+| Go | Yes | Yes | Initial implementation, not validated | Not yet supported end to end |
+| Dart | Yes | Yes | Initial implementation, not validated | Not yet supported end to end |
+| Flutter | Yes | Yes | No | Not yet supported end to end |
+| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | Not yet |
+| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Yes | Yes | No | Not yet |
+| Static site / frameworkless JavaScript | Experimental | Requires an available local server | No | Experimental |
+| Containers / Docker / Podman | Experimental | Does not install the engine | No | Docker and Podman validated in the Windows 11 UI |
 
-Go, Dart, and Flutter appear in diagnostics because their files and manifests can already be recognized. This must not be interpreted as functional support for starting and opening those applications.
+"Recognized in the project" uses manifests and source files; a language the app does not start yet needs a manifest or two source files in the same folder. A language is also recognized from a Compose service image or a Dockerfile `FROM` (for example, `python:3.12-slim`), and the card says where it came from: "in the project files" or "in the image of service api". Databases, web servers, and other non-language images do not count.
+
+"Checked on this computer" is the **Languages on this computer** section in Settings: the app looks for each language's program in `PATH` and in default install folders, asks for its version with a 10-second limit, and shows "Installed · version", "Installed · version unavailable", or "Not found in the checked locations"; the checked locations and the program path are under Technical details. The Microsoft Store `python.exe` shortcut without Python installed behind it counts as not found. Nothing is installed from this section.
+
+Go, Dart, and Flutter have detected commands but are not yet validated end to end. For languages marked "Not yet", the card says the language was recognized and that LocalCodePilot does not start its projects yet.
 
 ### Classification and execution
 

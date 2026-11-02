@@ -1,4 +1,7 @@
-use localcodepilot_core::containers::{ContainerProject, ContainerService};
+use localcodepilot_core::{
+    containers::{ContainerProject, ContainerService},
+    languages,
+};
 use serde_yaml_ng::Value;
 use std::{
     collections::{HashSet, VecDeque},
@@ -109,10 +112,16 @@ pub fn detect_container_projects(root: &Path) -> Vec<ContainerProject> {
                 .filter(|file| file.is_file())
                 .collect(),
                 directory: directory.clone(),
+                base_images: vec![],
                 services: vec![],
                 warnings: vec![],
                 error: None,
             };
+            if let Some(dockerfile) = &project.dockerfile {
+                project.base_images = fs::read_to_string(dockerfile)
+                    .map(|contents| languages::dockerfile_base_images(&contents))
+                    .unwrap_or_default();
+            }
             if let Some(file) = &project.compose_file {
                 match parse_compose(file) {
                     Ok((services, warnings)) => {

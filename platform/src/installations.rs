@@ -4,9 +4,23 @@ use std::collections::HashSet;
 use std::{
     env,
     ffi::{OsStr, OsString},
+    io::Read,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
 };
+
+/// How long a program may take to answer its version. Some SDKs (Flutter, Kotlin) take
+/// several seconds on the first run.
+pub const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What a program said when asked for its version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionAnswer {
+    Version(String),
+    TimedOut,
+    Failed,
+}
 
 const NODE_LTS_PACKAGE_ID: &str = "OpenJS.NodeJS.LTS";
 const BUN_PACKAGE_ID: &str = "Oven-sh.Bun";
@@ -265,6 +279,27 @@ pub fn inspect_program(
     path: Option<&OsStr>,
 ) -> Option<ProgramInventory> {
     let executable = find_executable(program, path)?;
+    let VersionAnswer::Version(version) =
+        read_version(&executable, version_args, path, VERSION_TIMEOUT)
+    else {
+        return None;
+    };
+    Some(ProgramInventory {
+        command: program.to_owned(),
+        path: executable,
+        version,
+    })
+}
+
+/// Runs `executable` with `version_args`, without a shell (only `.bat` and `.cmd` go through
+/// `cmd /C`), and returns the first line it prints. A program that does not answer within
+/// `timeout` is stopped.
+pub fn read_version(
+    executable: &Path,
+    version_args: &[&str],
+    path: Option<&OsStr>,
+    timeout: Duration,
+) -> VersionAnswer {
     #[cfg(target_os = "windows")]
     let mut command = if executable
         .extension()
@@ -272,33 +307,73 @@ pub fn inspect_program(
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "bat" | "cmd"))
     {
         let mut command = Command::new("cmd.exe");
-        command.args(["/D", "/C"]).arg(&executable);
+        command.args(["/D", "/C"]).arg(executable);
         command
     } else {
-        Command::new(&executable)
+        Command::new(executable)
     };
     #[cfg(not(target_os = "windows"))]
-    let mut command = Command::new(&executable);
-    command.args(version_args);
+    let mut command = Command::new(executable);
+    command
+        .args(version_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(path) = path {
         command.env("PATH", path);
     }
     configure_background_command(&mut command);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
+    let Ok(mut child) = command.spawn() else {
+        return VersionAnswer::Failed;
+    };
+    let read = |stream: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(stream) = stream {
+                let _ = stream.take(65_536).read_to_end(&mut bytes);
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    };
+    let stdout = read(
+        child
+            .stdout
+            .take()
+            .map(|stream| Box::new(stream) as Box<dyn Read + Send>),
+    );
+    let stderr = read(
+        child
+            .stderr
+            .take()
+            .map(|stream| Box::new(stream) as Box<dyn Read + Send>),
+    );
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = crate::ports::terminate_process_tree(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return VersionAnswer::TimedOut;
+            }
+            Err(_) => return VersionAnswer::Failed,
+        }
+    };
+    let output = stdout.join().unwrap_or_default() + "\n" + &stderr.join().unwrap_or_default();
+    if !status.success() {
+        return VersionAnswer::Failed;
     }
-    let version = String::from_utf8_lossy(&output.stdout)
+    output
         .lines()
-        .chain(String::from_utf8_lossy(&output.stderr).lines())
         .map(str::trim)
-        .find(|line| !line.is_empty())?
-        .to_owned();
-    Some(ProgramInventory {
-        command: program.to_owned(),
-        path: executable,
-        version,
-    })
+        .find(|line| !line.is_empty())
+        .map_or(VersionAnswer::Failed, |line| {
+            VersionAnswer::Version(line.to_owned())
+        })
 }
 
 pub fn find_executable(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {

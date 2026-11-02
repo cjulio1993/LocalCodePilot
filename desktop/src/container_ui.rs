@@ -1576,6 +1576,11 @@ impl LocalCodePilot {
         })
     }
 
+    /// Environments found in the catalogued projects, for other screens.
+    pub(super) fn container_state_projects(&self) -> &[ContainerProject] {
+        &self.container_state.projects
+    }
+
     /// Asks to confirm a container command, wherever it was requested.
     pub(super) fn confirm_container_command(&mut self, command: ContainerCommand) {
         self.container_state.confirmation = Some(command);

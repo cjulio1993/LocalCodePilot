@@ -143,6 +143,27 @@ pub(super) struct ProjectFacts<'a> {
     /// One environment up whose stop reaches a service and passes the Compose checks.
     pub container_stop_here: bool,
     pub container_url: Option<&'a str>,
+    /// Languages found in the project files.
+    pub languages: &'a [RuntimeKind],
+}
+
+/// Why there is nothing to start: a language the app does not start yet is named, so the
+/// card does not suggest a command is missing from the project.
+fn no_command_reason(languages: &[RuntimeKind]) -> String {
+    match languages {
+        [] => "Nenhum comando para iniciar foi encontrado".into(),
+        languages if languages.iter().all(|language| !language.starts()) => {
+            let names = languages
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Linguagem reconhecida: {names}. O LocalCodePilot ainda não inicia projetos desta linguagem"
+            )
+        }
+        _ => "Linguagem reconhecida. Nenhum comando para iniciar foi identificado".into(),
+    }
 }
 
 /// Name of a state filter for assistive technologies, with its count.
@@ -281,7 +302,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     if environment.command_count == 0 {
         return summary(
             ProjectState::Stopped,
-            Some("Nenhum comando para iniciar foi encontrado".into()),
+            Some(no_command_reason(facts.languages)),
             PrimaryAction::Details,
         );
     }
@@ -431,6 +452,7 @@ impl LocalCodePilot {
             container_stop_here: container_running
                 && self.card_container_stop(&project.path).is_some(),
             container_url: container_url.as_deref(),
+            languages: &project.runtimes,
         })
     }
 
@@ -782,6 +804,7 @@ impl LocalCodePilot {
                         let card = ProjectCard {
                             project,
                             summary,
+                            languages: self.language_lines(project),
                             environment: self.project_environments.get(&project.path),
                             favorite: self.is_favorite(&project.path),
                             expanded: self.project_ui.expanded.contains(&project.path),
@@ -1028,6 +1051,8 @@ fn project_row(
 struct ProjectCard<'a> {
     project: &'a Project,
     summary: &'a ProjectSummary,
+    /// Each language, where it was found and whether this computer has it.
+    languages: Vec<String>,
     environment: Option<&'a ProjectEnvironment>,
     favorite: bool,
     expanded: bool,
@@ -1166,7 +1191,7 @@ impl ProjectCard<'_> {
                 ui.label(RichText::new(text).color(theme::MUTED).size(12.0));
             }
         };
-        for line in &self.summary.technical {
+        for line in self.summary.technical.iter().chain(&self.languages) {
             detail(ui, line);
         }
         ui.horizontal_wrapped(|ui| {
@@ -1271,6 +1296,7 @@ mod tests {
             container_running: false,
             container_stop_here: false,
             container_url: None,
+            languages: &[],
         }
     }
 
@@ -1487,6 +1513,21 @@ mod tests {
         assert_eq!(
             summary.reason.as_deref(),
             Some("Nenhum comando para iniciar foi encontrado")
+        );
+        // A recognized language says so, and whether the app starts it at all.
+        let mut ruby = facts(&empty);
+        ruby.languages = &[RuntimeKind::Ruby];
+        assert_eq!(
+            summarize_project(&ruby).reason.as_deref(),
+            Some(
+                "Linguagem reconhecida: Ruby. O LocalCodePilot ainda não inicia projetos desta linguagem"
+            )
+        );
+        let mut python = facts(&empty);
+        python.languages = &[RuntimeKind::Python];
+        assert_eq!(
+            summarize_project(&python).reason.as_deref(),
+            Some("Linguagem reconhecida. Nenhum comando para iniciar foi identificado")
         );
     }
 
