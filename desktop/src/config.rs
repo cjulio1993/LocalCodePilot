@@ -33,6 +33,8 @@ pub struct WorkspaceState {
     pub project_filter: String,
     /// `list` or empty for cards.
     pub project_view: String,
+    /// The user collapsed the sidebar to icons. The sidebar starts expanded.
+    pub sidebar_collapsed: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +62,7 @@ impl Default for WorkspaceState {
             compose_data_confirmations: Vec::new(),
             project_filter: String::new(),
             project_view: String::new(),
+            sidebar_collapsed: false,
         }
     }
 }
@@ -380,5 +383,21 @@ mod tests {
     fn restores_workspace_state_without_recent_visibility_field() {
         let state: WorkspaceState = serde_json::from_str(r#"{"schema_version":3}"#).unwrap();
         assert!(state.hidden_recent_projects.is_empty());
+    }
+
+    #[test]
+    fn the_sidebar_starts_expanded_and_keeps_the_user_choice() {
+        let saved_before_the_option: WorkspaceState =
+            serde_json::from_str(r#"{"schema_version":3}"#).unwrap();
+        assert!(!saved_before_the_option.sidebar_collapsed);
+        assert!(!WorkspaceState::default().sidebar_collapsed);
+
+        let collapsed = WorkspaceState {
+            sidebar_collapsed: true,
+            ..WorkspaceState::default()
+        };
+        let restored: WorkspaceState =
+            serde_json::from_str(&serde_json::to_string(&collapsed).unwrap()).unwrap();
+        assert!(restored.sidebar_collapsed);
     }
 }

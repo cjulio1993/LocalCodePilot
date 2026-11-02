@@ -217,7 +217,7 @@ fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)
         Page::Overview | Page::Projects => {
             Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
         }
-        Page::Plugins | Page::Help | Page::Settings => None,
+        Page::Help | Page::Settings => None,
     }
 }
 
@@ -1464,7 +1464,7 @@ mod tests {
                 Some((Duration::from_secs(15), ContainerRefresh::Full))
             );
         }
-        for page in [Page::Plugins, Page::Help, Page::Settings] {
+        for page in [Page::Help, Page::Settings] {
             assert_eq!(container_refresh_schedule(page), None);
         }
     }
