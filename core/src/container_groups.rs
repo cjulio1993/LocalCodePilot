@@ -394,12 +394,18 @@ mod tests {
             ),
         ]);
         let docker = ContainerEngine::Docker;
+        // Engines on Windows may record the folder with other casing and separators.
+        let wordpress_folder = if cfg!(windows) {
+            "c:\\dev\\wp-blog\\docker"
+        } else {
+            "C:/dev/wp-blog/docker"
+        };
         let containers = [
             container(
                 docker,
                 "wordpress",
                 "docker",
-                "c:\\dev\\wp-blog\\docker",
+                wordpress_folder,
                 "running",
                 "Up 2 minutes",
             ),
