@@ -112,6 +112,16 @@ pub(super) struct ProjectSummary {
     pub primary: PrimaryAction,
     /// Runs through Containers, where logs and stop live.
     pub uses_containers: bool,
+    /// Shown under "Detalhes técnicos": process, command, exit code, port owner.
+    pub technical: Vec<String>,
+}
+
+/// A process of the project that failed, with what the app knows about why.
+pub(super) struct FailedProcess<'a> {
+    pub name: &'a str,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub failure: Option<&'a ProcessFailure>,
 }
 
 /// Everything the summary depends on, gathered from the app state.
@@ -122,7 +132,7 @@ pub(super) struct ProjectFacts<'a> {
     pub dependency_install: Option<&'a DependencyInstallStatus>,
     pub starting: bool,
     pub running: bool,
-    pub failed_process: Option<&'a str>,
+    pub failed_process: Option<FailedProcess<'a>>,
     pub application_url: Option<&'a str>,
     pub http: Option<&'a HttpHealthStatus>,
     pub has_containers: bool,
@@ -147,6 +157,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         url: None,
         primary,
         uses_containers: false,
+        technical: vec![],
     };
     if facts.running || facts.container_running {
         let url = facts
@@ -180,6 +191,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
                 .map_or(PrimaryAction::ViewLogs, PrimaryAction::OpenSite),
             url,
             uses_containers: !facts.running,
+            technical: vec![],
         };
     }
     match facts.dependency_install {
@@ -220,12 +232,26 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             PrimaryAction::Wait,
         );
     }
-    if let Some(name) = facts.failed_process {
-        return summary(
-            ProjectState::Problem,
-            Some(format!("{name} parou com erro")),
-            PrimaryAction::ViewLogs,
+    if let Some(failed) = &facts.failed_process {
+        let reason = failed.failure.map_or_else(
+            || format!("{} parou com erro", failed.name),
+            ProcessFailure::sentence,
         );
+        let mut problem = summary(ProjectState::Problem, Some(reason), PrimaryAction::ViewLogs);
+        problem.technical = vec![
+            format!("Processo: {}", failed.name),
+            format!("Comando: {}", failed.command),
+        ];
+        if let Some(code) = failed.exit_code {
+            problem.technical.push(format!("Código de saída: {code}"));
+        }
+        problem.technical.extend(
+            failed
+                .failure
+                .map(ProcessFailure::details)
+                .unwrap_or_default(),
+        );
+        return problem;
     }
     if let Some(error) = environment.manifest_errors.first() {
         return summary(
@@ -385,7 +411,12 @@ impl LocalCodePilot {
             failed_process: processes
                 .iter()
                 .find(|process| process.state == ProcessState::Failed)
-                .map(|process| process.name.as_str()),
+                .map(|process| FailedProcess {
+                    name: &process.name,
+                    command: process.command_line(),
+                    exit_code: process.exit_code,
+                    failure: self.process_failures.get(&process.id),
+                }),
             application_url: application_url.as_deref(),
             http,
             has_containers: project.technologies.contains(&TechnologyKind::Containers),
@@ -1086,9 +1117,9 @@ impl ProjectCard<'_> {
                         }
                     }
                     let details = if self.expanded {
-                        "Ocultar detalhes"
+                        "Ocultar detalhes técnicos"
                     } else {
-                        "Detalhes"
+                        "Detalhes técnicos"
                     };
                     if summary.primary != PrimaryAction::Details || self.expanded {
                         let response = ui.button(details);
@@ -1112,9 +1143,16 @@ impl ProjectCard<'_> {
         let project = self.project;
         let path = || project.path.clone();
         let mut action = None;
+        // The reason is already on the card; repeating it here adds nothing.
+        let reason = self.summary.reason.as_deref().unwrap_or_default();
         let detail = |ui: &mut egui::Ui, text: &str| {
-            ui.label(RichText::new(text).color(theme::MUTED).size(12.0));
+            if !reason.starts_with(text.trim_end_matches('.')) {
+                ui.label(RichText::new(text).color(theme::MUTED).size(12.0));
+            }
         };
+        for line in &self.summary.technical {
+            detail(ui, line);
+        }
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(format!(
@@ -1144,10 +1182,12 @@ impl ProjectCard<'_> {
                 detail(ui, &problem);
             }
             for error in &environment.manifest_errors {
-                detail(
-                    ui,
-                    &format!("{error}. Corrija o arquivo e clique em Atualizar."),
-                );
+                if !reason.starts_with(error.as_str()) {
+                    detail(
+                        ui,
+                        &format!("{error}. Corrija o arquivo e clique em Atualizar."),
+                    );
+                }
             }
         }
         ui.add_space(4.0);
@@ -1302,6 +1342,66 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_start_keeps_its_reason_on_the_card_and_the_owner_in_details() {
+        let environment = ready();
+        let failure = ProcessFailure::PortTaken {
+            port: Port::new(5173).unwrap(),
+            owner: Some(PortOwner {
+                process_id: 1234,
+                process_name: Some("node.exe".into()),
+            }),
+        };
+        let mut failed = facts(&environment);
+        failed.failed_process = Some(FailedProcess {
+            name: "Servidor",
+            command: "npm run dev".into(),
+            exit_code: None,
+            failure: Some(&failure),
+        });
+        let summary = summarize_project(&failed);
+        assert_eq!(summary.state, ProjectState::Problem);
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some("Outro programa está usando a porta 5173. Este projeto não iniciou.")
+        );
+        // Ver logs, never an action that ends the other program.
+        assert_eq!(summary.primary, PrimaryAction::ViewLogs);
+        assert_eq!(
+            summary.technical,
+            [
+                "Processo: Servidor",
+                "Comando: npm run dev",
+                "A porta 5173 está em uso por node.exe (PID 1234), que não pertence a este projeto.",
+            ]
+        );
+        // A new attempt hides the failure of the previous one.
+        failed.starting = true;
+        let retrying = summarize_project(&failed);
+        assert_eq!(retrying.state, ProjectState::Starting);
+        assert!(retrying.technical.is_empty());
+        failed.starting = false;
+        failed.running = true;
+        assert_eq!(summarize_project(&failed).state, ProjectState::Running);
+
+        for failure in [
+            ProcessFailure::NoResponse(Port::new(5173).unwrap()),
+            ProcessFailure::ClosedBeforeReady,
+            ProcessFailure::PortLost(Port::new(5173).unwrap()),
+            ProcessFailure::Exited,
+            ProcessFailure::ProgramMissing("npm".into()),
+            ProcessFailure::FolderMissing(PathBuf::from("C:/projetos/loja")),
+            ProcessFailure::SpawnFailed("Acesso negado. (os error 5)".into()),
+        ] {
+            let sentence = failure.sentence();
+            assert!(
+                !sentence.contains("PID") && !sentence.contains("os error"),
+                "{sentence}"
+            );
+            assert!(!sentence.contains("projetos/loja"), "{sentence}");
+        }
+    }
+
+    #[test]
     fn problems_explain_the_reason_and_offer_one_action() {
         let invalid = ProjectEnvironment {
             manifest_errors: vec!["package.json inválido (linha 1)".into()],
@@ -1317,7 +1417,12 @@ mod tests {
 
         let environment = ready();
         let mut crashed = facts(&environment);
-        crashed.failed_process = Some("npm run start");
+        crashed.failed_process = Some(FailedProcess {
+            name: "npm run start",
+            command: "npm run start".into(),
+            exit_code: Some(1),
+            failure: None,
+        });
         let summary = summarize_project(&crashed);
         assert_eq!(summary.state, ProjectState::Problem);
         assert_eq!(
@@ -1325,6 +1430,7 @@ mod tests {
             Some("npm run start parou com erro")
         );
         assert_eq!(summary.primary, PrimaryAction::ViewLogs);
+        assert!(summary.technical.contains(&"Código de saída: 1".to_owned()));
 
         let failed = DependencyInstallStatus::Failed {
             error: "exit 1".into(),

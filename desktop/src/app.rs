@@ -2,6 +2,8 @@
 mod container_ui;
 #[path = "help_ui.rs"]
 mod help_ui;
+#[path = "notice.rs"]
+mod notice;
 #[path = "project_ui.rs"]
 mod project_ui;
 
@@ -151,6 +153,80 @@ enum HttpHealthStatus {
 struct PortConflict {
     port: Port,
     owner: Option<PortOwner>,
+}
+
+/// Why a process failed, kept so the project card still explains it after the notification
+/// is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProcessFailure {
+    FolderMissing(PathBuf),
+    ProgramMissing(String),
+    /// Another program holds the port, found before starting or while waiting for it.
+    PortTaken {
+        port: Port,
+        owner: Option<PortOwner>,
+    },
+    NoResponse(Port),
+    ClosedBeforeReady,
+    PortLost(Port),
+    Exited,
+    SpawnFailed(String),
+    WaitFailed(String),
+}
+
+impl ProcessFailure {
+    /// One sentence for the card: no PID, command or path.
+    fn sentence(&self) -> String {
+        match self {
+            Self::FolderMissing(_) => "A pasta do projeto não existe mais.".into(),
+            Self::ProgramMissing(program) => {
+                format!("O programa {program} não foi encontrado neste computador.")
+            }
+            Self::PortTaken { port, .. } => format!(
+                "Outro programa está usando a porta {}. Este projeto não iniciou.",
+                port.value()
+            ),
+            Self::NoResponse(port) => format!(
+                "O servidor não respondeu na porta {} a tempo. Veja os logs para investigar.",
+                port.value()
+            ),
+            Self::ClosedBeforeReady => {
+                "O servidor fechou antes de ficar pronto. Veja os logs para investigar.".into()
+            }
+            Self::PortLost(port) => {
+                format!("O servidor parou de responder na porta {}.", port.value())
+            }
+            Self::Exited => "O processo fechou inesperadamente.".into(),
+            Self::SpawnFailed(_) => "Não foi possível iniciar o processo.".into(),
+            Self::WaitFailed(_) => "Não foi possível acompanhar o processo.".into(),
+        }
+    }
+
+    /// Lines for "Detalhes técnicos".
+    fn details(&self) -> Vec<String> {
+        match self {
+            Self::FolderMissing(path) => vec![format!("Pasta procurada: {}", display_path(path))],
+            Self::ProgramMissing(program) => vec![format!("Programa procurado no PATH: {program}")],
+            Self::PortTaken {
+                port,
+                owner: Some(owner),
+            } => vec![port_owner_detail(*port, owner)],
+            Self::PortTaken { port, owner: None } => vec![format!(
+                "A porta {} está em uso; o sistema não informou por qual programa.",
+                port.value()
+            )],
+            Self::NoResponse(_) => vec![format!(
+                "Tempo de espera pela porta: {} segundos",
+                PROCESS_START_TIMEOUT.as_secs()
+            )],
+            Self::PortLost(_) => vec![format!(
+                "Sem resposta na porta por {} segundos; o processo foi encerrado.",
+                PROCESS_PORT_LOSS_GRACE.as_secs()
+            )],
+            Self::ClosedBeforeReady | Self::Exited => vec![],
+            Self::SpawnFailed(error) | Self::WaitFailed(error) => vec![error.clone()],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -445,6 +521,7 @@ pub struct LocalCodePilot {
     running_processes: HashMap<String, RunningProcess>,
     assigned_ports: HashMap<String, Port>,
     port_conflicts: HashMap<String, PortConflict>,
+    process_failures: HashMap<String, ProcessFailure>,
     port_termination: Option<PortTerminationRequest>,
     project_environments: HashMap<PathBuf, ProjectEnvironment>,
     focused_project: Option<PathBuf>,
@@ -531,6 +608,7 @@ impl LocalCodePilot {
             running_processes: HashMap::new(),
             assigned_ports: HashMap::new(),
             port_conflicts: HashMap::new(),
+            process_failures: HashMap::new(),
             port_termination: None,
             project_environments: HashMap::new(),
             focused_project,
@@ -1197,6 +1275,7 @@ impl LocalCodePilot {
                 self.processes = processes;
                 self.assigned_ports.clear();
                 self.port_conflicts.clear();
+                self.process_failures.clear();
             }
             Ok(DiscoveryEvent::Environments(environments)) => {
                 self.project_environments = environments;
@@ -1480,6 +1559,10 @@ impl LocalCodePilot {
             self.processes[index].state = ProcessState::Failed;
             self.processes[index].process_id = None;
             self.processes[index].exit_code = None;
+            self.process_failures.insert(
+                id.to_owned(),
+                ProcessFailure::FolderMissing(process.working_directory.clone()),
+            );
             self.notify(format!(
                 "Não foi possível iniciar {}: a pasta '{}' não existe mais",
                 process.name,
@@ -1491,6 +1574,10 @@ impl LocalCodePilot {
             self.processes[index].state = ProcessState::Failed;
             self.processes[index].process_id = None;
             self.processes[index].exit_code = None;
+            self.process_failures.insert(
+                id.to_owned(),
+                ProcessFailure::ProgramMissing(process.program.clone()),
+            );
             self.notify(format!(
                 "Não foi possível iniciar {}: o programa '{}' não foi encontrado no PATH",
                 process.name, process.program
@@ -1514,6 +1601,13 @@ impl LocalCodePilot {
                     PortAvailability::Occupied { owner } => owner,
                     PortAvailability::Available => None,
                 };
+                self.process_failures.insert(
+                    id.to_owned(),
+                    ProcessFailure::PortTaken {
+                        port,
+                        owner: owner.clone(),
+                    },
+                );
                 let conflict = PortConflict { port, owner };
                 self.processes[index].state = ProcessState::Failed;
                 self.processes[index].process_id = None;
@@ -1526,6 +1620,7 @@ impl LocalCodePilot {
         }
         self.processes[index].state = ProcessState::Starting;
         self.processes[index].exit_code = None;
+        self.process_failures.remove(id);
         if let Some(port) = assigned_port {
             self.assigned_ports.insert(id.to_owned(), port);
         }
@@ -1606,6 +1701,10 @@ impl LocalCodePilot {
                 self.processes[index].state = ProcessState::Failed;
                 self.processes[index].process_id = None;
                 self.processes[index].exit_code = None;
+                self.process_failures.insert(
+                    id.to_owned(),
+                    ProcessFailure::SpawnFailed(error.to_string()),
+                );
                 self.notify(format!(
                     "Não foi possível iniciar {}: {error}",
                     process.name
@@ -1625,6 +1724,7 @@ impl LocalCodePilot {
         terminate_process(&mut running.child);
         running.finished = true;
         self.assigned_ports.remove(id);
+        self.process_failures.remove(id);
         if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
             process.state = ProcessState::Stopped;
             process.process_id = None;
@@ -1707,6 +1807,13 @@ impl LocalCodePilot {
                     PortAvailability::Occupied { owner } => owner,
                     PortAvailability::Available => None,
                 };
+                self.process_failures.insert(
+                    process.id.clone(),
+                    ProcessFailure::PortTaken {
+                        port,
+                        owner: owner.clone(),
+                    },
+                );
                 let conflict = PortConflict { port, owner };
                 if let Some(process) = self
                     .processes
@@ -2122,6 +2229,13 @@ impl LocalCodePilot {
             PortAvailability::Occupied {
                 owner: Some(current_owner),
             } if current_owner.process_id != owner.process_id => {
+                self.process_failures.insert(
+                    request.process_id.clone(),
+                    ProcessFailure::PortTaken {
+                        port: request.conflict.port,
+                        owner: Some(current_owner.clone()),
+                    },
+                );
                 let conflict = PortConflict {
                     port: request.conflict.port,
                     owner: Some(current_owner),
@@ -2978,6 +3092,11 @@ impl LocalCodePilot {
                         continue;
                     }
                     let stopped_during_startup = state == ProcessState::Starting;
+                    let failure = if stopped_during_startup {
+                        ProcessFailure::ClosedBeforeReady
+                    } else {
+                        ProcessFailure::Exited
+                    };
                     let reason = if stopped_during_startup {
                         "o processo encerrou antes de disponibilizar o serviço".to_owned()
                     } else if let Some(code) = status.code() {
@@ -2992,7 +3111,7 @@ impl LocalCodePilot {
                         id.clone(),
                         ProcessState::Failed,
                         status.code(),
-                        Some(reason),
+                        Some(failure),
                     ));
                     continue;
                 }
@@ -3003,7 +3122,7 @@ impl LocalCodePilot {
                         id.clone(),
                         ProcessState::Failed,
                         None,
-                        Some(error.to_string()),
+                        Some(ProcessFailure::WaitFailed(error.to_string())),
                     ));
                     continue;
                 }
@@ -3049,6 +3168,13 @@ impl LocalCodePilot {
                     ));
                     ready_updates.push((id.clone(), port));
                 } else if now.duration_since(running.started_at) >= PROCESS_START_TIMEOUT {
+                    let failure = match &running.foreign_listener {
+                        Some(owner) => ProcessFailure::PortTaken {
+                            port,
+                            owner: Some(owner.clone()),
+                        },
+                        None => ProcessFailure::NoResponse(port),
+                    };
                     let reason = match &running.foreign_listener {
                         Some(owner) => {
                             // Technical details go to the log; the reason stays plain.
@@ -3071,7 +3197,7 @@ impl LocalCodePilot {
                         .push_back(format!("[LocalCodePilot] Falha: {reason}."));
                     terminate_process(&mut running.child);
                     running.finished = true;
-                    state_updates.push((id.clone(), ProcessState::Failed, None, Some(reason)));
+                    state_updates.push((id.clone(), ProcessState::Failed, None, Some(failure)));
                 }
                 continue;
             }
@@ -3104,7 +3230,7 @@ impl LocalCodePilot {
                             id.clone(),
                             ProcessState::Failed,
                             None,
-                            Some(format!("a porta {} deixou de responder", port.value())),
+                            Some(ProcessFailure::PortLost(port)),
                         ));
                     }
                 }
@@ -3125,14 +3251,24 @@ impl LocalCodePilot {
             }
             self.record_process_history(&id);
         }
-        for (id, state, exit_code, error) in state_updates {
+        for (id, state, exit_code, failure) in state_updates {
             self.assigned_ports.remove(&id);
+            match &failure {
+                Some(failure) => {
+                    self.process_failures.insert(id.clone(), failure.clone());
+                }
+                None => {
+                    self.process_failures.remove(&id);
+                }
+            }
             if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
                 process.state = state;
                 process.process_id = None;
                 process.exit_code = exit_code;
-                let message = match (error, exit_code) {
-                    (Some(error), _) => format!("{}: {error}", process.name),
+                let message = match (failure, exit_code) {
+                    (Some(failure), _) => {
+                        format!("{}: {}", process.project_name, failure.sentence())
+                    }
                     (None, Some(code)) => {
                         format!("{} finalizado com código {code}", process.name)
                     }

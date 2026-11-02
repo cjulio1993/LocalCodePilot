@@ -176,6 +176,8 @@ pub fn classify_environment(
 /// Why an action is blocked and how to unblock it, in user-facing language.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockedAction {
+    /// One sentence for anyone: what may happen, without names, paths or commands.
+    pub summary: &'static str,
     pub title: String,
     pub explanation: String,
     pub steps: Vec<String>,
@@ -278,6 +280,9 @@ pub fn guard_container_action(
     Ok(())
 }
 
+const SHARED_SUMMARY: &str =
+    "Este ambiente pode compartilhar containers ou dados com outro projeto.";
+
 /// User-facing explanation for an unsafe environment.
 pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
     let suggestion = match safety {
@@ -302,6 +307,7 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
     };
     match safety {
         ComposeSafety::Safe => BlockedAction {
+            summary: "",
             title: String::new(),
             explanation: String::new(),
             steps: vec![],
@@ -309,6 +315,7 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
             can_confirm_volumes: false,
         },
         ComposeSafety::SharedName { name, other } => BlockedAction {
+            summary: SHARED_SUMMARY,
             title: "Nome de ambiente compartilhado".into(),
             explanation: format!(
                 "O Compose chama este ambiente de \"{name}\", o mesmo nome do ambiente em {}. Para o Docker e o Podman, os dois são um único ambiente: iniciar ou parar um pode recriar, parar ou reaproveitar containers e dados do outro.",
@@ -319,6 +326,7 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
             can_confirm_volumes: false,
         },
         ComposeSafety::UsedByAnotherFolder { name, folder } => BlockedAction {
+            summary: SHARED_SUMMARY,
             title: "Ambiente em uso por outra pasta".into(),
             explanation: format!(
                 "Existem containers do ambiente \"{name}\" criados a partir de {}, possivelmente pelo terminal ou por outra ferramenta. Iniciar ou parar aqui afetaria esses containers.",
@@ -341,6 +349,7 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
                     .to_owned(),
             );
             BlockedAction {
+                summary: "Existem dados deste ambiente sem origem confirmada.",
                 title: "Dados de origem não confirmada".into(),
                 explanation: format!(
                     "Existem volumes do ambiente \"{name}\" ({}) e nenhum container mostra de qual pasta eles vieram. Iniciar aqui faria este projeto usar esses dados.",
@@ -356,6 +365,7 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
             }
         }
         ComposeSafety::Unverifiable { reason } => BlockedAction {
+            summary: "Não foi possível confirmar se este ambiente é só deste projeto.",
             title: "Não foi possível confirmar o ambiente".into(),
             explanation: format!(
                 "{reason} Sem essa confirmação, iniciar ou parar pode afetar outro projeto."
@@ -890,6 +900,9 @@ mod tests {
         ] {
             let blocked = explain(&safety, &directory);
             assert!(!blocked.title.is_empty() && !blocked.explanation.is_empty());
+            // The first layer names no folder, environment or command.
+            assert!(!blocked.summary.is_empty());
+            assert!(!blocked.summary.contains('"') && !blocked.summary.contains("docker"));
             assert!(!blocked.steps.is_empty());
             assert_eq!(
                 blocked.can_confirm_volumes,
