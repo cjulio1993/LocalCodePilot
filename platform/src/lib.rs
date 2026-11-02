@@ -3,6 +3,7 @@ use sysinfo::System;
 
 pub mod filesystem;
 pub mod installations;
+pub mod languages;
 pub mod ports;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

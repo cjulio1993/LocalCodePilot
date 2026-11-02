@@ -1,10 +1,11 @@
-use localcodepilot_core::{discovery::ProjectSource, runtimes::RuntimeKind};
+use localcodepilot_core::{discovery::ProjectSource, languages, runtimes::RuntimeKind};
 use std::{
     collections::{HashSet, VecDeque},
     fs, io,
     path::PathBuf,
 };
 
+/// Markers besides the language manifests of `languages::LANGUAGES`.
 const PROJECT_MARKERS: &[&str] = &[
     "Dockerfile",
     "Containerfile",
@@ -12,21 +13,8 @@ const PROJECT_MARKERS: &[&str] = &[
     "compose.yml",
     "docker-compose.yaml",
     "docker-compose.yml",
-    "Cargo.toml",
-    "package.json",
-    "composer.json",
-    "pyproject.toml",
-    "requirements.txt",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "gradlew",
-    "gradlew.bat",
-    "go.mod",
     "pubspec.yaml",
     "index.html",
-    "index.php",
-    "wp-config.php",
 ];
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
@@ -113,7 +101,7 @@ impl ProjectSource for FilesystemProjectSource {
             };
             let mut is_project = false;
             let mut is_ignored = false;
-            let mut source_counts = [0_u8; 7];
+            let mut source_counts = [0_u8; RuntimeKind::ALL.len()];
             let mut child_directories = Vec::new();
             for entry in entries.flatten() {
                 let name = entry.file_name();
@@ -147,6 +135,7 @@ impl ProjectSource for FilesystemProjectSource {
                 if PROJECT_MARKERS
                     .iter()
                     .any(|marker| name.eq_ignore_ascii_case(marker))
+                    || languages::from_manifest(&name).is_some()
                 {
                     is_project = true;
                 }
@@ -155,15 +144,10 @@ impl ProjectSource for FilesystemProjectSource {
                 else {
                     continue;
                 };
-                let index = match RuntimeKind::from_source_extension(extension) {
-                    Some(RuntimeKind::Rust) => 0,
-                    Some(RuntimeKind::Node) => 1,
-                    Some(RuntimeKind::Php) => 2,
-                    Some(RuntimeKind::Python) => 3,
-                    Some(RuntimeKind::Java) => 4,
-                    Some(RuntimeKind::Go) => 5,
-                    Some(RuntimeKind::Dart) => 6,
-                    Some(RuntimeKind::Flutter) | None => continue,
+                let Some(index) =
+                    RuntimeKind::from_source_extension(extension).map(RuntimeKind::index)
+                else {
+                    continue;
                 };
                 source_counts[index] = source_counts[index].saturating_add(1);
                 if source_counts[index] >= 2 {

@@ -4,6 +4,7 @@ pub mod container_setup;
 pub mod containers;
 pub mod discovery;
 pub mod environments;
+pub mod languages;
 pub mod paths;
 pub mod ports;
 pub mod processes;

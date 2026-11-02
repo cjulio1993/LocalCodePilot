@@ -205,7 +205,11 @@ const SECTIONS: &[HelpSection] = &[
         blocks: &[
             Block::Item(
                 "Detalhes técnicos do projeto",
-                "pasta, comandos detectados e, quando o projeto falha, o processo, o comando e o código de saída.",
+                "pasta, linguagens e de onde vieram (arquivos do projeto ou imagem do container), comandos detectados e, quando o projeto falha, o processo, o comando e o código de saída.",
+            ),
+            Block::Item(
+                "Linguagens neste computador",
+                "em Configurações, cada linguagem aparece com a versão instalada ou como não encontrada nos locais verificados, e Detalhes técnicos mostra onde o aplicativo procurou.",
             ),
             Block::Item(
                 "Processos",

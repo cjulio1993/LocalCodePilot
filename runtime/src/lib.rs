@@ -1,6 +1,7 @@
 use localcodepilot_core::{
     discovery::RuntimeDetector,
     environments::{RequirementSource, RequirementStatus, RuntimeRequirement, VersionConstraint},
+    languages,
     ports::Port,
     processes::{PortOverride, ProcessState, ProjectProcess},
     projects::Project,
@@ -12,22 +13,6 @@ use std::{collections::VecDeque, fs, path::Path};
 
 pub mod databases;
 
-const CANDIDATES: &[(&str, RuntimeKind)] = &[
-    ("Cargo.toml", RuntimeKind::Rust),
-    ("package.json", RuntimeKind::Node),
-    ("composer.json", RuntimeKind::Php),
-    ("index.php", RuntimeKind::Php),
-    ("wp-config.php", RuntimeKind::Php),
-    ("wp-config-sample.php", RuntimeKind::Php),
-    ("pyproject.toml", RuntimeKind::Python),
-    ("requirements.txt", RuntimeKind::Python),
-    ("pom.xml", RuntimeKind::Java),
-    ("build.gradle", RuntimeKind::Java),
-    ("build.gradle.kts", RuntimeKind::Java),
-    ("gradlew", RuntimeKind::Java),
-    ("gradlew.bat", RuntimeKind::Java),
-    ("go.mod", RuntimeKind::Go),
-];
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
     "node_modules",
@@ -1476,12 +1461,10 @@ fn explicit_port(command: &str) -> Option<u16> {
     None
 }
 
+/// Languages of one folder: manifests (by name or extension, from the language table) and
+/// source files. A language the app cannot start yet needs a manifest or two source files,
+/// so a stray script does not label a project.
 fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
-    for &(marker, runtime) in CANDIDATES {
-        if path.join(marker).is_file() && !found.contains(&runtime) {
-            found.push(runtime);
-        }
-    }
     let pubspec = fs::read_to_string(path.join("pubspec.yaml")).ok();
     let is_flutter = pubspec.as_deref().is_some_and(is_flutter_pubspec);
     if pubspec.is_some() {
@@ -1497,18 +1480,40 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
     let Ok(entries) = fs::read_dir(path) else {
         return;
     };
+    let mut manifests = [false; RuntimeKind::ALL.len()];
+    let mut sources = [0_u8; RuntimeKind::ALL.len()];
     for entry in entries.flatten() {
         if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
             continue;
         }
-        let entry_path = entry.path();
-        let Some(extension) = entry_path.extension().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if let Some(runtime) = RuntimeKind::from_source_extension(extension)
-            && !(is_flutter && runtime == RuntimeKind::Dart)
-            && !found.contains(&runtime)
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(runtime) = languages::from_manifest(&name) {
+            manifests[runtime.index()] = true;
+        } else if let Some(runtime) = Path::new(name.as_ref())
+            .extension()
+            .and_then(|value| value.to_str())
+            .and_then(RuntimeKind::from_source_extension)
         {
+            let count = &mut sources[runtime.index()];
+            *count = count.saturating_add(1);
+        }
+    }
+    // Manifests first, then source files, each in the order of the language table, so the
+    // result does not depend on how the folder lists its files.
+    let by_manifest = languages::LANGUAGES
+        .iter()
+        .map(|language| language.kind)
+        .filter(|runtime| manifests[runtime.index()]);
+    let by_source = languages::LANGUAGES
+        .iter()
+        .map(|language| language.kind)
+        .filter(|runtime| {
+            let count = sources[runtime.index()];
+            count >= 2 || (count == 1 && runtime.starts())
+        });
+    for runtime in by_manifest.chain(by_source) {
+        if !(is_flutter && runtime == RuntimeKind::Dart) && !found.contains(&runtime) {
             found.push(runtime);
         }
     }
@@ -2035,6 +2040,27 @@ version = "0.1.0"
         fs::write(path.join("Cargo.toml"), "").unwrap();
         fs::write(path.join("package.json"), "{}").unwrap();
         assert_eq!(detect(&path), vec![RuntimeKind::Rust, RuntimeKind::Node]);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn recognizes_languages_the_app_does_not_start_yet_without_stray_files() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("localcodepilot-languages-{nonce}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("Gemfile"), "source 'https://rubygems.org'\n").unwrap();
+        fs::write(path.join("Api.csproj"), "<Project />").unwrap();
+        // One Lua script is not a Lua project; two source files are.
+        fs::write(path.join("build.lua"), "").unwrap();
+        assert_eq!(detect(&path), [RuntimeKind::Dotnet, RuntimeKind::Ruby]);
+        fs::write(path.join("init.lua"), "").unwrap();
+        assert_eq!(
+            detect(&path),
+            [RuntimeKind::Dotnet, RuntimeKind::Ruby, RuntimeKind::Lua]
+        );
         fs::remove_dir_all(path).unwrap();
     }
 

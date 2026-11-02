@@ -291,6 +291,8 @@ pub struct ContainerProject {
     pub dockerfile: Option<PathBuf>,
     pub compose_file: Option<PathBuf>,
     pub compose_overrides: Vec<PathBuf>,
+    /// Images named by `FROM` in the Dockerfile, without build stages.
+    pub base_images: Vec<String>,
     pub services: Vec<ContainerService>,
     pub warnings: Vec<String>,
     pub error: Option<String>,
@@ -610,6 +612,7 @@ mod tests {
             dockerfile: None,
             compose_file: Some(PathBuf::from("project with spaces/compose.yaml")),
             compose_overrides: vec![],
+            base_images: vec![],
             services: vec![],
             warnings: vec![],
             error: None,
