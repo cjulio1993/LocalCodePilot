@@ -42,6 +42,28 @@ pub fn inspect_tcp_port(port: Port) -> PortAvailability {
     }
 }
 
+/// Whether `process_id` is `ancestor` or one of its descendants. A server started through a
+/// shell (`cmd /C npm run dev`) listens from a child process, not from the one started.
+pub fn process_descends_from(process_id: u32, ancestor: u32) -> bool {
+    if process_id == ancestor {
+        return true;
+    }
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, false);
+    let mut current = Pid::from_u32(process_id);
+    // Bounded: a corrupted process table must not loop forever.
+    for _ in 0..64 {
+        let Some(parent) = system.process(current).and_then(|process| process.parent()) else {
+            return false;
+        };
+        if parent.as_u32() == ancestor {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
 fn loopback_port_available(address: IpAddr, port: Port) -> Option<bool> {
     match TcpListener::bind((address, port.value())) {
         Ok(listener) => {
@@ -165,6 +187,28 @@ mod tests {
             listener_process_id_from_netstat(output, Port::new(5173).unwrap()),
             Some(8420)
         );
+    }
+
+    #[test]
+    fn recognizes_a_child_process_and_not_an_unrelated_one() {
+        let mut child = if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd")
+                .args(["/C", "ping", "-n", "3", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("sleep")
+                .arg("2")
+                .spawn()
+                .unwrap()
+        };
+        let own = std::process::id();
+        assert!(process_descends_from(child.id(), own));
+        assert!(process_descends_from(own, own));
+        assert!(!process_descends_from(own, child.id()));
+        child.kill().ok();
+        child.wait().ok();
     }
 
     #[test]

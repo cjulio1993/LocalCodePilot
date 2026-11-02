@@ -33,7 +33,10 @@ use localcodepilot_platform::{
         ProgramInventory, WindowsWingetProvider, configure_background_command, find_executable,
         inspect_program, managed_bin_directory, refreshed_environment_path,
     },
-    ports::{PortAvailability, PortOwner, inspect_tcp_port, terminate_process_tree},
+    ports::{
+        PortAvailability, PortOwner, inspect_tcp_port, process_descends_from,
+        terminate_process_tree,
+    },
 };
 use localcodepilot_runtime::databases::{
     DatabaseEngine, DatabaseRequirement, detect_database_requirements, prepare_sqlite_database,
@@ -114,6 +117,10 @@ struct RunningProcess {
     started_at: Instant,
     last_health_check: Instant,
     port_unavailable_since: Option<Instant>,
+    /// Listener confirmed to be this process or one of its children.
+    verified_listener: Option<u32>,
+    /// Another program listening on the port reserved for this process.
+    foreign_listener: Option<PortOwner>,
     http_health: Option<HttpHealthCheckResult>,
     http_health_receiver: Option<Receiver<HttpHealthCheckResult>>,
     last_http_health_check: Option<Instant>,
@@ -1561,6 +1568,8 @@ impl LocalCodePilot {
                         started_at: now,
                         last_health_check: now,
                         port_unavailable_since: None,
+                        verified_listener: None,
+                        foreign_listener: None,
                         http_health: None,
                         http_health_receiver: None,
                         last_http_health_check: None,
@@ -3012,8 +3021,25 @@ impl LocalCodePilot {
                 continue;
             }
             running.last_health_check = now;
-            let port_is_listening =
-                matches!(inspect_tcp_port(port), PortAvailability::Occupied { .. });
+            // The port only counts when this process (or a child) listens on it; otherwise the
+            // app would mark the project as running and check another program's site.
+            let port_is_listening = match port_listener(
+                inspect_tcp_port(port),
+                running.verified_listener,
+                running.child.id(),
+                process_descends_from,
+            ) {
+                PortListener::Project(process_id) => {
+                    running.verified_listener = process_id;
+                    running.foreign_listener = None;
+                    true
+                }
+                PortListener::Foreign(owner) => {
+                    running.foreign_listener = Some(owner);
+                    false
+                }
+                PortListener::None => false,
+            };
             if state == ProcessState::Starting {
                 if port_is_listening {
                     running.port_unavailable_since = None;
@@ -3023,22 +3049,29 @@ impl LocalCodePilot {
                     ));
                     ready_updates.push((id.clone(), port));
                 } else if now.duration_since(running.started_at) >= PROCESS_START_TIMEOUT {
-                    running.logs.push_back(format!(
-                        "[LocalCodePilot] Falha: a porta {} não ficou disponível em {} segundos.",
-                        port.value(),
-                        PROCESS_START_TIMEOUT.as_secs()
-                    ));
-                    terminate_process(&mut running.child);
-                    running.finished = true;
-                    state_updates.push((
-                        id.clone(),
-                        ProcessState::Failed,
-                        None,
-                        Some(format!(
+                    let reason = match &running.foreign_listener {
+                        Some(owner) => {
+                            // Technical details go to the log; the reason stays plain.
+                            running.logs.push_back(format!(
+                                "[LocalCodePilot] {}",
+                                port_owner_detail(port, owner)
+                            ));
+                            format!(
+                                "outro programa está usando a porta {}; este projeto não iniciou nessa porta",
+                                port.value()
+                            )
+                        }
+                        None => format!(
                             "a porta {} não respondeu dentro do tempo esperado",
                             port.value()
-                        )),
-                    ));
+                        ),
+                    };
+                    running
+                        .logs
+                        .push_back(format!("[LocalCodePilot] Falha: {reason}."));
+                    terminate_process(&mut running.child);
+                    running.finished = true;
+                    state_updates.push((id.clone(), ProcessState::Failed, None, Some(reason)));
                 }
                 continue;
             }
@@ -6498,6 +6531,54 @@ fn scan_roots_text(count: usize) -> String {
     }
 }
 
+/// Who listens on the port reserved for a running project.
+#[derive(Debug, PartialEq, Eq)]
+enum PortListener {
+    /// The project's process or a child. `None` when the system did not report the owner
+    /// (macOS, Linux, or `netstat` failing on Windows): the port is then taken at face value,
+    /// without confirmation.
+    Project(Option<u32>),
+    Foreign(PortOwner),
+    None,
+}
+
+fn port_listener(
+    availability: PortAvailability,
+    verified: Option<u32>,
+    project_process: u32,
+    descends_from: impl Fn(u32, u32) -> bool,
+) -> PortListener {
+    match availability {
+        PortAvailability::Available => PortListener::None,
+        PortAvailability::Occupied { owner: None } => PortListener::Project(verified),
+        PortAvailability::Occupied { owner: Some(owner) } => {
+            if verified == Some(owner.process_id)
+                || descends_from(owner.process_id, project_process)
+            {
+                PortListener::Project(Some(owner.process_id))
+            } else {
+                PortListener::Foreign(owner)
+            }
+        }
+    }
+}
+
+/// Log line naming the program that holds the port reserved for a project.
+fn port_owner_detail(port: Port, owner: &PortOwner) -> String {
+    match &owner.process_name {
+        Some(name) => format!(
+            "A porta {} está em uso por {name} (PID {}), que não pertence a este projeto.",
+            port.value(),
+            owner.process_id
+        ),
+        None => format!(
+            "A porta {} está em uso pelo PID {}, que não pertence a este projeto.",
+            port.value(),
+            owner.process_id
+        ),
+    }
+}
+
 /// Words of a label that starts with an icon glyph, for assistive technologies.
 pub(crate) fn words(text: &str) -> &str {
     text.trim_start_matches(|c: char| !c.is_alphanumeric())
@@ -6637,6 +6718,59 @@ mod tests {
             "Adicionar pasta"
         );
         assert_eq!(words("Atualizar"), "Atualizar");
+    }
+
+    #[test]
+    fn the_port_counts_only_when_the_project_listens_on_it() {
+        use super::{PortAvailability, PortListener, PortOwner, port_listener};
+        let owner = |process_id| PortAvailability::Occupied {
+            owner: Some(PortOwner {
+                process_id,
+                process_name: Some("node.exe".into()),
+            }),
+        };
+        let child_of_10 = |process: u32, ancestor: u32| process == 11 && ancestor == 10;
+        assert_eq!(
+            port_listener(owner(11), None, 10, child_of_10),
+            PortListener::Project(Some(11))
+        );
+        assert!(matches!(
+            port_listener(owner(99), None, 10, child_of_10),
+            PortListener::Foreign(PortOwner { process_id: 99, .. })
+        ));
+        assert_eq!(
+            port_listener(PortAvailability::Available, Some(11), 10, child_of_10),
+            PortListener::None
+        );
+        // Known limitation: without the owner (macOS, Linux, or netstat failing on Windows)
+        // the port is attributed to the project without confirmation.
+        assert_eq!(
+            port_listener(
+                PortAvailability::Occupied { owner: None },
+                None,
+                10,
+                child_of_10
+            ),
+            PortListener::Project(None)
+        );
+    }
+
+    #[test]
+    fn a_foreign_port_owner_is_named_only_in_the_log() {
+        let port = localcodepilot_core::ports::Port::new(5173).unwrap();
+        let owner = super::PortOwner {
+            process_id: 1234,
+            process_name: Some("node.exe".into()),
+        };
+        assert_eq!(
+            super::port_owner_detail(port, &owner),
+            "A porta 5173 está em uso por node.exe (PID 1234), que não pertence a este projeto."
+        );
+        let unnamed = super::PortOwner {
+            process_name: None,
+            ..owner
+        };
+        assert!(super::port_owner_detail(port, &unnamed).contains("pelo PID 1234"));
     }
 
     #[test]

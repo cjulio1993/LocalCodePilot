@@ -40,6 +40,46 @@ pub fn wordpress_uses_compose(project_root: &Path, site: &Path) -> bool {
         })
 }
 
+/// Whether a plain PHP site in `site` is meant to run through Compose. Unlike WordPress, a PHP
+/// project often keeps only its database in Compose and serves the site with PHP on the
+/// machine, so a Compose file counts only when it sits in the site folder, above it or in one
+/// of its subfolders, and declares a service that serves the site: one that builds its own
+/// image, or a PHP, WordPress or web server image.
+pub fn php_site_uses_compose(project_root: &Path, site: &Path) -> bool {
+    detect_container_projects(project_root)
+        .iter()
+        .filter(|project| project.compose_file.is_some())
+        .filter(|project| {
+            site.starts_with(&project.directory) || project.directory.starts_with(site)
+        })
+        .any(|project| project.services.iter().any(serves_a_php_site))
+}
+
+fn serves_a_php_site(service: &ContainerService) -> bool {
+    if service.builds_image {
+        return true;
+    }
+    let Some(image) = service.image.as_deref() else {
+        return false;
+    };
+    // `docker.io/library/nginx:alpine` -> `nginx`.
+    let name = image
+        .rsplit('/')
+        .next()
+        .unwrap_or(image)
+        .split([':', '@'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // phpMyAdmin only manages the database.
+    if name.contains("phpmyadmin") {
+        return false;
+    }
+    ["php", "wordpress", "httpd", "apache", "nginx", "caddy"]
+        .iter()
+        .any(|server| name.contains(server))
+}
+
 pub fn detect_container_projects(root: &Path) -> Vec<ContainerProject> {
     let mut projects = Vec::new();
     let mut seen = HashSet::new();
@@ -132,7 +172,8 @@ fn parse_compose(file: &Path) -> Result<(Vec<ContainerService>, Vec<String>), St
     }
     let contents =
         fs::read_to_string(file).map_err(|_| "Não foi possível ler o manifesto Compose")?;
-    let document: Value = serde_yaml_ng::from_str(&contents).map_err(|error| {
+    let contents = contents.trim_start_matches('\u{feff}');
+    let document: Value = serde_yaml_ng::from_str(contents).map_err(|error| {
         error.location().map_or_else(
             || "YAML inválido no manifesto Compose".into(),
             |location| {
@@ -277,6 +318,24 @@ mod tests {
             std::env::temp_dir().join(format!("lcp-containers-{name}-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn reads_a_compose_file_saved_with_a_bom() {
+        let directory = std::env::temp_dir().join(format!(
+            "lcp-compose-bom-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("compose.yaml");
+        fs::write(&file, "\u{feff}services:\n  web:\n    image: nginx\n").unwrap();
+        let (services, _) = parse_compose(&file).unwrap();
+        assert_eq!(services.len(), 1);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
