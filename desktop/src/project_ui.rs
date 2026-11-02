@@ -110,8 +110,11 @@ pub(super) struct ProjectSummary {
     pub http: Option<HttpAvailability>,
     pub url: Option<String>,
     pub primary: PrimaryAction,
-    /// Runs through Containers, where logs and stop live.
+    /// Runs through Containers, where logs live.
     pub uses_containers: bool,
+    /// The card can confirm the stop of its containers itself; otherwise "Parar" leads to
+    /// Containers to choose.
+    pub stops_containers_here: bool,
     /// Shown under "Detalhes técnicos": process, command, exit code, port owner.
     pub technical: Vec<String>,
 }
@@ -137,6 +140,8 @@ pub(super) struct ProjectFacts<'a> {
     pub http: Option<&'a HttpHealthStatus>,
     pub has_containers: bool,
     pub container_running: bool,
+    /// One environment up whose stop reaches a service and passes the Compose checks.
+    pub container_stop_here: bool,
     pub container_url: Option<&'a str>,
 }
 
@@ -157,6 +162,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         url: None,
         primary,
         uses_containers: false,
+        stops_containers_here: false,
         technical: vec![],
     };
     if facts.running || facts.container_running {
@@ -191,6 +197,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
                 .map_or(PrimaryAction::ViewLogs, PrimaryAction::OpenSite),
             url,
             uses_containers: !facts.running,
+            stops_containers_here: !facts.running && facts.container_stop_here,
             technical: vec![],
         };
     }
@@ -421,6 +428,8 @@ impl LocalCodePilot {
             http,
             has_containers: project.technologies.contains(&TechnologyKind::Containers),
             container_running,
+            container_stop_here: container_running
+                && self.card_container_stop(&project.path).is_some(),
             container_url: container_url.as_deref(),
         })
     }
@@ -478,6 +487,14 @@ impl LocalCodePilot {
             }
             ProjectCardAction::Start(path) => self.start_project(&path),
             ProjectCardAction::Stop(path) => self.stop_project(&path),
+            ProjectCardAction::StopContainers(path) => {
+                self.touch_project(&path);
+                match self.card_container_stop(&path) {
+                    // Same confirmation as in Containers, with what the stop reaches.
+                    Some(command) => self.confirm_container_command(command),
+                    None => self.choose_containers_to_stop(ctx, &path),
+                }
+            }
             ProjectCardAction::PrepareEnvironment(path) => {
                 self.request_environment_plan(&path, ctx.clone());
             }
@@ -820,8 +837,7 @@ fn logs_action(project: &Project, summary: &ProjectSummary) -> ProjectCardAction
 
 fn stop_action(project: &Project, summary: &ProjectSummary) -> ProjectCardAction {
     if summary.uses_containers {
-        // Compose stop needs its confirmation and conflict checks in Containers.
-        ProjectCardAction::ViewContainers(project.path.clone())
+        ProjectCardAction::StopContainers(project.path.clone())
     } else {
         ProjectCardAction::Stop(project.path.clone())
     }
@@ -896,10 +912,10 @@ fn address_label(ui: &mut egui::Ui, summary: &ProjectSummary, url: &str) {
     });
 }
 
-/// Stopping a Compose environment needs the confirmation and checks in Containers, so the
-/// button says where it leads.
+/// When the card cannot state what a stop of its containers reaches, the button says it
+/// leads to Containers.
 fn stop_label(summary: &ProjectSummary) -> String {
-    if summary.uses_containers {
+    if summary.uses_containers && !summary.stops_containers_here {
         format!("{STOP}  Parar em Containers")
     } else {
         format!("{STOP}  Parar")
@@ -1253,6 +1269,7 @@ mod tests {
             http: None,
             has_containers: false,
             container_running: false,
+            container_stop_here: false,
             container_url: None,
         }
     }
@@ -1339,6 +1356,13 @@ mod tests {
         // Containers have no HTTP check yet: only the address, no badge.
         assert_eq!(running.http, None);
         assert!(running.uses_containers);
+        // Without a confirmed reach, "Parar" leads to Containers and says so.
+        assert!(!running.stops_containers_here);
+        assert_eq!(stop_label(&running), format!("{STOP}  Parar em Containers"));
+        containers.container_stop_here = true;
+        let direct = summarize_project(&containers);
+        assert!(direct.stops_containers_here);
+        assert_eq!(stop_label(&direct), format!("{STOP}  Parar"));
     }
 
     #[test]

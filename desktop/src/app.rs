@@ -492,6 +492,7 @@ impl ProjectEnvironment {
 enum ProjectCardAction {
     ViewDetails(PathBuf),
     ViewContainers(PathBuf),
+    StopContainers(PathBuf),
     Open(PathBuf),
     OpenUrl(String),
     Start(PathBuf),
@@ -3329,13 +3330,7 @@ impl LocalCodePilot {
             })
             .count();
         ui.heading("Processos");
-        if self.focused_project.is_some() {
-            self.container_processes_panel(ui);
-        } else {
-            ui.collapsing("Containers em execução", |ui| {
-                self.container_processes_panel(ui);
-            });
-        }
+        self.container_processes_summary(ui);
         ui.label(
             RichText::new(if query.is_empty() {
                 format!(
@@ -4270,6 +4265,8 @@ impl LocalCodePilot {
                     Page::Help => self.help_page(ui),
                 });
             });
+        // Cards and Containers both ask to confirm container actions.
+        self.container_confirmation(&ctx);
     }
 }
 
