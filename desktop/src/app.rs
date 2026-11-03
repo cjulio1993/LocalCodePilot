@@ -3076,7 +3076,11 @@ impl LocalCodePilot {
                 if !history_updates.contains(id) {
                     history_updates.push(id.clone());
                 }
-                for url in extract_local_urls(&line) {
+                // DevTools (Flutter, Dart, Node inspectors) is a debugger, never the site.
+                for url in extract_local_urls(&line)
+                    .into_iter()
+                    .filter(|url| !url.address().contains("/devtools"))
+                {
                     if !running.urls.contains(&url) {
                         running.urls.push(url);
                     }
@@ -3183,6 +3187,7 @@ impl LocalCodePilot {
                 // No known port: once the server listens, its port becomes the one the app
                 // checks, opens and watches, as if it had been declared.
                 if state == ProcessState::Running
+                    && http_process_ids.contains(id)
                     && let Some(port) = probe_listening_port(running, now)
                 {
                     discovered_ports.push((id.clone(), port));
@@ -6067,6 +6072,15 @@ fn choose_listening_port(ports: &[Port], printed: &[LocalServerUrl]) -> Option<P
 }
 
 fn process_exposes_application_url(project: &Project, process: &ProjectProcess) -> bool {
+    // A Flutter app for the desktop opens its own window; the ports it listens on belong to
+    // the debugger, not to a site.
+    if process.program.eq_ignore_ascii_case("flutter")
+        && process.args.windows(2).any(|pair| {
+            pair[0] == "-d" && matches!(pair[1].as_str(), "windows" | "macos" | "linux")
+        })
+    {
+        return false;
+    }
     if project.technologies.contains(&TechnologyKind::Laravel) {
         return process.program.eq_ignore_ascii_case("php")
             && process
@@ -7616,5 +7630,15 @@ mod tests {
         process.program = "npm".into();
         process.args = vec!["run".into(), "dev".into()];
         assert!(!process_exposes_application_url(&lumen, &process));
+
+        // Flutter: the web server is a site; a desktop app is a window.
+        let flutter = Project::new(PathBuf::from("app"), vec![RuntimeKind::Flutter]);
+        process.program = "flutter".into();
+        process.args = ["run", "-d", "web-server", "--web-port", "4180"]
+            .map(String::from)
+            .to_vec();
+        assert!(process_exposes_application_url(&flutter, &process));
+        process.args = ["run", "-d", "windows"].map(String::from).to_vec();
+        assert!(!process_exposes_application_url(&flutter, &process));
     }
 }

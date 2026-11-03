@@ -17,7 +17,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 ### Alterado
 
 - Num projeto Laravel recém-clonado, **Instalar dependências** também cria o `.env` a partir do `.env.example`, gera a chave da aplicação e, quando o projeto usa SQLite, cria as tabelas com `php artisan migrate`; cada etapa aparece no plano antes de executar.
-- A matriz de suporte separa **Inicia** e **Abre no navegador**. Rust, Node.js, PHP, Laravel, Python/Flask, Django, Spring Boot com Maven wrapper e site estático foram validados de ponta a ponta no Windows 11 e passaram de "Experimental" para "Sim".
+- A matriz de suporte separa **Inicia** e **Abre no navegador**. Rust, Node.js, PHP, Laravel, Python/Flask, Django, Spring Boot com Maven wrapper, site estático, Go, Dart e Flutter (web e Windows) foram validados de ponta a ponta no Windows 11 e passaram para "Sim".
 - A Visão geral mostra o que está rodando, o que precisa de atenção e o que está parado, com uma ação principal por projeto (Iniciar, Abrir site, Ver logs ou Detalhes). Os estados usam os mesmos nomes em todo o aplicativo: Rodando, Parado, Iniciando e Com problema.
 - Projetos ganhou busca por nome e filtros por estado, com visualização em cartões ou lista; filtro e visualização ficam salvos.
 - O selo do site descreve o resultado da verificação HTTP em linguagem simples (por exemplo, "Servidor respondeu; página não encontrada" para um 404) e mostra o código ao passar o mouse; sem verificação, não aparece selo. Em projetos com containers, o endereço aparece como "Endereço provável".
@@ -41,6 +41,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Go no layout `cmd/<nome>/main.go` passa a ter comando: um processo por programa, com `go run ./cmd/<nome>` na raiz do módulo. Antes, o cartão dizia que nenhum comando foi identificado.
+- Dart encontra os programas criados por `dart create` (`bin/server.dart` e `bin/<pacote>.dart`). Antes, um servidor Dart com Dockerfile, como o do modelo oficial, só podia iniciar pelos containers.
+- Um app Flutter para desktop não mostra mais **Abrir site** com o endereço do depurador; endereços do DevTools nunca são tratados como o site de nenhum projeto.
 - Projetos em pastas com espaço no nome (como "Área de Trabalho") voltaram a iniciar comandos `.cmd` e `.bat`, como `npm`, `mvnw` e `gradlew`: o aplicativo passava ao `cmd.exe` o caminho no formato `\\?\`, que ele não aceita, e o comando rodava na pasta do Windows ou era cortado no espaço.
 - Servidores que não escrevem o endereço no log (Express, Spring Boot, Go, servidores Rust próprios) passam a mostrar **Abrir site** e o selo do site: o aplicativo consulta no sistema a porta em que o processo do projeto, ou um processo filho, está ouvindo.
 - Quando um servidor fecha porque a porta já está em uso, o cartão diz "Outro programa está usando a porta" em vez de "O processo fechou inesperadamente", em Node, Spring Boot, Flask, PHP, Rust, Go e Python. Se outro programa ocupa a porta durante a execução, o motivo também é esse, e não "parou de responder".
