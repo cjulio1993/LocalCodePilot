@@ -319,6 +319,8 @@ pub enum ContainerAction {
     StopExisting,
     RestartExisting,
     LogsExisting,
+    /// Stops, by ID, the containers of another project that shares this environment's name.
+    StopOtherProject,
 }
 
 impl ContainerAction {
@@ -336,6 +338,9 @@ impl ContainerAction {
             Self::StopExisting => "Interrompe um container em execução sem removê-lo.",
             Self::RestartExisting => "Reinicia um container existente sem removê-lo.",
             Self::LogsExisting => "Consulta as 200 linhas mais recentes do container.",
+            Self::StopOtherProject => {
+                "Interrompe só os containers listados do outro projeto, sem removê-los."
+            }
         }
     }
 
@@ -348,6 +353,7 @@ impl ContainerAction {
                 | Self::StartExisting
                 | Self::StopExisting
                 | Self::RestartExisting
+                | Self::StopOtherProject
         )
     }
 }

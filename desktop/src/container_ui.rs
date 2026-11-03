@@ -2,6 +2,7 @@ use super::*;
 use localcodepilot_core::compose_safety::{
     BlockedAction, ComposeEnvironment, ComposeName, ComposeSafety, ComposeVolume,
     classify_environment, explain, guard_container_action, guard_environment_action,
+    other_project_stop, recheck_other_project_stop,
 };
 use localcodepilot_core::container_groups::{
     EnvironmentGroup, EnvironmentState, ProjectGroup, ServiceRow, ServiceState, StopScope,
@@ -188,6 +189,7 @@ enum BlockedPanelAction {
     Copy(String),
     ConfirmVolumes,
     CheckAgain,
+    StopOther,
 }
 
 /// Identifies the Compose notice of an environment, so other screens can open it.
@@ -202,6 +204,7 @@ fn blocked_panel(
     directory: &Path,
     blocked: &BlockedAction,
     can_check: bool,
+    can_stop_other: bool,
 ) -> Option<BlockedPanelAction> {
     let mut action = None;
     let sentence = format!("{} Iniciar e parar estão bloqueados.", blocked.summary);
@@ -226,6 +229,16 @@ fn blocked_panel(
         }
         if blocked.can_confirm_volumes && ui.button("Estes dados são deste projeto").clicked() {
             action = Some(BlockedPanelAction::ConfirmVolumes);
+        }
+        if can_stop_other {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Os containers do outro projeto estão rodando. Você pode pará-los daqui, sem remover volumes.")
+                    .size(12.0),
+            );
+            if ui.button("Parar containers do outro projeto").clicked() {
+                action = Some(BlockedPanelAction::StopOther);
+            }
         }
     };
     let mut details = |ui: &mut egui::Ui| {
@@ -855,6 +868,17 @@ impl LocalCodePilot {
                         path.as_deref(),
                     )
                     .map_err(|blocked| format!("{}. {}", blocked.title, blocked.explanation))
+                }))
+            }
+            ContainerAction::StopOtherProject => {
+                let command = command.clone();
+                let previous = self.container_state.runtime_containers.clone();
+                Some(Box::new(move || {
+                    let current =
+                        query_engine_containers(engine, path.as_deref()).map_err(|error| {
+                            format!("Não foi possível consultar os containers: {error}")
+                        })?;
+                    recheck_other_project_stop(&command, &previous, &current)
                 }))
             }
             ContainerAction::StartExisting
@@ -1566,6 +1590,14 @@ impl LocalCodePilot {
     /// What a confirmation acts on: the project (and folder) of a Compose command, or the
     /// container of a per-container command.
     fn confirmation_target(&self, command: &ContainerCommand) -> Option<String> {
+        if command.action == ContainerAction::StopOtherProject {
+            let folder = self
+                .other_project_containers(command)
+                .first()?
+                .project_directory
+                .clone()?;
+            return Some(format!("Outro projeto: {}", display_path(&folder)));
+        }
         if matches!(
             command.action,
             ContainerAction::StartExisting
@@ -1590,6 +1622,21 @@ impl LocalCodePilot {
             folder if folder.is_empty() => format!("Projeto: {}", group.name),
             folder => format!("Projeto: {} · pasta {folder}/", group.name),
         })
+    }
+
+    /// The containers a "Parar containers do outro projeto" command lists, as last queried.
+    fn other_project_containers(&self, command: &ContainerCommand) -> Vec<&RuntimeContainer> {
+        command
+            .args
+            .iter()
+            .skip(1)
+            .filter_map(|id| {
+                self.container_state
+                    .runtime_containers
+                    .iter()
+                    .find(|container| &container.id == id)
+            })
+            .collect()
     }
 
     /// Environments found in the catalogued projects, for other screens.
@@ -2058,13 +2105,21 @@ impl LocalCodePilot {
             && safety != ComposeSafety::Safe
         {
             ui.add_space(6.0);
+            let stop_other = other_project_stop(
+                &safety,
+                self.action_engine(environment),
+                &self.container_state.runtime_containers,
+                &project.directory,
+            );
             match blocked_panel(
                 ui,
                 &project.directory,
                 &explain(&safety, &project.directory),
                 !checking && !executing,
+                stop_other.is_some() && !executing,
             ) {
                 Some(BlockedPanelAction::Copy(snippet)) => requests.snippet = Some(snippet),
+                Some(BlockedPanelAction::StopOther) => requests.command = stop_other,
                 Some(BlockedPanelAction::CheckAgain) => requests.check_again = true,
                 Some(BlockedPanelAction::ConfirmVolumes) => {
                     if let ComposeSafety::UnconfirmedData { volumes, .. } = &safety {
@@ -2370,7 +2425,15 @@ impl LocalCodePilot {
             })
             .flatten();
         let target = self.confirmation_target(&command);
+        let other_names = self
+            .other_project_containers(&command)
+            .iter()
+            .map(|container| container.name.clone())
+            .collect::<Vec<_>>();
         let confirm_label = match scope.as_ref().map(|scope| scope.will_stop.as_slice()) {
+            _ if command.action == ContainerAction::StopOtherProject => {
+                "Parar containers".to_owned()
+            }
             Some(names @ [_, ..]) if names.len() <= 3 => format!("Parar {}", join_names(names)),
             Some([_, ..]) => "Parar serviços".to_owned(),
             _ => "Confirmar e executar".to_owned(),
@@ -2390,6 +2453,14 @@ impl LocalCodePilot {
                 if command.action.changes_environment() {
                     ui.label(
                         RichText::new("Esta ação altera o ambiente de containers do projeto.")
+                            .color(theme::WARNING),
+                    );
+                }
+                if command.action == ContainerAction::StopOtherProject {
+                    ui.add_space(4.0);
+                    ui.label(format!("Serão parados: {}", join_names(&other_names)));
+                    ui.label(
+                        RichText::new("Os containers listados serão parados. Os volumes não serão removidos.")
                             .color(theme::WARNING),
                     );
                 }

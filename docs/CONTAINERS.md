@@ -36,7 +36,7 @@ Quando bloqueado, **Iniciar ambiente** e **Parar serviços** ficam desativados, 
 
 Logo antes de executar, depois da confirmação, a verificação é refeita com uma consulta nova ao motor; se algo mudou (por exemplo, containers criados pelo terminal), o comando é cancelado sem executar. Cancelar durante essa verificação impede que o comando comece.
 
-Ao adotar um nome novo, containers e volumes criados com o nome antigo continuam existindo e não são reaproveitados. Para pará-los, use o terminal na pasta de origem: `docker compose -p <nome-antigo> stop` (ou `podman compose`).
+Ao adotar um nome novo, containers e volumes criados com o nome antigo continuam existindo e não são reaproveitados. Quando os containers do outro projeto estão rodando, o aviso de conflito oferece **Parar containers do outro projeto**: a confirmação lista os containers, o app confere de novo, logo antes de executar, que eles continuam os mesmos e rodando, e então os para pelos IDs, sem remover volumes. Pelo terminal, o equivalente é `docker compose -p <nome-antigo> stop` (ou `podman compose`) na pasta de origem.
 
 ### Preparação guiada dos motores
 
