@@ -5,12 +5,9 @@
 //! for the user. The app sets both up for `swift`, so "Iniciar" works without opening a
 //! developer prompt.
 
-use std::{
-    collections::HashMap,
-    env,
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
+use std::{collections::HashMap, path::PathBuf, sync::OnceLock};
+#[cfg(windows)]
+use std::{env, path::Path};
 
 /// Variables to set and folders to put before the PATH of a process.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -99,6 +96,7 @@ fn saved_variable(name: &str) -> Option<String> {
 
 /// What `set` printed after the developer script, compared with the app's environment:
 /// changed variables, and the PATH folders the script added, in its order.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn environment_changes(
     current: &HashMap<String, String>,
     set_output: &str,
