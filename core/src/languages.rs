@@ -252,7 +252,7 @@ pub const LANGUAGES: &[Language] = &[
         programs: &[program("swift", &["--version"])],
         images: &["swift"],
         install_dirs: &[],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Scala,
