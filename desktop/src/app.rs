@@ -51,10 +51,10 @@ use localcodepilot_runtime::databases::{
 };
 use localcodepilot_runtime::{
     ManifestRuntimeDetector, detect_clojure_java_requirement, detect_clojure_requirement,
-    detect_dart_requirement, detect_go_requirement, detect_java_requirement,
-    detect_node_requirement, detect_php_extensions, detect_php_requirement, detect_processes,
-    detect_python_requirement, node_package_manager_spec, node_version_matches,
-    runtime_version_matches,
+    detect_dart_requirement, detect_go_requirement, detect_haskell_requirement,
+    detect_java_requirement, detect_node_requirement, detect_php_extensions,
+    detect_php_requirement, detect_processes, detect_python_requirement, node_package_manager_spec,
+    node_version_matches, runtime_version_matches,
 };
 use sha2::{Digest, Sha384};
 use std::{
@@ -290,6 +290,7 @@ struct RuntimeInventory {
     go: Option<ProgramInventory>,
     dart: Option<ProgramInventory>,
     babashka: Option<ProgramInventory>,
+    stack: Option<ProgramInventory>,
     php_extensions: HashSet<String>,
 }
 
@@ -4846,6 +4847,7 @@ fn resolve_environment_plan_with_tools_directory(
         RuntimeKind::Go,
         RuntimeKind::Dart,
         RuntimeKind::Clojure,
+        RuntimeKind::Haskell,
     ] {
         let requirements = environment
             .runtime_requirements
@@ -4895,6 +4897,9 @@ fn resolve_environment_plan_with_tools_directory(
                 project_path,
                 matches_all,
             )?,
+            RuntimeKind::Haskell => {
+                provider.resolve_stack_installation(&constraint_label, project_path, matches_all)?
+            }
             // Not installed by the app: Rust, Node and Flutter have their own installers, and
             // the other languages are only recognized for now.
             _ => continue,
@@ -4919,6 +4924,7 @@ fn resolve_environment_plan_with_tools_directory(
             RuntimeKind::Go => ("go", vec!["version".into()]),
             RuntimeKind::Dart => ("dart", vec!["--version".into()]),
             RuntimeKind::Clojure => ("bb", vec!["--version".into()]),
+            RuntimeKind::Haskell => ("stack", vec!["--version".into()]),
             _ => continue,
         };
         steps.push(InstallationStep {
@@ -5588,6 +5594,7 @@ fn installation_command(
     if let Some(path) = environment_path {
         command.env("PATH", path);
     }
+    localcodepilot_platform::toolchains::apply(&mut command, program, environment_path);
     configure_background_command(&mut command);
     Ok(command)
 }
@@ -5785,28 +5792,13 @@ fn process_command_on_port(
         if let Some(path) = environment_path {
             command.env("PATH", path);
         }
-        // Swift links with the Microsoft linker: the Visual Studio developer environment and
-        // the SDKROOT of its installer, set up by the app.
-        if let Some(toolchain) =
-            localcodepilot_platform::toolchains::environment_for(&process.program)
-        {
-            for (key, value) in &toolchain.variables {
-                command.env(key, value);
-            }
-            let base = environment_path
-                .map(OsStr::to_os_string)
-                .or_else(|| std::env::var_os("PATH"))
-                .unwrap_or_default();
-            if let Ok(path) = std::env::join_paths(
-                toolchain
-                    .path_prefix
-                    .iter()
-                    .cloned()
-                    .chain(std::env::split_paths(&base)),
-            ) {
-                command.env("PATH", path);
-            }
-        }
+        // Swift needs the Visual Studio developer environment, and Stack a folder without
+        // spaces: set up by the app.
+        localcodepilot_platform::toolchains::apply(
+            &mut command,
+            &process.program,
+            environment_path,
+        );
         command
     }
     #[cfg(not(target_os = "windows"))]
@@ -6235,6 +6227,7 @@ fn inspect_runtime_inventory(environment_path: Option<&OsStr>) -> RuntimeInvento
         go: inspect_program("go", &["version"], environment_path),
         dart: inspect_program("dart", &["--version"], environment_path),
         babashka: inspect_program("bb", &["--version"], environment_path),
+        stack: inspect_program("stack", &["--version"], environment_path),
         php_extensions: inspect_php_extensions(environment_path),
     }
 }
@@ -6318,6 +6311,10 @@ fn inspect_project_environment_with_inventory(
             (
                 detect_clojure_java_requirement(directory, &project.path),
                 runtime_inventory.java.as_ref(),
+            ),
+            (
+                detect_haskell_requirement(directory, &project.path),
+                runtime_inventory.stack.as_ref(),
             ),
         ] {
             let Some(mut requirement) = detected else {
@@ -6429,6 +6426,35 @@ fn inspect_project_environment_with_inventory(
                     args,
                     working_directory: process.working_directory.clone(),
                 });
+            }
+        }
+
+        // Stack keeps its build in `.stack-work`; before the first build it also downloads the
+        // GHC compiler, which takes a while, so it happens here and not on "Iniciar".
+        if process.program == "stack" && !process.working_directory.join(".stack-work").is_dir() {
+            if !missing_dependencies
+                .iter()
+                .any(|item| item == "Haskell (Stack)")
+            {
+                missing_dependencies.push("Haskell (Stack)".to_owned());
+            }
+            if !install_steps.iter().any(|step: &DependencyInstall| {
+                step.program == "stack" && step.working_directory == process.working_directory
+            }) {
+                for (label, args) in [
+                    (
+                        "compilador GHC do projeto (stack setup)",
+                        vec!["setup".into()],
+                    ),
+                    ("dependências Haskell (stack build)", vec!["build".into()]),
+                ] {
+                    install_steps.push(DependencyInstall {
+                        label: label.into(),
+                        program: "stack".into(),
+                        args,
+                        working_directory: process.working_directory.clone(),
+                    });
+                }
             }
         }
 

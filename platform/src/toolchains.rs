@@ -4,8 +4,12 @@
 //! Studio developer environment (`vcvars64.bat`) and with the `SDKROOT` its installer saves
 //! for the user. The app sets both up for `swift`, so "Iniciar" works without opening a
 //! developer prompt.
+//!
+//! GHC, which Stack downloads for Haskell projects, cannot run its own C compiler from a
+//! folder with a space, such as `C:\Users\Julio Cesar`. When the user folder has one, Stack
+//! keeps its files in a folder without spaces.
 
-use std::{collections::HashMap, path::PathBuf, sync::OnceLock};
+use std::{collections::HashMap, ffi::OsStr, path::PathBuf, process::Command, sync::OnceLock};
 #[cfg(windows)]
 use std::{env, path::Path};
 
@@ -18,11 +22,74 @@ pub struct ToolchainEnvironment {
 
 /// The extra environment `program` needs on this computer, if any. Computed once.
 pub fn environment_for(program: &str) -> Option<&'static ToolchainEnvironment> {
-    if !cfg!(windows) || !program.eq_ignore_ascii_case("swift") {
+    if !cfg!(windows) {
         return None;
     }
     static SWIFT: OnceLock<Option<ToolchainEnvironment>> = OnceLock::new();
-    SWIFT.get_or_init(swift_windows_environment).as_ref()
+    static STACK: OnceLock<Option<ToolchainEnvironment>> = OnceLock::new();
+    match program.to_ascii_lowercase().as_str() {
+        "swift" => SWIFT.get_or_init(swift_windows_environment).as_ref(),
+        "stack" => STACK.get_or_init(stack_windows_environment).as_ref(),
+        _ => None,
+    }
+}
+
+/// Applies the extra environment of `program` to `command`, whose PATH is `path` (or the
+/// app's own when `None`): the variables, and the toolchain folders before that PATH.
+pub fn apply(command: &mut Command, program: &str, path: Option<&OsStr>) {
+    let Some(toolchain) = environment_for(program) else {
+        return;
+    };
+    for (key, value) in &toolchain.variables {
+        command.env(key, value);
+    }
+    if toolchain.path_prefix.is_empty() {
+        return;
+    }
+    let base = path
+        .map(OsStr::to_os_string)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    if let Ok(joined) = std::env::join_paths(
+        toolchain
+            .path_prefix
+            .iter()
+            .cloned()
+            .chain(std::env::split_paths(&base)),
+    ) {
+        command.env("PATH", joined);
+    }
+}
+
+#[cfg(windows)]
+fn stack_windows_environment() -> Option<ToolchainEnvironment> {
+    if !env::var("LOCALAPPDATA").ok()?.contains(' ') {
+        return None;
+    }
+    let base = PathBuf::from(env::var_os("ProgramData")?)
+        .join("LocalCodePilot")
+        .join("stack");
+    let root = base.join("root");
+    let programs = base.join("programs");
+    std::fs::create_dir_all(&root).ok()?;
+    std::fs::create_dir_all(&programs).ok()?;
+    let config = root.join("config.yaml");
+    if !config.is_file() {
+        std::fs::write(
+            &config,
+            format!("local-programs-path: {}\n", programs.display()),
+        )
+        .ok()?;
+    }
+    Some(ToolchainEnvironment {
+        variables: vec![("STACK_ROOT".into(), root.display().to_string())],
+        path_prefix: Vec::new(),
+    })
+}
+
+#[cfg(not(windows))]
+fn stack_windows_environment() -> Option<ToolchainEnvironment> {
+    None
 }
 
 #[cfg(windows)]
