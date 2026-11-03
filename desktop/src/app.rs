@@ -6442,6 +6442,43 @@ fn inspect_project_environment_with_inventory(
             }
         }
 
+        // Ruby gems go to the project's vendor/bundle, so a missing folder means they are not
+        // installed yet, like Composer's vendor.
+        let uses_bundler = matches!(process.program.as_str(), "ruby" | "bundle" | "rackup")
+            && process.working_directory.join("Gemfile").is_file();
+        if uses_bundler
+            && !process
+                .working_directory
+                .join("vendor")
+                .join("bundle")
+                .is_dir()
+        {
+            if !missing_dependencies
+                .iter()
+                .any(|item| item == "Ruby (Bundler)")
+            {
+                missing_dependencies.push("Ruby (Bundler)".to_owned());
+            }
+            if !install_steps.iter().any(|step: &DependencyInstall| {
+                step.program == "bundle" && step.working_directory == process.working_directory
+            }) {
+                install_steps.push(DependencyInstall {
+                    label: "Bundler na pasta do projeto (gems em vendor/bundle)".into(),
+                    program: "bundle".into(),
+                    args: ["config", "set", "--local", "path", "vendor/bundle"]
+                        .map(str::to_owned)
+                        .to_vec(),
+                    working_directory: process.working_directory.clone(),
+                });
+                install_steps.push(DependencyInstall {
+                    label: "dependências Ruby (bundle install)".into(),
+                    program: "bundle".into(),
+                    args: vec!["install".into()],
+                    working_directory: process.working_directory.clone(),
+                });
+            }
+        }
+
         let uses_composer = process.program == "composer"
             || (process.program == "php"
                 && process.working_directory.join("composer.json").is_file());
