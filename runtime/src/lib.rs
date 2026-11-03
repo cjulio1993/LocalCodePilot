@@ -858,6 +858,7 @@ fn detect_processes_in_directory(
     detect_deno_process(project, directory, processes);
     detect_elixir_process(project, directory, processes);
     detect_swift_process(project, directory, processes);
+    detect_scala_process(project, directory, processes);
     detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
@@ -1320,6 +1321,43 @@ fn detect_swift_process(project: &Project, directory: &Path, processes: &mut Vec
     push_process(processes, project, directory, name, "swift", &["run"]);
     if vapor && let Some(process) = processes.last_mut() {
         process.expected_port = Port::new(8080);
+    }
+}
+
+/// Scala with sbt. sbt 2 runs as a thin client that leaves a server in the background, which
+/// the app could not stop; `--server` keeps everything in the process the app started. sbt 1
+/// already works that way and does not know the option. A Play application (its sbt plugin
+/// in `project/plugins.sbt` or `PlayScala` in the build) serves on port 9000.
+fn detect_scala_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let Ok(build) = fs::read_to_string(directory.join("build.sbt")) else {
+        return;
+    };
+    let plugins = fs::read_to_string(directory.join("project/plugins.sbt")).unwrap_or_default();
+    let play = build.contains("PlayScala")
+        || build.contains("PlayJava")
+        || plugins.contains("com.typesafe.play")
+        || plugins.contains("org.playframework");
+    let name = if play {
+        "Servidor Play"
+    } else {
+        "Executar projeto sbt"
+    };
+    let sbt_1 =
+        fs::read_to_string(directory.join("project/build.properties")).is_ok_and(|properties| {
+            properties.lines().any(|line| {
+                line.split_once('=').is_some_and(|(key, value)| {
+                    key.trim() == "sbt.version" && value.trim().starts_with("1.")
+                })
+            })
+        });
+    let args: &[&str] = if sbt_1 {
+        &["run"]
+    } else {
+        &["--server", "run"]
+    };
+    push_process(processes, project, directory, name, "sbt", args);
+    if play && let Some(process) = processes.last_mut() {
+        process.expected_port = Port::new(9000);
     }
 }
 
@@ -3212,6 +3250,52 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_sbt_projects_and_play() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-scala-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+
+        fs::create_dir_all(root.join("http4s")).unwrap();
+        fs::write(root.join("http4s/build.sbt"), "scalaVersion := \"3.6.4\"\n").unwrap();
+        let http4s = detect_processes(&project("http4s"));
+        assert_eq!(http4s.len(), 1);
+        assert_eq!(http4s[0].command_line(), "sbt --server run");
+        fs::create_dir_all(root.join("http4s/project")).unwrap();
+        fs::write(
+            root.join("http4s/project/build.properties"),
+            "sbt.version=1.10.7\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_processes(&project("http4s"))[0].command_line(),
+            "sbt run"
+        );
+
+        fs::create_dir_all(root.join("play/project")).unwrap();
+        fs::write(
+            root.join("play/build.sbt"),
+            "lazy val root = (project in file(\".\")).enablePlugins(PlayScala)\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("play/project/plugins.sbt"),
+            "addSbtPlugin(\"org.playframework\" % \"sbt-plugin\" % \"3.0.6\")\n",
+        )
+        .unwrap();
+        let play = detect_processes(&project("play"));
+        assert_eq!(play[0].name, "Servidor Play");
+        assert_eq!(play[0].expected_port, Port::new(9000));
 
         fs::remove_dir_all(root).unwrap();
     }
