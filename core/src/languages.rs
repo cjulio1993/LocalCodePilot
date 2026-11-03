@@ -186,7 +186,7 @@ pub const LANGUAGES: &[Language] = &[
         programs: &[program("ruby", &["--version"])],
         images: &["ruby"],
         install_dirs: &[InstallDir::Absolute("C:/Ruby*/bin")],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Kotlin,

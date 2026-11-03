@@ -844,6 +844,7 @@ fn detect_processes_in_directory(
     detect_go_process(project, directory, processes);
     detect_dotnet_process(project, directory, processes);
     detect_deno_process(project, directory, processes);
+    detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
         detect_laravel_frontend_process(project, directory, processes);
@@ -1162,6 +1163,59 @@ fn detect_dotnet_process(project: &Project, directory: &Path, processes: &mut Ve
         if web && let Some(process) = processes.last_mut() {
             process.expected_port = dotnet_launch_port(&project_file);
         }
+    }
+}
+
+/// Ruby web apps and programs, in the order their conventions are checked:
+/// - Rails (`bin/rails`): `ruby bin/rails server`, port 3000;
+/// - Rack (`config.ru`): `bundle exec rackup`, port 9292;
+/// - Sinatra (`app.rb` that requires it): `ruby app.rb`, port 4567;
+/// - a program (`main.rb` or `app.rb`): `ruby <file>`.
+///
+/// With a Gemfile, `bundle exec` loads the project's gems.
+fn detect_ruby_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let gemfile = directory.join("Gemfile").is_file();
+    let mut push = |name: &str, program: &str, args: &[&str], port: Option<u16>| {
+        push_process(processes, project, directory, name, program, args);
+        if let (Some(port), Some(process)) = (port, processes.last_mut()) {
+            process.expected_port = Port::new(port);
+        }
+    };
+    if directory.join("bin/rails").is_file() && directory.join("config/application.rb").is_file() {
+        push(
+            "Servidor Rails",
+            "ruby",
+            &["bin/rails", "server"],
+            Some(3000),
+        );
+        return;
+    }
+    if directory.join("config.ru").is_file() {
+        if gemfile {
+            push("Servidor Rack", "bundle", &["exec", "rackup"], Some(9292));
+        } else {
+            push("Servidor Rack", "rackup", &[], Some(9292));
+        }
+        return;
+    }
+    let script = ["app.rb", "main.rb"]
+        .into_iter()
+        .find(|name| directory.join(name).is_file());
+    let Some(script) = script else {
+        return;
+    };
+    let sinatra = fs::read_to_string(directory.join(script)).is_ok_and(|contents| {
+        contents.contains("require 'sinatra'") || contents.contains("require \"sinatra\"")
+    });
+    let (name, port) = if sinatra {
+        ("Servidor Sinatra".to_owned(), Some(4567))
+    } else {
+        (format!("Executar {script}"), None)
+    };
+    if gemfile {
+        push(&name, "bundle", &["exec", "ruby", script], port);
+    } else {
+        push(&name, "ruby", &[script], port);
     }
 }
 
@@ -2992,6 +3046,62 @@ version = "0.1.0"
         let flask = detect_processes(&project("flask"));
         assert_eq!(flask.len(), 1);
         assert_eq!(flask[0].command_line(), "python app.py");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_ruby_web_apps_and_programs() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-ruby-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+        let only = |name: &str| {
+            let processes = detect_processes(&project(name));
+            assert_eq!(processes.len(), 1, "{name}");
+            (processes[0].command_line(), processes[0].expected_port)
+        };
+
+        fs::create_dir_all(root.join("rails/bin")).unwrap();
+        fs::create_dir_all(root.join("rails/config")).unwrap();
+        fs::write(root.join("rails/Gemfile"), "gem 'rails'\n").unwrap();
+        fs::write(root.join("rails/bin/rails"), "#!/usr/bin/env ruby\n").unwrap();
+        fs::write(root.join("rails/config/application.rb"), "").unwrap();
+        fs::write(root.join("rails/config.ru"), "").unwrap();
+        assert_eq!(
+            only("rails"),
+            ("ruby bin/rails server".into(), Port::new(3000))
+        );
+
+        fs::create_dir_all(root.join("rack")).unwrap();
+        fs::write(root.join("rack/Gemfile"), "gem 'rack'\n").unwrap();
+        fs::write(
+            root.join("rack/config.ru"),
+            "run ->(env) { [200, {}, ['ok']] }\n",
+        )
+        .unwrap();
+        assert_eq!(only("rack"), ("bundle exec rackup".into(), Port::new(9292)));
+
+        fs::create_dir_all(root.join("sinatra")).unwrap();
+        fs::write(root.join("sinatra/Gemfile"), "gem 'sinatra'\n").unwrap();
+        fs::write(
+            root.join("sinatra/app.rb"),
+            "require 'sinatra'\nget('/') { 'ok' }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            only("sinatra"),
+            ("bundle exec ruby app.rb".into(), Port::new(4567))
+        );
+
+        fs::create_dir_all(root.join("script")).unwrap();
+        fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
+        assert_eq!(only("script"), ("ruby main.rb".into(), None));
 
         fs::remove_dir_all(root).unwrap();
     }
