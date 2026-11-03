@@ -99,7 +99,8 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | .NET (C#, F#) | Sim | Sim | Não | Sim (`dotnet run --project`) | Sim, na porta do `launchSettings.json` |
 | Ruby (Rails, Rack, Sinatra) | Sim | Sim | Não; `bundle install` em `vendor/bundle` do projeto | Sim (`bin/rails server`, `rackup`, `ruby app.rb`) | Sim |
 | Deno | Sim | Sim | Não | Sim (`deno task dev` ou `deno run main.ts`) | Sim |
-| Kotlin, Elixir | Sim | Sim | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
+| Kotlin (Gradle: Ktor, Spring Boot, `application`) | Sim | Sim | Não; o Gradle baixa o compilador | Sim (`gradlew run` ou `bootRun`) | Sim |
+| Elixir | Sim | Sim | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
 | Containers / Docker / Podman | Sim | Sim; não instala o motor | Não | Sim, com Docker ou Podman (escolha em "Iniciar com") | Sim, pelo endereço publicado, em Containers |
@@ -414,7 +415,8 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | .NET (C#, F#) | Yes | Yes | No | Yes (`dotnet run --project`) | Yes, on the `launchSettings.json` port |
 | Ruby (Rails, Rack, Sinatra) | Yes | Yes | No; `bundle install` into the project's `vendor/bundle` | Yes (`bin/rails server`, `rackup`, `ruby app.rb`) | Yes |
 | Deno | Yes | Yes | No | Yes (`deno task dev` or `deno run main.ts`) | Yes |
-| Kotlin, Elixir | Yes | Yes | No | With the command you define | Yes, when the program is a web server |
+| Kotlin (Gradle: Ktor, Spring Boot, `application`) | Yes | Yes | No; Gradle downloads the compiler | Yes (`gradlew run` or `bootRun`) | Yes |
+| Elixir | Yes | Yes | No | With the command you define | Yes, when the program is a web server |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
 | Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
 | Containers / Docker / Podman | Yes | Yes; does not install the engine | No | Yes, with Docker or Podman (choose under "Start with") | Yes, through the published address, in Containers |

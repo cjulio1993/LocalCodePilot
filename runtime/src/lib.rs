@@ -1348,7 +1348,7 @@ fn detect_java_process(project: &Project, directory: &Path, processes: &mut Vec<
     {
         let wrapper = if cfg!(windows) { "mvnw.cmd" } else { "mvnw" };
         let program = if directory.join(wrapper).is_file() {
-            directory.join(wrapper).to_string_lossy().into_owned()
+            localcodepilot_core::paths::display_path(&directory.join(wrapper))
         } else {
             "mvn".into()
         };
@@ -1363,24 +1363,25 @@ fn detect_java_process(project: &Project, directory: &Path, processes: &mut Vec<
         return;
     }
 
-    let gradle = ["build.gradle", "build.gradle.kts"]
+    let Some(gradle) = ["build.gradle", "build.gradle.kts"]
         .iter()
-        .find_map(|name| fs::read_to_string(directory.join(name)).ok());
-    if gradle.as_deref().is_some_and(|contents| {
-        contents.contains("org.springframework.boot") || contents.contains("bootRun")
-    }) {
-        let wrapper = if cfg!(windows) {
-            "gradlew.bat"
-        } else {
-            "gradlew"
-        };
-        let program = if directory.join(wrapper).is_file() {
-            directory.join(wrapper).to_string_lossy().into_owned()
-        } else {
-            "gradle".into()
-        };
-        // Without the daemon the build ends with the server: a start that fails would
-        // otherwise leave a Gradle daemon running for hours.
+        .find_map(|name| fs::read_to_string(directory.join(name)).ok())
+    else {
+        return;
+    };
+    let wrapper = if cfg!(windows) {
+        "gradlew.bat"
+    } else {
+        "gradlew"
+    };
+    let program = if directory.join(wrapper).is_file() {
+        localcodepilot_core::paths::display_path(&directory.join(wrapper))
+    } else {
+        "gradle".into()
+    };
+    // Without the daemon the build ends with the server: a start that fails would
+    // otherwise leave a Gradle daemon running for hours.
+    if gradle.contains("org.springframework.boot") || gradle.contains("bootRun") {
         push_process(
             processes,
             project,
@@ -1389,7 +1390,41 @@ fn detect_java_process(project: &Project, directory: &Path, processes: &mut Vec<
             &program,
             &["bootRun", "--no-daemon"],
         );
+    } else if let Some(name) = gradle_application(&gradle) {
+        push_process(
+            processes,
+            project,
+            directory,
+            name,
+            &program,
+            &["run", "--no-daemon"],
+        );
+        if name == "Servidor Ktor"
+            && let Some(process) = processes.last_mut()
+        {
+            process.expected_port = Port::new(8080);
+        }
     }
+}
+
+/// A Gradle build with the `application` plugin (Kotlin or Java) starts with `gradle run`;
+/// Ktor adds its own plugin and serves on port 8080 by default.
+fn gradle_application(build: &str) -> Option<&'static str> {
+    let compact = build.replace([' ', '\t'], "");
+    if compact.contains("io.ktor.plugin") || compact.contains("io.ktor:ktor-server") {
+        return Some("Servidor Ktor");
+    }
+    [
+        "id(\"application\")",
+        "id'application'",
+        "id\"application\"",
+        "applyplugin:'application'",
+        "applyplugin:\"application\"",
+        "\napplication\n",
+    ]
+    .iter()
+    .any(|pattern| compact.contains(pattern))
+    .then_some("Executar aplicação")
 }
 
 fn detect_laravel_frontend_process(
@@ -1883,6 +1918,15 @@ fn detect_in_directory(path: &Path, found: &mut Vec<RuntimeKind>) {
         if !found.contains(&runtime) {
             found.push(runtime);
         }
+    }
+    // Kotlin builds with Gradle, like Java; the Kotlin plugin in the build tells them apart.
+    let kotlin_build = ["build.gradle.kts", "build.gradle"].iter().any(|name| {
+        fs::read_to_string(path.join(name)).is_ok_and(|build| {
+            build.contains("kotlin(\"jvm\")") || build.contains("org.jetbrains.kotlin")
+        })
+    });
+    if kotlin_build && !found.contains(&RuntimeKind::Kotlin) {
+        found.push(RuntimeKind::Kotlin);
     }
     let Ok(entries) = fs::read_dir(path) else {
         return;
@@ -3102,6 +3146,58 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_gradle_applications_and_ktor() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-gradle-run-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+
+        fs::create_dir_all(root.join("ktor/src/main/kotlin")).unwrap();
+        fs::write(
+            root.join("ktor/build.gradle.kts"),
+            "plugins {\n    kotlin(\"jvm\") version \"2.1.0\"\n    id(\"io.ktor.plugin\") version \"3.0.0\"\n}\napplication { mainClass.set(\"ApplicationKt\") }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("ktor/src/main/kotlin/Application.kt"),
+            "fun main() {}\n",
+        )
+        .unwrap();
+        let ktor = detect_processes(&project("ktor"));
+        assert_eq!(ktor.len(), 1);
+        assert_eq!(ktor[0].name, "Servidor Ktor");
+        assert_eq!(&ktor[0].args, &["run", "--no-daemon"]);
+        assert_eq!(ktor[0].expected_port, Port::new(8080));
+        assert!(detect(&root.join("ktor")).contains(&RuntimeKind::Kotlin));
+
+        fs::create_dir_all(root.join("cli")).unwrap();
+        fs::write(
+            root.join("cli/build.gradle"),
+            "plugins {\n    id 'application'\n}\napplication { mainClass = 'app.Main' }\n",
+        )
+        .unwrap();
+        let cli = detect_processes(&project("cli"));
+        assert_eq!(cli.len(), 1);
+        assert_eq!(cli[0].name, "Executar aplicação");
+
+        // A library build has nothing to run.
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/build.gradle.kts"),
+            "plugins { `java-library` }\n",
+        )
+        .unwrap();
+        assert!(detect_processes(&project("lib")).is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }

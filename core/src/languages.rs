@@ -201,7 +201,7 @@ pub const LANGUAGES: &[Language] = &[
         ],
         images: &[],
         install_dirs: &[],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Elixir,

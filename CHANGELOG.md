@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- Projetos Kotlin e Java com o plugin `application` do Gradle, como os servidores Ktor, iniciam sem pedir comando, com `gradlew run --no-daemon` (porta 8080 no Ktor). Projetos Gradle com o plugin Kotlin aparecem como Kotlin.
 - Projetos Deno iniciam sem pedir comando: as tarefas contínuas do `deno.json` ou `deno.jsonc` (`deno task dev`) ou, sem tarefas, o arquivo de entrada (`main.ts`, `server.ts`) com `deno run --allow-net --allow-read --allow-env`.
 - Projetos Ruby iniciam sem pedir comando: Rails com `ruby bin/rails server` (porta 3000), apps Rack com `bundle exec rackup` (9292), Sinatra com `ruby app.rb` (4567) e programas `main.rb`/`app.rb`. Com Gemfile, **Instalar dependências** roda `bundle install` dentro de `vendor/bundle` do próprio projeto, sem misturar com as gems de outros projetos.
 - Projetos .NET (C#, F#, VB) iniciam sem pedir comando: `dotnet run --project` para apps web (ASP.NET, Blazor) e programas de console ou worker, inclusive os listados num `.sln` em subpastas. Bibliotecas e projetos de teste ficam de fora, e a porta vem do perfil do `launchSettings.json`.
@@ -46,6 +47,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- O comando de projetos com Gradle Wrapper ou Maven Wrapper aparece com o caminho normal (`C:\...\gradlew.bat`), sem o prefixo interno `\\?\` do Windows.
 - Depois de uma falha ao iniciar (porta ocupada, servidor que fechou antes de ficar pronto, programa que parou com erro), o projeto mostra **Tentar de novo** ao lado de Ver logs. Antes, o cartão só oferecia Ver logs, e não havia como iniciar de novo pelo próprio projeto depois de resolver a causa.
 - **Abrir no VS Code** não abre mais o projeto em modo restrito. O app passava ao VS Code o caminho no formato interno do Windows, com o prefixo `\\?\`, que o VS Code trata como uma pasta diferente da que você marcou como confiável; agora passa o caminho normal.
 - Em Containers, a escolha "Iniciar com: Podman" não volta mais para Docker na verificação automática a cada 15 segundos. Antes, o ambiente podia subir no Docker mesmo com o Podman escolhido. Com essa correção, Containers com Podman foram validados de ponta a ponta no Windows 11 (iniciar, endereço, logs e parar) e deixam de ser experimentais.
