@@ -211,8 +211,12 @@ pub const LANGUAGES: &[Language] = &[
         source_extensions: &["ex", "exs"],
         programs: &[program("elixir", &["--version"])],
         images: &["elixir"],
-        install_dirs: &[InstallDir::ProgramFiles("Elixir/bin")],
-        starts: false,
+        // Elixir runs on Erlang, which winget installs in its own folder.
+        install_dirs: &[
+            InstallDir::ProgramFiles("Elixir/bin"),
+            InstallDir::ProgramFiles("Erlang OTP/bin"),
+        ],
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Deno,

@@ -464,7 +464,10 @@ pub fn refreshed_environment_path() -> Result<OsString, String> {
         let dart_path = env::join_paths(dart_paths)
             .map_err(|error| format!("PATH do Dart inválido: {error}"))?;
         let merged = merge_paths(Some(dart_path), Some(merged))?;
-        merge_paths(managed_bin_directory().map(OsString::from), Some(merged))
+        let merged = merge_paths(managed_bin_directory().map(OsString::from), Some(merged))?;
+        let install_dirs = env::join_paths(crate::languages::existing_install_dirs())
+            .map_err(|error| format!("Pastas de instalação inválidas: {error}"))?;
+        merge_paths(Some(merged), Some(install_dirs))
     }
 
     #[cfg(not(target_os = "windows"))]

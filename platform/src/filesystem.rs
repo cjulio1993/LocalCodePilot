@@ -31,6 +31,9 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "PHPMailer-master",
     "_macosx",
     "__macosx",
+    // Elixir: dependencies and build output of Mix.
+    "deps",
+    "_build",
 ];
 
 #[derive(Debug, Clone)]

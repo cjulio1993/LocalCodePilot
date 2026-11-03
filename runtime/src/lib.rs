@@ -25,6 +25,9 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     "_macosx",
     "__macosx",
     "ephemeral",
+    // Elixir: dependencies and build output of Mix.
+    "deps",
+    "_build",
 ];
 const CONTINUOUS_SCRIPT_NAMES: &[&str] = &["dev", "start", "serve", "server", "watch", "preview"];
 
@@ -605,10 +608,19 @@ pub fn detect_technologies(path: &Path) -> Vec<TechnologyKind> {
         push_unique(&mut found, TechnologyKind::StaticSite);
     }
     detect_technologies_in_directory(path, &mut found);
+    // Phoenix keeps its JavaScript and TypeScript in `assets/`, built by Mix: they are part of
+    // the Elixir project, not a frontend of their own.
+    let mix_assets = path.join("mix.exs").is_file().then(|| path.join("assets"));
 
     if path.join(".git").exists() {
         let mut queue = VecDeque::from([(path.to_path_buf(), 0_usize)]);
         while let Some((directory, depth)) = queue.pop_front() {
+            if mix_assets
+                .as_ref()
+                .is_some_and(|assets| directory.starts_with(assets))
+            {
+                continue;
+            }
             if depth > 0 {
                 detect_technologies_in_directory(&directory, &mut found);
             }
@@ -844,6 +856,7 @@ fn detect_processes_in_directory(
     detect_go_process(project, directory, processes);
     detect_dotnet_process(project, directory, processes);
     detect_deno_process(project, directory, processes);
+    detect_elixir_process(project, directory, processes);
     detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
@@ -1253,6 +1266,37 @@ fn detect_deno_process(project: &Project, directory: &Path, processes: &mut Vec<
             &format!("Executar {entry}"),
             "deno",
             &["run", "--allow-net", "--allow-read", "--allow-env", entry],
+        );
+    }
+}
+
+/// Elixir with Mix: Phoenix serves with `mix phx.server` (port 4000); an application with a
+/// supervision tree (`mod:` in `mix.exs`, such as Plug or Bandit) runs with
+/// `mix run --no-halt`. Libraries have nothing to start.
+fn detect_elixir_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let Ok(mix) = fs::read_to_string(directory.join("mix.exs")) else {
+        return;
+    };
+    if mix.contains("{:phoenix,") {
+        push_process(
+            processes,
+            project,
+            directory,
+            "Servidor Phoenix",
+            "mix",
+            &["phx.server"],
+        );
+        if let Some(process) = processes.last_mut() {
+            process.expected_port = Port::new(4000);
+        }
+    } else if mix.contains("mod:") {
+        push_process(
+            processes,
+            project,
+            directory,
+            "Executar aplicação Elixir",
+            "mix",
+            &["run", "--no-halt"],
         );
     }
 }
@@ -3146,6 +3190,70 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_phoenix_and_elixir_applications() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-elixir-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+        let write = |name: &str, mix: &str| {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(root.join(name).join("mix.exs"), mix).unwrap();
+        };
+
+        write(
+            "phoenix",
+            "def application, do: [mod: {Loja.Application, []}]\ndefp deps, do: [{:phoenix, \"~> 1.8\"}]\n",
+        );
+        let phoenix = detect_processes(&project("phoenix"));
+        assert_eq!(phoenix.len(), 1);
+        assert_eq!(phoenix[0].command_line(), "mix phx.server");
+        assert_eq!(phoenix[0].expected_port, Port::new(4000));
+
+        write(
+            "plug",
+            "def application, do: [mod: {Api.Application, []}]\ndefp deps, do: [{:bandit, \"~> 1.5\"}]\n",
+        );
+        assert_eq!(
+            detect_processes(&project("plug"))[0].command_line(),
+            "mix run --no-halt"
+        );
+
+        write(
+            "lib",
+            "def application, do: [extra_applications: [:logger]]\n",
+        );
+        assert!(detect_processes(&project("lib")).is_empty());
+
+        // Phoenix: its `assets/` TypeScript does not make it a TypeScript project, and the
+        // packages in `deps/` are not projects of their own.
+        fs::create_dir_all(root.join("phoenix/.git")).unwrap();
+        fs::create_dir_all(root.join("phoenix/assets/js")).unwrap();
+        fs::write(root.join("phoenix/assets/tsconfig.json"), "{}").unwrap();
+        fs::write(root.join("phoenix/assets/js/app.ts"), "").unwrap();
+        fs::create_dir_all(root.join("phoenix/deps/phoenix")).unwrap();
+        fs::write(
+            root.join("phoenix/deps/phoenix/package.json"),
+            "{\"scripts\":{\"dev\":\"x\"}}",
+        )
+        .unwrap();
+        assert!(!detect_technologies(&root.join("phoenix")).contains(&TechnologyKind::TypeScript));
+        assert_eq!(
+            detect_processes(&project("phoenix"))
+                .iter()
+                .map(|process| process.command_line())
+                .collect::<Vec<_>>(),
+            ["mix phx.server"]
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
