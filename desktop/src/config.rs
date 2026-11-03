@@ -1,5 +1,5 @@
 use crate::updates::UpdateInfo;
-use localcodepilot_core::projects::Project;
+use localcodepilot_core::{custom_commands::CustomCommand, projects::Project};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -35,6 +35,8 @@ pub struct WorkspaceState {
     pub project_view: String,
     /// The user collapsed the sidebar to icons. The sidebar starts expanded.
     pub sidebar_collapsed: bool,
+    /// Start commands the person defined for projects without a detected one.
+    pub custom_commands: Vec<CustomCommand>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +65,7 @@ impl Default for WorkspaceState {
             project_filter: String::new(),
             project_view: String::new(),
             sidebar_collapsed: false,
+            custom_commands: Vec::new(),
         }
     }
 }

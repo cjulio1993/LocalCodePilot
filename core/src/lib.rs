@@ -2,6 +2,7 @@ pub mod compose_safety;
 pub mod container_groups;
 pub mod container_setup;
 pub mod containers;
+pub mod custom_commands;
 pub mod discovery;
 pub mod environments;
 pub mod languages;

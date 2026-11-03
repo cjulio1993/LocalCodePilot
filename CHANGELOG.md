@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- **Definir comando de início**: um projeto sem comando detectado (de qualquer linguagem, como C/C++, Perl, Lua, R ou Julia) pode receber o comando que o inicia, com nome, programa, argumentos, pasta de execução e porta opcional. A janela mostra exatamente o que será executado, recusa recursos de terminal (`&&`, `|`, `;`, redirecionamentos, variáveis) e confere se o programa e a pasta existem. O comando passa a funcionar como um detectado, fica salvo, aparece no cartão como "Comando definido por você" e pode ser editado ou removido em Detalhes técnicos quando não está rodando.
 - Proteção contra conflitos de nome Compose: o aplicativo identifica cada ambiente pelo motor, pelo nome que o provedor Compose resolve (`name:`, `COMPOSE_PROJECT_NAME` no ambiente ou no `.env`, nome da pasta) e pela pasta de origem dos containers. Quando dois projetos resolvem o mesmo nome (por exemplo, dois `docker/compose.yaml`), quando há containers desse nome criados a partir de outra pasta, quando há volumes sem container que comprove a origem ou quando não é possível confirmar, iniciar e parar o ambiente, e iniciar, parar e reiniciar seus containers, ficam bloqueados, com explicação e a configuração `name:` sugerida, com o botão **Copiar configuração sugerida**. A verificação é refeita logo antes de executar. Validar, consultar estado e logs continuam disponíveis.
 - Volumes deixados sem containers (por exemplo, após `compose down`) podem ser confirmados como do projeto; a confirmação fica salva por motor e pasta e vale só para aqueles volumes (nome e data de criação).
 - A CLI `containers` mostra o nome Compose efetivo de cada ambiente e os conflitos encontrados.
@@ -41,6 +42,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- O Perl que acompanha o Git para Windows é encontrado em **Linguagens neste computador**.
 - Go no layout `cmd/<nome>/main.go` passa a ter comando: um processo por programa, com `go run ./cmd/<nome>` na raiz do módulo. Antes, o cartão dizia que nenhum comando foi identificado.
 - Dart encontra os programas criados por `dart create` (`bin/server.dart` e `bin/<pacote>.dart`). Antes, um servidor Dart com Dockerfile, como o do modelo oficial, só podia iniciar pelos containers.
 - Um app Flutter para desktop não mostra mais **Abrir site** com o endereço do depurador; endereços do DevTools nunca são tratados como o site de nenhum projeto.

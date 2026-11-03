@@ -297,7 +297,11 @@ pub const LANGUAGES: &[Language] = &[
         source_extensions: &["pl", "pm"],
         programs: &[program("perl", &["--version"])],
         images: &["perl"],
-        install_dirs: &[InstallDir::Absolute("C:/Strawberry/perl/bin")],
+        // Git for Windows ships a Perl that is not in `PATH`.
+        install_dirs: &[
+            InstallDir::Absolute("C:/Strawberry/perl/bin"),
+            InstallDir::ProgramFiles("Git/usr/bin"),
+        ],
         starts: false,
     },
     Language {
