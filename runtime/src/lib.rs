@@ -1033,13 +1033,15 @@ fn detect_java_process(project: &Project, directory: &Path, processes: &mut Vec<
         } else {
             "gradle".into()
         };
+        // Without the daemon the build ends with the server: a start that fails would
+        // otherwise leave a Gradle daemon running for hours.
         push_process(
             processes,
             project,
             directory,
             "Servidor Spring Boot",
             &program,
-            &["bootRun"],
+            &["bootRun", "--no-daemon"],
         );
     }
 }

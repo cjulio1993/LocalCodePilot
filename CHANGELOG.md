@@ -18,7 +18,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 ### Alterado
 
 - Num projeto Laravel recém-clonado, **Instalar dependências** também cria o `.env` a partir do `.env.example`, gera a chave da aplicação e, quando o projeto usa SQLite, cria as tabelas com `php artisan migrate`; cada etapa aparece no plano antes de executar.
-- A matriz de suporte separa **Inicia** e **Abre no navegador**. Rust, Node.js, PHP, Laravel, Python/Flask, Django, Spring Boot com Maven wrapper, site estático, Go, Dart e Flutter (web e Windows) foram validados de ponta a ponta no Windows 11 e passaram para "Sim".
+- A matriz de suporte separa **Inicia** e **Abre no navegador**. Rust, Node.js, PHP, Laravel, Python/Flask, Django, Spring Boot com Maven wrapper, site estático, Lumen, Spring Boot com Gradle wrapper, Go, Dart e Flutter (web e Windows) foram validados de ponta a ponta no Windows 11 e passaram para "Sim".
 - A Visão geral mostra o que está rodando, o que precisa de atenção e o que está parado, com uma ação principal por projeto (Iniciar, Abrir site, Ver logs ou Detalhes). Os estados usam os mesmos nomes em todo o aplicativo: Rodando, Parado, Iniciando e Com problema.
 - Projetos ganhou busca por nome e filtros por estado, com visualização em cartões ou lista; filtro e visualização ficam salvos.
 - O selo do site descreve o resultado da verificação HTTP em linguagem simples (por exemplo, "Servidor respondeu; página não encontrada" para um 404) e mostra o código ao passar o mouse; sem verificação, não aparece selo. Em projetos com containers, o endereço aparece como "Endereço provável".
@@ -42,6 +42,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- A busca pela porta de um servidor só adota portas que respondem como servidor web. Antes, um projeto Spring Boot com Gradle ficava preso na porta do daemon do Gradle e mostrava "Site sem resposta".
+- Spring Boot com Gradle inicia com `--no-daemon`: uma partida que falha, por exemplo com a porta ocupada, não deixa mais um processo Java do Gradle rodando em segundo plano.
+- Num projeto Lumen recém-clonado, **Instalar dependências** também cria o `.env` a partir do `.env.example`.
 - O Perl que acompanha o Git para Windows é encontrado em **Linguagens neste computador**.
 - Go no layout `cmd/<nome>/main.go` passa a ter comando: um processo por programa, com `go run ./cmd/<nome>` na raiz do módulo. Antes, o cartão dizia que nenhum comando foi identificado.
 - Dart encontra os programas criados por `dart create` (`bin/server.dart` e `bin/<pacote>.dart`). Antes, um servidor Dart com Dockerfile, como o do modelo oficial, só podia iniciar pelos containers.

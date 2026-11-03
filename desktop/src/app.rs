@@ -41,8 +41,8 @@ use localcodepilot_platform::{
         inspect_program, managed_bin_directory, refreshed_environment_path,
     },
     ports::{
-        PortAvailability, PortOwner, inspect_tcp_port, listener_process_ids, listening_ports,
-        process_descends_from, terminate_process_tree,
+        PortAvailability, PortOwner, answers_http, inspect_tcp_port, listener_process_ids,
+        listening_ports, process_descends_from, terminate_process_tree,
     },
 };
 use localcodepilot_runtime::databases::{
@@ -6077,7 +6077,13 @@ fn probe_listening_port(running: &mut RunningProcess, now: Instant) -> Option<Po
     let (sender, receiver) = mpsc::channel();
     running.listener_probe = Some(receiver);
     std::thread::spawn(move || {
-        let _ = sender.send(listening_ports(root));
+        // Only ports that answer like a web server: tools such as the Gradle daemon listen
+        // on ports of their own before the site is up.
+        let ports = listening_ports(root)
+            .into_iter()
+            .filter(|port| answers_http(*port))
+            .collect::<Vec<_>>();
+        let _ = sender.send(ports);
     });
     None
 }
@@ -6471,7 +6477,14 @@ fn inspect_project_environment_with_inventory(
                 .first()
                 .is_some_and(|argument| argument == "artisan");
         let directory = &process.working_directory;
-        if serves_laravel
+        // Lumen serves with `php -S` from its root and has no `key:generate`: only the copy.
+        let serves_lumen = process.program == "php"
+            && process
+                .args
+                .first()
+                .is_some_and(|argument| argument == "-S")
+            && directory.join("artisan").is_file();
+        if (serves_laravel || serves_lumen)
             && directory.join(".env.example").is_file()
             && !directory.join(".env").is_file()
             && !install_steps.iter().any(|step: &DependencyInstall| {
@@ -6479,11 +6492,10 @@ fn inspect_project_environment_with_inventory(
                     && step.working_directory == *directory
             })
         {
-            if !missing_dependencies
-                .iter()
-                .any(|item| item == "configuração do Laravel")
-            {
-                missing_dependencies.push("configuração do Laravel".to_owned());
+            let framework = if serves_laravel { "Laravel" } else { "Lumen" };
+            let configuration = format!("configuração do {framework}");
+            if !missing_dependencies.contains(&configuration) {
+                missing_dependencies.push(configuration);
             }
             install_steps.push(DependencyInstall {
                 label: "Criar o arquivo .env a partir de .env.example".into(),
@@ -6491,6 +6503,17 @@ fn inspect_project_environment_with_inventory(
                 args: vec!["-r".into(), "copy('.env.example', '.env');".into()],
                 working_directory: directory.clone(),
             });
+        }
+        if serves_laravel
+            && directory.join(".env.example").is_file()
+            && !directory.join(".env").is_file()
+            && !install_steps.iter().any(|step: &DependencyInstall| {
+                step.args
+                    .get(1)
+                    .is_some_and(|argument| argument == "key:generate")
+                    && step.working_directory == *directory
+            })
+        {
             install_steps.push(DependencyInstall {
                 label: "Gerar a chave da aplicação Laravel (APP_KEY)".into(),
                 program: "php".into(),
