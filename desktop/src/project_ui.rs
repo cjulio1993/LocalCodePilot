@@ -978,6 +978,19 @@ fn primary_button(ui: &mut egui::Ui, action: &PrimaryAction, width: f32) -> bool
     .clicked()
 }
 
+/// After a failure (a port in use, a server that closed), the project can start again once
+/// the cause is solved, without leaving the card.
+fn can_retry(summary: &ProjectSummary) -> bool {
+    summary.state == ProjectState::Problem
+        && matches!(summary.primary, PrimaryAction::ViewLogs)
+        && !summary.uses_containers
+}
+
+fn retry_button(ui: &mut egui::Ui) -> bool {
+    let label = format!("{PLAY}  Tentar de novo");
+    announced(ui.button(&label), egui::Role::Button, &label).clicked()
+}
+
 fn logs_button(ui: &mut egui::Ui) -> bool {
     let label = format!("{TERMINAL}  Ver logs");
     announced(ui.button(&label), egui::Role::Button, &label).clicked()
@@ -1043,6 +1056,9 @@ fn project_row(
             ui.horizontal_wrapped(|ui| {
                 if primary_button(ui, &summary.primary, 120.0) {
                     action = Some(primary_to_card_action(project, summary));
+                }
+                if can_retry(summary) && retry_button(ui) {
+                    action = Some(ProjectCardAction::Start(project.path.clone()));
                 }
                 if summary.state == ProjectState::Running {
                     if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
@@ -1168,6 +1184,9 @@ impl ProjectCard<'_> {
                 }
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
+                    if can_retry(summary) && retry_button(ui) {
+                        action = Some(ProjectCardAction::Start(project.path.clone()));
+                    }
                     if summary.state == ProjectState::Running {
                         if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
                             action = Some(logs_action(project, summary));
@@ -1466,8 +1485,10 @@ mod tests {
             summary.reason.as_deref(),
             Some("Outro programa está usando a porta 5173. Este projeto não iniciou.")
         );
-        // Ver logs, never an action that ends the other program.
+        // Ver logs, never an action that ends the other program, and a new attempt once the
+        // port is free.
         assert_eq!(summary.primary, PrimaryAction::ViewLogs);
+        assert!(can_retry(&summary));
         assert_eq!(
             summary.technical,
             [
