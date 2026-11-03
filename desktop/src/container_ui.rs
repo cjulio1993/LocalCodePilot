@@ -158,6 +158,25 @@ fn resolve_compose_names(
         .collect()
 }
 
+/// The engine chosen in "Iniciar com" survives the periodic refresh while it stays usable;
+/// otherwise the first usable engine takes its place.
+fn keep_selected_engine(selected: ContainerEngine, engines: &[EngineDiagnosis]) -> ContainerEngine {
+    let usable = |diagnosis: &&EngineDiagnosis| {
+        diagnosis.state == EngineState::Ready && diagnosis.compose_available
+    };
+    if engines
+        .iter()
+        .filter(usable)
+        .any(|diagnosis| diagnosis.engine == selected)
+    {
+        return selected;
+    }
+    engines
+        .iter()
+        .find(usable)
+        .map_or(selected, |diagnosis| diagnosis.engine)
+}
+
 fn engine_of(command: &ContainerCommand) -> ContainerEngine {
     match command.program {
         "podman" => ContainerEngine::Podman,
@@ -1179,11 +1198,8 @@ impl LocalCodePilot {
                         })
                         .collect::<Vec<_>>();
                     if let Some((engines, host)) = engines {
-                        if let Some(engine) = engines.iter().find(|engine| {
-                            engine.state == EngineState::Ready && engine.compose_available
-                        }) {
-                            self.container_state.selected_engine = engine.engine;
-                        }
+                        self.container_state.selected_engine =
+                            keep_selected_engine(self.container_state.selected_engine, &engines);
                         self.container_state.engines = engines;
                         self.container_state.host = Some(host);
                     }
@@ -2488,6 +2504,31 @@ mod tests {
         for page in [Page::Help, Page::Settings] {
             assert_eq!(container_refresh_schedule(page), None);
         }
+    }
+
+    #[test]
+    fn the_chosen_engine_survives_the_periodic_refresh() {
+        let diagnosis = |engine, state| EngineDiagnosis {
+            engine,
+            state,
+            compose_available: true,
+        };
+        let both = [
+            diagnosis(ContainerEngine::Docker, EngineState::Ready),
+            diagnosis(ContainerEngine::Podman, EngineState::Ready),
+        ];
+        assert_eq!(
+            keep_selected_engine(ContainerEngine::Podman, &both),
+            ContainerEngine::Podman
+        );
+        let podman_down = [
+            diagnosis(ContainerEngine::Docker, EngineState::Ready),
+            diagnosis(ContainerEngine::Podman, EngineState::Unavailable),
+        ];
+        assert_eq!(
+            keep_selected_engine(ContainerEngine::Podman, &podman_down),
+            ContainerEngine::Docker
+        );
     }
 
     #[test]

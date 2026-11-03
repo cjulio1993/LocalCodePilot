@@ -179,7 +179,7 @@ const SECTIONS: &[HelpSection] = &[
         title: "Containers e Compose",
         blocks: &[
             Block::Text(
-                "Docker e Podman precisam estar instalados e com o motor ativo. O LocalCodePilot mostra os passos e os comandos para preparar o motor, mas não instala nada nem inicia a máquina virtual por você.",
+                "Docker e Podman precisam estar instalados e com o motor ativo. O LocalCodePilot mostra os passos e os comandos para preparar o motor, mas não instala nada nem inicia a máquina virtual por você. Com os dois prontos, escolha em \"Iniciar com\" qual deles usar; a escolha vale até você trocar.",
             ),
             Block::Text(
                 "Em Containers, cada projeto aparece com seus serviços e o estado de cada um: Rodando, Parado, Pausado, Com problema ou Ainda não criado. Iniciar e Parar ficam no projeto e pedem confirmação. Antes de parar, a confirmação diz quais serviços vão parar e quais continuam rodando; o Parar do cartão usa a mesma confirmação. Use Buscar projeto ou serviço quando a lista for longa; Detalhes técnicos mostra imagem, portas, ID e o comando exato. Containers que não são de um projeto da lista ficam em Outros containers. Um container rodando ou uma porta publicada não prova que o site está respondendo.",
