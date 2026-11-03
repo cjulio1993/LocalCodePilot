@@ -689,7 +689,134 @@ pub fn detect_processes(project: &Project) -> Vec<ProjectProcess> {
         }
     }
     remove_redundant_laravel_frontend(&mut processes);
+    // A project with containers starts through them (a PHP site served by Compose, for
+    // example), so it gets no local fallback.
+    if processes.is_empty() && containers::detect_container_projects(&project.path).is_empty() {
+        detect_fallback_process(project, &mut processes);
+    }
     processes
+}
+
+/// When no framework or manifest gives a command, the project still starts the plain way its
+/// files allow, so "Iniciar" works without anyone typing a command: a Java file with `main`,
+/// a folder of PHP pages or a folder of HTML pages.
+fn detect_fallback_process(project: &Project, processes: &mut Vec<ProjectProcess>) {
+    let root = &project.path;
+    let files = fs::read_dir(root)
+        .map(|entries| {
+            let mut files = entries
+                .flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            files.sort();
+            files
+        })
+        .unwrap_or_default();
+    let with_extension = |extension: &str| {
+        files
+            .iter()
+            .filter(|name| {
+                Path::new(name.as_str())
+                    .extension()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // `java Main.java` runs a single-file program without a build tool (Java 11+).
+    if let Some(source) = with_extension("java").into_iter().find(|name| {
+        fs::read_to_string(root.join(name))
+            .is_ok_and(|contents| contents.contains("static void main("))
+    }) {
+        push_process(
+            processes,
+            project,
+            root,
+            &format!("Executar {source}"),
+            "java",
+            &[&source],
+        );
+        return;
+    }
+
+    // PHP pages without `index.php`: the built-in server with a page that lists them.
+    if !with_extension("php").is_empty()
+        && let Some(router) = php_listing_router()
+    {
+        let router = router.to_string_lossy().into_owned();
+        push_process(
+            processes,
+            project,
+            root,
+            "Servidor PHP",
+            "php",
+            &["-S", "localhost:8000", &router],
+        );
+        return;
+    }
+
+    // HTML pages: any page at the root, or an `index.html` one or two folders down. The
+    // static server lists the folder, so every page can be opened.
+    let html_below = || {
+        fs::read_dir(root).ok().is_some_and(|entries| {
+            entries.flatten().any(|entry| {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                path.is_dir()
+                    && !name.starts_with('.')
+                    && !IGNORED_DIRECTORIES
+                        .iter()
+                        .any(|ignored| name == ignored.to_ascii_lowercase())
+                    && (path.join("index.html").is_file()
+                        || fs::read_dir(&path).ok().is_some_and(|children| {
+                            children
+                                .flatten()
+                                .any(|child| child.path().join("index.html").is_file())
+                        }))
+            })
+        })
+    };
+    if !with_extension("html").is_empty() || !with_extension("htm").is_empty() || html_below() {
+        let port = static_site_port(root).to_string();
+        push_process(
+            processes,
+            project,
+            root,
+            "Site estático",
+            "python",
+            &["-m", "http.server", port.as_str(), "--bind", "127.0.0.1"],
+        );
+    }
+}
+
+/// A router for `php -S` that answers `/` with a list of the folder's PHP files and leaves
+/// every other request to the server. It lives in the temporary folder, outside the project.
+fn php_listing_router() -> Option<std::path::PathBuf> {
+    const ROUTER: &str = r#"<?php
+// LocalCodePilot: lista as páginas PHP de uma pasta sem index.php.
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+if ($path !== '/') {
+    return false;
+}
+$files = glob('*.php');
+sort($files, SORT_NATURAL | SORT_FLAG_CASE);
+echo '<!doctype html><meta charset="utf-8"><title>Páginas PHP</title>';
+echo '<style>body{font-family:system-ui,sans-serif;margin:2rem}li{margin:.4rem 0}</style>';
+echo '<h1>Páginas PHP deste projeto</h1><ul>';
+foreach ($files as $file) {
+    echo '<li><a href="/' . rawurlencode($file) . '">' . htmlspecialchars($file) . '</a></li>';
+}
+echo '</ul>';
+"#;
+    let folder = std::env::temp_dir().join("localcodepilot");
+    let router = folder.join("php-listing-router.php");
+    if fs::read_to_string(&router).ok().as_deref() != Some(ROUTER) {
+        fs::create_dir_all(&folder).ok()?;
+        fs::write(&router, ROUTER).ok()?;
+    }
+    Some(router)
 }
 
 fn remove_redundant_laravel_frontend(processes: &mut Vec<ProjectProcess>) {
@@ -2622,6 +2749,64 @@ version = "0.1.0"
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].command_line(), "php -S localhost:8000");
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn projects_without_a_framework_still_start_the_plain_way() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-fallback-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+
+        // A Java program in one file, even with a pom.xml that declares no plugin.
+        fs::create_dir_all(root.join("java")).unwrap();
+        fs::write(root.join("java/pom.xml"), "<project></project>").unwrap();
+        fs::write(
+            root.join("java/Main.java"),
+            "public class Main { public static void main(String[] args) {} }",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_processes(&project("java"))[0].command_line(),
+            "java Main.java"
+        );
+
+        // PHP exercises without index.php: the server with the listing router.
+        fs::create_dir_all(root.join("php")).unwrap();
+        fs::write(root.join("php/exercicio1.php"), "<?php echo 1;").unwrap();
+        fs::write(root.join("php/exercicio2.php"), "<?php echo 2;").unwrap();
+        let php = detect_processes(&project("php"));
+        assert_eq!(php.len(), 1);
+        assert_eq!(php[0].program, "php");
+        assert_eq!(&php[0].args[..2], ["-S", "localhost:8000"]);
+        assert!(php[0].args[2].ends_with("php-listing-router.php"));
+        assert!(Path::new(&php[0].args[2]).is_file());
+        assert_eq!(php[0].expected_port, Port::new(8000));
+
+        // A browser game: `teste.html` at the root and `source_code/index.html` below.
+        fs::create_dir_all(root.join("game/source_code/js")).unwrap();
+        fs::write(root.join("game/teste.html"), "<html></html>").unwrap();
+        fs::write(root.join("game/Source_1.js"), "").unwrap();
+        fs::write(root.join("game/source_code/index.html"), "<html></html>").unwrap();
+        fs::write(root.join("game/source_code/js/main.js"), "").unwrap();
+        let game = detect_processes(&project("game"));
+        assert_eq!(game.len(), 1);
+        assert_eq!(game[0].name, "Site estático");
+
+        // A project with a real command never gets a fallback next to it.
+        fs::create_dir_all(root.join("flask/templates")).unwrap();
+        fs::write(root.join("flask/app.py"), "print('ok')").unwrap();
+        fs::write(root.join("flask/templates/index.html"), "<html></html>").unwrap();
+        let flask = detect_processes(&project("flask"));
+        assert_eq!(flask.len(), 1);
+        assert_eq!(flask[0].command_line(), "python app.py");
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
