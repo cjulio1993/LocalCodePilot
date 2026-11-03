@@ -6,7 +6,9 @@
 //! Compose provider resolves and the folder the containers were created from. Anything that
 //! cannot be confirmed blocks the actions that change the environment (fail-closed).
 
-use crate::containers::{ContainerAction, ContainerEngine, RuntimeContainer, same_folder};
+use crate::containers::{
+    ContainerAction, ContainerCommand, ContainerEngine, RuntimeContainer, same_folder,
+};
 use std::path::{Path, PathBuf};
 
 /// Project name of a Compose environment in the catalog.
@@ -301,7 +303,7 @@ pub fn explain(safety: &ComposeSafety, directory: &Path) -> BlockedAction {
         vec![
             "Adicione no topo do arquivo Compose deste projeto o trecho abaixo, com um nome que só ele use. O nome também vale quando você usa o terminal.".to_owned(),
             format!("Ou defina COMPOSE_PROJECT_NAME={suggestion} no arquivo .env da pasta do Compose."),
-            format!("Containers e volumes já criados com o nome \"{name}\" continuam existindo com esse nome e não são reaproveitados pelo nome novo. Se precisar, pare-os pelo terminal, na pasta de origem, com \"docker compose -p {name} stop\" (ou \"podman compose -p {name} stop\")."),
+            format!("Containers e volumes já criados com o nome \"{name}\" continuam existindo com esse nome e não são reaproveitados pelo nome novo. Se os containers do outro projeto estiverem rodando, use Parar containers do outro projeto, abaixo: só eles param, e nenhum volume é removido."),
             "Depois, clique em Verificar motores e arquivos.".to_owned(),
         ]
     };
@@ -432,9 +434,139 @@ pub fn suggested_project_name(directory: &Path, other: Option<&Path>, taken: &st
     suggestion
 }
 
+/// "Parar containers do outro projeto": stops, by their exact IDs, the running containers
+/// that the conflict found in the other folder. Only those IDs are stopped and no volume is
+/// removed, so the scope is known before confirming. `None` when the conflict has no other
+/// folder or nothing of it is running on `engine`.
+pub fn other_project_stop(
+    safety: &ComposeSafety,
+    engine: ContainerEngine,
+    containers: &[RuntimeContainer],
+    working_directory: &Path,
+) -> Option<ContainerCommand> {
+    let (ComposeSafety::SharedName {
+        name,
+        other: folder,
+    }
+    | ComposeSafety::UsedByAnotherFolder { name, folder }) = safety
+    else {
+        return None;
+    };
+    let ids = containers
+        .iter()
+        .filter(|container| {
+            container.engine == engine
+                && container.compose_project.as_deref() == Some(name.as_str())
+                && container
+                    .project_directory
+                    .as_deref()
+                    .is_some_and(|directory| same_folder(directory, folder))
+        })
+        // Validates the ID and keeps only running containers.
+        .filter_map(|container| container.command(ContainerAction::StopExisting))
+        .filter_map(|command| command.args.last().cloned())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return None;
+    }
+    Some(ContainerCommand {
+        action: ContainerAction::StopOtherProject,
+        label: "Parar containers do outro projeto",
+        program: engine.program(),
+        args: std::iter::once("stop".to_owned()).chain(ids).collect(),
+        working_directory: working_directory.to_path_buf(),
+    })
+}
+
+/// Checks again, right before running, that every container listed in the confirmation is
+/// still running with the same Compose name and folder. `previous` is what the confirmation
+/// showed; `current` is a fresh query of the engine.
+pub fn recheck_other_project_stop(
+    command: &ContainerCommand,
+    previous: &[RuntimeContainer],
+    current: &[RuntimeContainer],
+) -> Result<(), String> {
+    for id in command.args.iter().skip(1) {
+        let shown = previous
+            .iter()
+            .find(|container| &container.id == id)
+            .ok_or("Os containers mudaram desde a confirmação; verifique de novo.")?;
+        let now = current
+            .iter()
+            .find(|container| &container.id == id)
+            .ok_or_else(|| format!("O container {} não existe mais.", shown.name))?;
+        let same_origin = now.compose_project == shown.compose_project
+            && match (&now.project_directory, &shown.project_directory) {
+                (Some(now), Some(shown)) => same_folder(now, shown),
+                _ => false,
+            };
+        if !same_origin {
+            return Err(format!(
+                "O container {} mudou desde a confirmação; verifique de novo.",
+                shown.name
+            ));
+        }
+        if !now.state.eq_ignore_ascii_case("running") {
+            return Err(format!("O container {} já está parado.", shown.name));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_the_other_project_lists_only_its_running_containers() {
+        let mine = root().join("loja").join("docker");
+        let other = root().join("site").join("docker");
+        let with = |id: &str, name: &str, project: &str, folder: &Path, state: &str| {
+            let mut found = container(name, Some(project), Some(folder.to_path_buf()));
+            found.id = id.into();
+            found.state = state.into();
+            found
+        };
+        let containers = vec![
+            with("aaaaaa111111", "docker-db-1", "docker", &other, "running"),
+            with("bbbbbb222222", "docker-web-1", "docker", &other, "exited"),
+            with("cccccc333333", "docker-app-1", "docker", &mine, "running"),
+            with("dddddd444444", "outro-db-1", "outro", &other, "running"),
+        ];
+        let safety = ComposeSafety::UsedByAnotherFolder {
+            name: "docker".into(),
+            folder: other.clone(),
+        };
+        let command =
+            other_project_stop(&safety, ContainerEngine::Docker, &containers, &mine).unwrap();
+        assert_eq!(command.action, ContainerAction::StopOtherProject);
+        assert_eq!(command.display(), "docker stop aaaaaa111111");
+        assert!(command.action.changes_environment());
+        // The other engine has nothing of it, and a safe environment offers nothing.
+        assert!(other_project_stop(&safety, ContainerEngine::Podman, &containers, &mine).is_none());
+        assert!(
+            other_project_stop(
+                &ComposeSafety::Safe,
+                ContainerEngine::Docker,
+                &containers,
+                &mine
+            )
+            .is_none()
+        );
+
+        // Right before running, the listed container must still be the same and running.
+        assert_eq!(
+            recheck_other_project_stop(&command, &containers, &containers),
+            Ok(())
+        );
+        let mut stopped = containers.clone();
+        stopped[0].state = "exited".into();
+        assert!(recheck_other_project_stop(&command, &containers, &stopped).is_err());
+        let mut moved = containers.clone();
+        moved[0].project_directory = Some(mine.clone());
+        assert!(recheck_other_project_stop(&command, &containers, &moved).is_err());
+        assert!(recheck_other_project_stop(&command, &containers, &containers[1..]).is_err());
+    }
 
     fn root() -> PathBuf {
         std::env::temp_dir().join("lcp-compose-safety")

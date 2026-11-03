@@ -185,7 +185,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Em Containers, cada projeto aparece com seus serviços e o estado de cada um: Rodando, Parado, Pausado, Com problema ou Ainda não criado. Iniciar e Parar ficam no projeto e pedem confirmação. Antes de parar, a confirmação diz quais serviços vão parar e quais continuam rodando; o Parar do cartão usa a mesma confirmação. Use Buscar projeto ou serviço quando a lista for longa; Detalhes técnicos mostra imagem, portas, ID e o comando exato. Containers que não são de um projeto da lista ficam em Outros containers. Um container rodando ou uma porta publicada não prova que o site está respondendo.",
             ),
             Block::Text(
-                "Dois projetos com o mesmo nome de ambiente Compose, por exemplo duas pastas docker/ com compose.yaml, ficam bloqueados para iniciar e parar até receberem nomes diferentes. Isso evita que um projeto altere os containers e os dados do outro. No aviso do ambiente, Como resolver mostra os passos e a configuração sugerida.",
+                "Dois projetos com o mesmo nome de ambiente Compose, por exemplo duas pastas docker/ com compose.yaml, ficam bloqueados para iniciar e parar até receberem nomes diferentes. Isso evita que um projeto altere os containers e os dados do outro. No aviso do ambiente, Como resolver mostra os passos e a configuração sugerida; se os containers do outro projeto estiverem rodando, Parar containers do outro projeto para só eles, sem remover volumes.",
             ),
         ],
         link: Some((Page::Containers, "Abrir Containers")),
