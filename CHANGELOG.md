@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- Projetos Deno iniciam sem pedir comando: as tarefas contínuas do `deno.json` ou `deno.jsonc` (`deno task dev`) ou, sem tarefas, o arquivo de entrada (`main.ts`, `server.ts`) com `deno run --allow-net --allow-read --allow-env`.
 - Projetos Ruby iniciam sem pedir comando: Rails com `ruby bin/rails server` (porta 3000), apps Rack com `bundle exec rackup` (9292), Sinatra com `ruby app.rb` (4567) e programas `main.rb`/`app.rb`. Com Gemfile, **Instalar dependências** roda `bundle install` dentro de `vendor/bundle` do próprio projeto, sem misturar com as gems de outros projetos.
 - Projetos .NET (C#, F#, VB) iniciam sem pedir comando: `dotnet run --project` para apps web (ASP.NET, Blazor) e programas de console ou worker, inclusive os listados num `.sln` em subpastas. Bibliotecas e projetos de teste ficam de fora, e a porta vem do perfil do `launchSettings.json`.
 - No aviso de conflito do Compose, quando os containers do outro projeto estão rodando, o botão **Parar containers do outro projeto** os para sem sair do app. A confirmação lista os containers, avisa que os volumes não serão removidos, e o app confere de novo, logo antes de executar, que eles continuam os mesmos e rodando. Antes, era preciso usar `docker compose -p <nome> stop` no terminal.

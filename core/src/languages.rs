@@ -223,7 +223,7 @@ pub const LANGUAGES: &[Language] = &[
         programs: &[program("deno", &["--version"])],
         images: &["denoland/deno"],
         install_dirs: &[InstallDir::Home(".deno/bin")],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Cpp,

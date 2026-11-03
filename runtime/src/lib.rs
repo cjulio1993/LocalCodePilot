@@ -843,6 +843,7 @@ fn detect_processes_in_directory(
     detect_cargo_process(project, directory, processes);
     detect_go_process(project, directory, processes);
     detect_dotnet_process(project, directory, processes);
+    detect_deno_process(project, directory, processes);
     detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
@@ -1218,6 +1219,44 @@ fn detect_ruby_process(project: &Project, directory: &Path, processes: &mut Vec<
     }
 }
 
+/// Deno: the long-running tasks of `deno.json` (`deno task dev`); without tasks, the entry
+/// file (`main.ts`, `server.ts`, `main.js`) with network, read and environment access, the
+/// permissions a local web server needs.
+fn detect_deno_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let Some(manifest) = ["deno.json", "deno.jsonc"]
+        .into_iter()
+        .find(|name| directory.join(name).is_file())
+    else {
+        return;
+    };
+    let before = processes.len();
+    detect_json_commands(
+        project,
+        directory,
+        manifest,
+        "tasks",
+        "deno",
+        &["task"],
+        processes,
+    );
+    if processes.len() > before {
+        return;
+    }
+    if let Some(entry) = ["main.ts", "server.ts", "main.js", "server.js"]
+        .into_iter()
+        .find(|name| directory.join(name).is_file())
+    {
+        push_process(
+            processes,
+            project,
+            directory,
+            &format!("Executar {entry}"),
+            "deno",
+            &["run", "--allow-net", "--allow-read", "--allow-env", entry],
+        );
+    }
+}
+
 fn detect_dart_or_flutter_process(
     project: &Project,
     directory: &Path,
@@ -1554,13 +1593,35 @@ fn detect_json_scripts(
     prefix: &[&str],
     processes: &mut Vec<ProjectProcess>,
 ) {
+    detect_json_commands(
+        project, directory, manifest, "scripts", program, prefix, processes,
+    );
+}
+
+/// One process per long-running entry of `key` in a JSON manifest: `scripts` in
+/// `package.json`, `tasks` in `deno.json`. Whole-line `//` comments (`deno.jsonc`) are
+/// ignored.
+fn detect_json_commands(
+    project: &Project,
+    directory: &Path,
+    manifest: &str,
+    key: &str,
+    program: &str,
+    prefix: &[&str],
+    processes: &mut Vec<ProjectProcess>,
+) {
     let Ok(contents) = fs::read_to_string(directory.join(manifest)) else {
         return;
     };
+    let contents = contents
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let Ok(document) = serde_json::from_str::<serde_json::Value>(&contents) else {
         return;
     };
-    let Some(scripts) = document.get("scripts").and_then(|value| value.as_object()) else {
+    let Some(scripts) = document.get(key).and_then(|value| value.as_object()) else {
         return;
     };
     let mut names: Vec<_> = scripts
@@ -3041,6 +3102,54 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_deno_tasks_and_entry_files() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-deno-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+        let commands = |name: &str| {
+            detect_processes(&project(name))
+                .iter()
+                .map(|process| process.command_line())
+                .collect::<Vec<_>>()
+        };
+
+        // Tasks in deno.jsonc, with comments: only the long-running one starts.
+        fs::create_dir_all(root.join("fresh")).unwrap();
+        fs::write(
+            root.join("fresh/deno.jsonc"),
+            "{\n  // tarefas do projeto\n  \"tasks\": { \"dev\": \"deno run -A --watch main.ts\", \"check\": \"deno check main.ts\" }\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("fresh/main.ts"),
+            "Deno.serve(() => new Response('ok'));\n",
+        )
+        .unwrap();
+        assert_eq!(commands("fresh"), ["deno task dev"]);
+
+        // No tasks: the entry file, with the permissions of a local server.
+        fs::create_dir_all(root.join("api")).unwrap();
+        fs::write(root.join("api/deno.json"), "{ \"imports\": {} }\n").unwrap();
+        fs::write(
+            root.join("api/main.ts"),
+            "Deno.serve(() => new Response('ok'));\n",
+        )
+        .unwrap();
+        assert_eq!(
+            commands("api"),
+            ["deno run --allow-net --allow-read --allow-env main.ts"]
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
