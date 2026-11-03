@@ -42,6 +42,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Projetos sem framework não pedem mais um comando para iniciar: um arquivo Java com `main` roda com `java Main.java`, uma pasta de páginas PHP sem `index.php` abre com uma página que lista os arquivos, e páginas HTML sem `index.html` na raiz (como um jogo com `teste.html` e `source_code/index.html`) abrem como site estático. Antes, esses projetos mostravam "Reconhecemos Node, mas precisamos do comando para iniciar este projeto".
 - A busca pela porta de um servidor só adota portas que respondem como servidor web. Antes, um projeto Spring Boot com Gradle ficava preso na porta do daemon do Gradle e mostrava "Site sem resposta".
 - Spring Boot com Gradle inicia com `--no-daemon`: uma partida que falha, por exemplo com a porta ocupada, não deixa mais um processo Java do Gradle rodando em segundo plano.
 - Num projeto Lumen recém-clonado, **Instalar dependências** também cria o `.env` a partir do `.env.example`.
