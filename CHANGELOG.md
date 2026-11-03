@@ -43,6 +43,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- **Abrir no VS Code** não abre mais o projeto em modo restrito. O app passava ao VS Code o caminho no formato interno do Windows, com o prefixo `\\?\`, que o VS Code trata como uma pasta diferente da que você marcou como confiável; agora passa o caminho normal.
 - Em Containers, a escolha "Iniciar com: Podman" não volta mais para Docker na verificação automática a cada 15 segundos. Antes, o ambiente podia subir no Docker mesmo com o Podman escolhido. Com essa correção, Containers com Podman foram validados de ponta a ponta no Windows 11 (iniciar, endereço, logs e parar) e deixam de ser experimentais.
 - Projetos sem framework não pedem mais um comando para iniciar: um arquivo Java com `main` roda com `java Main.java`, uma pasta de páginas PHP sem `index.php` abre com uma página que lista os arquivos, e páginas HTML sem `index.html` na raiz (como um jogo com `teste.html` e `source_code/index.html`) abrem como site estático. Antes, esses projetos mostravam "Reconhecemos Node, mas precisamos do comando para iniciar este projeto".
 - A busca pela porta de um servidor só adota portas que respondem como servidor web. Antes, um projeto Spring Boot com Gradle ficava preso na porta do daemon do Gradle e mostrava "Site sem resposta".
