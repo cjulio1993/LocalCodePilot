@@ -87,12 +87,12 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Node.js / JavaScript | Sim | Sim | Experimental | Sim | Sim |
 | PHP (`php -S`) | Sim | Sim | Experimental | Sim | Sim |
 | Laravel | Sim | Sim | Experimental | Sim, com `.env`, chave e tabelas SQLite preparados num projeto recém-clonado | Sim |
-| Lumen | Sim | Sim | Experimental | Experimental | Experimental |
+| Lumen | Sim | Sim | Experimental | Sim, com `.env` preparado num projeto recém-clonado | Sim |
 | PHP com Compose | Sim | Docker/Podman instalados pelo usuário | Não instala o motor | Iniciar os serviços em Containers | Endereço provável, em Containers |
 | Python (`app.py`, `main.py`) / Flask | Sim | Sim | Experimental | Sim | Sim |
 | Django | Sim | Sim | Experimental | Sim | Sim |
 | Java / Spring Boot com Maven wrapper | Sim | Sim | Experimental | Sim | Sim |
-| Java com Gradle | Sim | Sim | Experimental | Experimental | Experimental |
+| Java / Spring Boot com Gradle wrapper | Sim | Sim | Experimental | Sim | Sim |
 | Go (`go run .` ou `go run ./cmd/<nome>`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
 | Dart (`bin/main.dart`, `bin/server.dart`, `bin/<pacote>.dart`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
 | Flutter | Sim | Sim | Não | Sim: web (`web-server`, porta 4180) e Windows | Flutter web sim; o app desktop abre a própria janela |
@@ -397,12 +397,12 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Node.js / JavaScript | Yes | Yes | Experimental | Yes | Yes |
 | PHP (`php -S`) | Yes | Yes | Experimental | Yes | Yes |
 | Laravel | Yes | Yes | Experimental | Yes, preparing `.env`, the key, and SQLite tables in a freshly cloned project | Yes |
-| Lumen | Yes | Yes | Experimental | Experimental | Experimental |
+| Lumen | Yes | Yes | Experimental | Yes, preparing `.env` in a freshly cloned project | Yes |
 | PHP with Compose | Yes | User-provided Docker/Podman | Does not install the engine | Start services in Containers | Likely address, in Containers |
 | Python (`app.py`, `main.py`) / Flask | Yes | Yes | Experimental | Yes | Yes |
 | Django | Yes | Yes | Experimental | Yes | Yes |
 | Java / Spring Boot with the Maven wrapper | Yes | Yes | Experimental | Yes | Yes |
-| Java with Gradle | Yes | Yes | Experimental | Experimental | Experimental |
+| Java / Spring Boot with the Gradle wrapper | Yes | Yes | Experimental | Yes | Yes |
 | Go (`go run .` or `go run ./cmd/<name>`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
 | Dart (`bin/main.dart`, `bin/server.dart`, `bin/<package>.dart`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
 | Flutter | Yes | Yes | No | Yes: web (`web-server`, port 4180) and Windows | Flutter web yes; the desktop app opens its own window |

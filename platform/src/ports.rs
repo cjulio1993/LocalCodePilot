@@ -1,7 +1,8 @@
 use localcodepilot_core::ports::Port;
 use std::{
-    io::ErrorKind,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener},
+    io::{ErrorKind, Read, Write},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream},
+    time::Duration,
 };
 #[cfg(target_os = "windows")]
 use std::{
@@ -230,6 +231,35 @@ fn hidden_windows_command(program: &str) -> Command {
     command
 }
 
+/// Whether something answering HTTP listens on `port` of this computer. Tools listen on
+/// ports of their own (the Gradle daemon, language servers, debuggers); only a port that
+/// answers like a web server can be the address of a site.
+pub fn answers_http(port: Port) -> bool {
+    let timeout = Duration::from_millis(1500);
+    [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ]
+    .into_iter()
+    .any(|address| {
+        let Ok(mut stream) =
+            TcpStream::connect_timeout(&SocketAddr::new(address, port.value()), timeout)
+        else {
+            return false;
+        };
+        let _ = stream.set_read_timeout(Some(timeout));
+        let _ = stream.set_write_timeout(Some(timeout));
+        if stream
+            .write_all(b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .is_err()
+        {
+            return false;
+        }
+        let mut start = [0_u8; 5];
+        stream.read_exact(&mut start).is_ok() && &start == b"HTTP/"
+    })
+}
+
 /// Every process listening on `port` on this computer. A project and another program can
 /// listen on the same port at once on Windows, for example one on `127.0.0.1` and the other
 /// on `[::]`.
@@ -355,6 +385,33 @@ fn ss_listeners(output: &str) -> Vec<(u16, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_port_that_speaks_http_counts_as_a_site() {
+        // A server that answers HTTP.
+        let web = TcpListener::bind("127.0.0.1:0").unwrap();
+        let web_port = Port::new(web.local_addr().unwrap().port()).unwrap();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = web.accept() {
+                let mut request = [0_u8; 64];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        assert!(answers_http(web_port));
+        server.join().unwrap();
+
+        // A tool port that accepts and closes without HTTP, like a daemon.
+        let tool = TcpListener::bind("127.0.0.1:0").unwrap();
+        let tool_port = Port::new(tool.local_addr().unwrap().port()).unwrap();
+        let daemon = std::thread::spawn(move || {
+            if let Ok((stream, _)) = tool.accept() {
+                drop(stream);
+            }
+        });
+        assert!(!answers_http(tool_port));
+        daemon.join().unwrap();
+    }
 
     #[test]
     fn listeners_from_lsof_and_ss_skip_other_interfaces() {
