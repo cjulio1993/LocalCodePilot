@@ -842,6 +842,7 @@ fn detect_processes_in_directory(
     let php_framework = artisan_root.and_then(detect_php_framework);
     detect_cargo_process(project, directory, processes);
     detect_go_process(project, directory, processes);
+    detect_dotnet_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
         detect_laravel_frontend_process(project, directory, processes);
@@ -1036,6 +1037,131 @@ fn detect_go_server_port(directory: &Path) -> Option<u16> {
                     .ok()
             })
         })
+}
+
+const DOTNET_PROJECT_EXTENSIONS: [&str; 3] = ["csproj", "fsproj", "vbproj"];
+
+/// A .NET project that `dotnet run` can start: a web app (`Microsoft.NET.Sdk.Web`, Blazor) or
+/// a console or worker program (`<OutputType>Exe</OutputType>`). Libraries and test projects
+/// are left out.
+fn dotnet_runnable(project_file: &Path) -> Option<bool> {
+    let contents = fs::read_to_string(project_file).ok()?.to_ascii_lowercase();
+    if contents.contains("microsoft.net.test.sdk")
+        || contents.contains("<istestproject>true</istestproject>")
+    {
+        return None;
+    }
+    let web = contents.contains("microsoft.net.sdk.web")
+        || contents.contains("microsoft.net.sdk.blazorwebassembly")
+        || contents.contains("microsoft.net.sdk.razor");
+    let executable = contents.contains("<outputtype>exe</outputtype>")
+        || contents.contains("<outputtype>winexe</outputtype>")
+        || contents.contains("microsoft.net.sdk.worker");
+    (web || executable).then_some(web)
+}
+
+/// The first http address of the `Project` profiles in `Properties/launchSettings.json`, the
+/// one `dotnet run` uses by default.
+fn dotnet_launch_port(project_file: &Path) -> Option<Port> {
+    let settings = project_file
+        .parent()?
+        .join("Properties/launchSettings.json");
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(settings).ok()?).ok()?;
+    settings
+        .get("profiles")?
+        .as_object()?
+        .values()
+        .filter(|profile| {
+            profile.get("commandName").and_then(|name| name.as_str()) == Some("Project")
+        })
+        .filter_map(|profile| profile.get("applicationUrl")?.as_str())
+        .flat_map(|urls| urls.split(';'))
+        .find_map(|url| {
+            let rest = url.trim().strip_prefix("http://")?;
+            let port = rest.split('/').next()?.rsplit_once(':')?.1;
+            Port::new(port.parse().ok()?)
+        })
+}
+
+/// `dotnet run --project <file>` for every runnable project in this folder, and for the
+/// projects a solution (`.sln`) lists in its subfolders. A project already started from a
+/// solution higher up is not listed twice.
+fn detect_dotnet_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut files = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    files.sort();
+    let has_extension = |path: &Path, extensions: &[&str]| {
+        path.extension().is_some_and(|extension| {
+            extensions
+                .iter()
+                .any(|wanted| extension.eq_ignore_ascii_case(wanted))
+        })
+    };
+    let mut project_files = files
+        .iter()
+        .filter(|path| has_extension(path, &DOTNET_PROJECT_EXTENSIONS))
+        .cloned()
+        .collect::<Vec<_>>();
+    for solution in files.iter().filter(|path| has_extension(path, &["sln"])) {
+        let Ok(contents) = fs::read_to_string(solution) else {
+            continue;
+        };
+        for line in contents.lines().filter(|line| line.starts_with("Project(")) {
+            let Some(relative) = line.split('"').nth(5) else {
+                continue;
+            };
+            let path = directory.join(relative.replace('\\', "/"));
+            if has_extension(&path, &DOTNET_PROJECT_EXTENSIONS) && path.is_file() {
+                project_files.push(path);
+            }
+        }
+    }
+    for project_file in project_files {
+        let already_listed = processes.iter().any(|process| {
+            process.program == "dotnet"
+                && process.args.last().is_some_and(|file| {
+                    localcodepilot_core::containers::same_folder(
+                        &process.working_directory.join(file),
+                        &project_file,
+                    )
+                })
+        });
+        let Some(web) = dotnet_runnable(&project_file).filter(|_| !already_listed) else {
+            continue;
+        };
+        let relative = project_file
+            .strip_prefix(directory)
+            .unwrap_or(&project_file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let stem = project_file
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name = if web {
+            format!("Servidor ASP.NET ({stem})")
+        } else {
+            format!("Executar {stem}")
+        };
+        push_process(
+            processes,
+            project,
+            directory,
+            &name,
+            "dotnet",
+            &["run", "--project", &relative],
+        );
+        if web && let Some(process) = processes.last_mut() {
+            process.expected_port = dotnet_launch_port(&project_file);
+        }
+    }
 }
 
 fn detect_dart_or_flutter_process(
@@ -2805,6 +2931,86 @@ version = "0.1.0"
         let flask = detect_processes(&project("flask"));
         assert_eq!(flask.len(), 1);
         assert_eq!(flask[0].command_line(), "python app.py");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_dotnet_web_and_console_projects() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-dotnet-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+
+        // A web API at the root, with the port of its launch profile.
+        fs::create_dir_all(root.join("api/Properties")).unwrap();
+        fs::write(
+            root.join("api/Api.csproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("api/Properties/launchSettings.json"),
+            r#"{"profiles":{"http":{"commandName":"Project","applicationUrl":"http://localhost:5123"},"IIS Express":{"commandName":"IISExpress"}}}"#,
+        )
+        .unwrap();
+        let api = detect_processes(&project("api"));
+        assert_eq!(api.len(), 1);
+        assert_eq!(api[0].command_line(), "dotnet run --project Api.csproj");
+        assert_eq!(api[0].name, "Servidor ASP.NET (Api)");
+        assert_eq!(api[0].expected_port, Port::new(5123));
+
+        // A solution: the web app and the console program start, the library and tests do not.
+        fs::create_dir_all(root.join("loja/src/Loja.Web")).unwrap();
+        fs::create_dir_all(root.join("loja/src/Loja.Dominio")).unwrap();
+        fs::create_dir_all(root.join("loja/tools/Importador")).unwrap();
+        fs::create_dir_all(root.join("loja/tests/Loja.Testes")).unwrap();
+        fs::write(
+            root.join("loja/src/Loja.Web/Loja.Web.csproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk.Web"></Project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("loja/src/Loja.Dominio/Loja.Dominio.csproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk"></Project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("loja/tools/Importador/Importador.fsproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("loja/tests/Loja.Testes/Loja.Testes.csproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup><ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" /></ItemGroup></Project>"#,
+        )
+        .unwrap();
+        let solution = [
+            r#"Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Loja.Web", "src\Loja.Web\Loja.Web.csproj", "{1}""#,
+            r#"Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Loja.Dominio", "src\Loja.Dominio\Loja.Dominio.csproj", "{2}""#,
+            r#"Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Importador", "tools\Importador\Importador.fsproj", "{3}""#,
+            r#"Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Loja.Testes", "tests\Loja.Testes\Loja.Testes.csproj", "{4}""#,
+        ]
+        .join("\n");
+        fs::write(root.join("loja/Loja.sln"), solution).unwrap();
+        // With Git the subfolders are visited too, and nothing is listed twice.
+        fs::create_dir_all(root.join("loja/.git")).unwrap();
+        let loja = detect_processes(&project("loja"))
+            .iter()
+            .map(|process| process.command_line())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            loja,
+            [
+                "dotnet run --project src/Loja.Web/Loja.Web.csproj",
+                "dotnet run --project tools/Importador/Importador.fsproj",
+            ]
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

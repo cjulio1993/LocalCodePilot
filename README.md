@@ -96,7 +96,8 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Go (`go run .` ou `go run ./cmd/<nome>`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
 | Dart (`bin/main.dart`, `bin/server.dart`, `bin/<pacote>.dart`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
 | Flutter | Sim | Sim | Não | Sim: web (`web-server`, porta 4180) e Windows | Flutter web sim; o app desktop abre a própria janela |
-| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
+| .NET (C#, F#) | Sim | Sim | Não | Sim (`dotnet run --project`) | Sim, na porta do `launchSettings.json` |
+| Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
 | Containers / Docker / Podman | Sim | Sim; não instala o motor | Não | Sim, com Docker ou Podman (escolha em "Iniciar com") | Sim, pelo endereço publicado, em Containers |
@@ -408,7 +409,8 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Go (`go run .` or `go run ./cmd/<name>`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
 | Dart (`bin/main.dart`, `bin/server.dart`, `bin/<package>.dart`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
 | Flutter | Yes | Yes | No | Yes: web (`web-server`, port 4180) and Windows | Flutter web yes; the desktop app opens its own window |
-| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | With the command you define | Yes, when the program is a web server |
+| .NET (C#, F#) | Yes | Yes | No | Yes (`dotnet run --project`) | Yes, on the `launchSettings.json` port |
+| Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | With the command you define | Yes, when the program is a web server |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
 | Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
 | Containers / Docker / Podman | Yes | Yes; does not install the engine | No | Yes, with Docker or Podman (choose under "Start with") | Yes, through the published address, in Containers |
