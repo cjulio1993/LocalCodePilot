@@ -81,27 +81,37 @@ O aplicativo salva localmente pastas de busca, favoritos, recentes, histórico d
 
 Reconhecer um projeto não significa que todo o fluxo de preparação, execução e abertura já esteja concluído. A matriz abaixo descreve o estado real da versão alpha:
 
-| Ecossistema | Reconhece no projeto | Verifica no computador | Preparação assistida no Windows | Inicia e abre |
-| --- | --- | --- | --- | --- |
-| Rust / Cargo | Sim | Sim | Não | Experimental |
-| Node.js / JavaScript | Sim | Sim | Experimental | Experimental |
-| PHP / Laravel / Lumen | Sim | Sim | Experimental | Experimental com `php -S` ou Artisan, conforme o framework |
-| PHP com Compose | Sim | Docker/Podman instalados pelo usuário | Não instala o motor | Iniciar os serviços em Containers |
-| Python / Django | Sim | Sim | Experimental | Experimental |
-| Java / Spring Boot | Sim | Sim | Experimental | Experimental |
-| Go | Sim | Sim | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
-| Dart | Sim | Sim | Implementação inicial não validada | Ainda não suportada de ponta a ponta |
-| Flutter | Sim | Sim | Não | Ainda não suportada de ponta a ponta |
-| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Ainda não |
-| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Sim | Sim | Não | Ainda não |
-| Site estático / JavaScript sem framework | Experimental | Requer um servidor local disponível | Não | Experimental |
-| Containers / Docker / Podman | Experimental | Não instala o motor | Não | Docker e Podman validados pela interface no Windows 11 |
+| Ecossistema | Reconhece no projeto | Verifica no computador | Preparação assistida no Windows | Inicia | Abre no navegador |
+| --- | --- | --- | --- | --- | --- |
+| Rust / Cargo | Sim | Sim | Não | Sim | Sim, quando o programa é um servidor web |
+| Node.js / JavaScript | Sim | Sim | Experimental | Sim | Sim |
+| PHP (`php -S`) | Sim | Sim | Experimental | Sim | Sim |
+| Laravel | Sim | Sim | Experimental | Sim, com `.env`, chave e tabelas SQLite preparados num projeto recém-clonado | Sim |
+| Lumen | Sim | Sim | Experimental | Experimental | Experimental |
+| PHP com Compose | Sim | Docker/Podman instalados pelo usuário | Não instala o motor | Iniciar os serviços em Containers | Endereço provável, em Containers |
+| Python (`app.py`, `main.py`) / Flask | Sim | Sim | Experimental | Sim | Sim |
+| Django | Sim | Sim | Experimental | Sim | Sim |
+| Java / Spring Boot com Maven wrapper | Sim | Sim | Experimental | Sim | Sim |
+| Java com Gradle | Sim | Sim | Experimental | Experimental | Experimental |
+| Go | Sim | Sim | Implementação inicial não validada | Ainda não validado de ponta a ponta | Ainda não validado |
+| Dart | Sim | Sim | Implementação inicial não validada | Ainda não validado de ponta a ponta | Ainda não validado |
+| Flutter | Sim | Sim | Não | Ainda não validado de ponta a ponta | Só Flutter web, ainda não validado |
+| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Ainda não | Ainda não |
+| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Sim | Sim | Não | Ainda não | Ainda não |
+| Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
+| Containers / Docker / Podman | Experimental | Não instala o motor | Não | Docker e Podman validados pela interface no Windows 11 | Endereço provável, em Containers |
+
+"Sim" em **Inicia** e **Abre no navegador** quer dizer validado de ponta a ponta no Windows 11 com um projeto de referência: instalar dependências, iniciar, encontrar a porta do próprio processo, receber resposta do site, parar, reiniciar e avisar quando outro programa ocupa a porta. No macOS e no Linux, os testes automáticos rodam a cada alteração; a validação de ponta a ponta no macOS acontece antes da publicação da Alpha 8.
 
 "Reconhece no projeto" usa manifests e arquivos de código; uma linguagem que o aplicativo ainda não inicia precisa de um manifest ou de dois arquivos de código na mesma pasta. A linguagem também é reconhecida pela imagem de um serviço do Compose ou pelo `FROM` do Dockerfile (por exemplo, `python:3.12-slim`), e o cartão diz de onde ela veio: "nos arquivos do projeto" ou "na imagem do serviço api". Bancos, servidores web e outras imagens que não são de linguagem não contam.
 
 "Verifica no computador" é a seção **Linguagens neste computador**, em Configurações: o aplicativo procura o programa de cada linguagem no `PATH` e nas pastas padrão de instalação, pergunta a versão com tempo limite de 10 segundos e mostra "Instalado · versão", "Instalado · Versão indisponível" ou "Não encontrado nos locais verificados"; os locais verificados e o caminho do programa ficam em Detalhes técnicos. O atalho `python.exe` da Microsoft Store, sem Python instalado por trás, conta como não encontrado. Nada é instalado por essa seção.
 
 Go, Dart e Flutter têm comandos detectados, mas ainda não foram validados de ponta a ponta. Para as linguagens marcadas "Ainda não", o cartão diz que a linguagem foi reconhecida e que o LocalCodePilot ainda não inicia projetos dela.
+
+O endereço do site vem do que o servidor escreve no log (`http://localhost:3000`) ou, quando ele não escreve, da porta em que o próprio processo, ou um processo filho, está ouvindo, consultada no sistema (no Windows, a tabela TCP; no macOS, `lsof`; no Linux, `lsof` ou `ss`). Assim, servidores como Express, Spring Boot ou um servidor Rust próprio aparecem com **Abrir site** mesmo sem imprimir o endereço. Se o servidor fecha porque a porta já está em uso, o cartão diz "Outro programa está usando a porta" e o log informa qual programa é.
+
+No Windows, caminhos com mais de 260 caracteres fazem o `pip` e o Maven wrapper falharem ao instalar dependências. Prefira pastas de projeto curtas ou ative o suporte a caminhos longos do Windows.
 
 ### Classificação e execução
 
@@ -381,27 +391,37 @@ The app locally stores scan folders, favorites, recent projects, service history
 
 Recognizing a project does not mean that its preparation, execution, and browser-opening workflow is complete. This matrix describes the actual alpha status:
 
-| Ecosystem | Recognized in the project | Checked on this computer | Assisted Windows setup | Starts and opens |
-| --- | --- | --- | --- | --- |
-| Rust / Cargo | Yes | Yes | No | Experimental |
-| Node.js / JavaScript | Yes | Yes | Experimental | Experimental |
-| PHP / Laravel / Lumen | Yes | Yes | Experimental | Experimental with `php -S` or Artisan, depending on the framework |
-| PHP with Compose | Yes | User-provided Docker/Podman | Does not install the engine | Start services in Containers |
-| Python / Django | Yes | Yes | Experimental | Experimental |
-| Java / Spring Boot | Yes | Yes | Experimental | Experimental |
-| Go | Yes | Yes | Initial implementation, not validated | Not yet supported end to end |
-| Dart | Yes | Yes | Initial implementation, not validated | Not yet supported end to end |
-| Flutter | Yes | Yes | No | Not yet supported end to end |
-| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | Not yet |
-| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Yes | Yes | No | Not yet |
-| Static site / frameworkless JavaScript | Experimental | Requires an available local server | No | Experimental |
-| Containers / Docker / Podman | Experimental | Does not install the engine | No | Docker and Podman validated in the Windows 11 UI |
+| Ecosystem | Recognized in the project | Checked on this computer | Assisted Windows setup | Starts | Opens in the browser |
+| --- | --- | --- | --- | --- | --- |
+| Rust / Cargo | Yes | Yes | No | Yes | Yes, when the program is a web server |
+| Node.js / JavaScript | Yes | Yes | Experimental | Yes | Yes |
+| PHP (`php -S`) | Yes | Yes | Experimental | Yes | Yes |
+| Laravel | Yes | Yes | Experimental | Yes, preparing `.env`, the key, and SQLite tables in a freshly cloned project | Yes |
+| Lumen | Yes | Yes | Experimental | Experimental | Experimental |
+| PHP with Compose | Yes | User-provided Docker/Podman | Does not install the engine | Start services in Containers | Likely address, in Containers |
+| Python (`app.py`, `main.py`) / Flask | Yes | Yes | Experimental | Yes | Yes |
+| Django | Yes | Yes | Experimental | Yes | Yes |
+| Java / Spring Boot with the Maven wrapper | Yes | Yes | Experimental | Yes | Yes |
+| Java with Gradle | Yes | Yes | Experimental | Experimental | Experimental |
+| Go | Yes | Yes | Initial implementation, not validated | Not yet validated end to end | Not yet validated |
+| Dart | Yes | Yes | Initial implementation, not validated | Not yet validated end to end | Not yet validated |
+| Flutter | Yes | Yes | No | Not yet validated end to end | Flutter web only, not yet validated |
+| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | Not yet | Not yet |
+| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Yes | Yes | No | Not yet | Not yet |
+| Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
+| Containers / Docker / Podman | Experimental | Does not install the engine | No | Docker and Podman validated in the Windows 11 UI | Likely address, in Containers |
+
+"Yes" under **Starts** and **Opens in the browser** means validated end to end on Windows 11 with a reference project: install dependencies, start, find the port of the process itself, get a response from the site, stop, restart, and report when another program holds the port. On macOS and Linux, automated tests run on every change; end-to-end validation on macOS happens before Alpha 8 is published.
 
 "Recognized in the project" uses manifests and source files; a language the app does not start yet needs a manifest or two source files in the same folder. A language is also recognized from a Compose service image or a Dockerfile `FROM` (for example, `python:3.12-slim`), and the card says where it came from: "in the project files" or "in the image of service api". Databases, web servers, and other non-language images do not count.
 
 "Checked on this computer" is the **Languages on this computer** section in Settings: the app looks for each language's program in `PATH` and in default install folders, asks for its version with a 10-second limit, and shows "Installed · version", "Installed · version unavailable", or "Not found in the checked locations"; the checked locations and the program path are under Technical details. The Microsoft Store `python.exe` shortcut without Python installed behind it counts as not found. Nothing is installed from this section.
 
 Go, Dart, and Flutter have detected commands but are not yet validated end to end. For languages marked "Not yet", the card says the language was recognized and that LocalCodePilot does not start its projects yet.
+
+The site address comes from what the server prints in its log (`http://localhost:3000`) or, when it prints nothing, from the port the process itself or a child process listens on, read from the system (the TCP table on Windows, `lsof` on macOS, `lsof` or `ss` on Linux). Servers such as Express, Spring Boot, or a custom Rust server therefore show **Open site** even without printing their address. If the server closes because its port is already in use, the card says "Another program is using the port" and the log names the program.
+
+On Windows, paths longer than 260 characters make `pip` and the Maven wrapper fail while installing dependencies. Prefer short project folders or enable Windows long path support.
 
 ### Classification and execution
 
