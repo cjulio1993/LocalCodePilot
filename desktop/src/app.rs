@@ -53,8 +53,8 @@ use localcodepilot_runtime::{
     ManifestRuntimeDetector, detect_clojure_java_requirement, detect_clojure_requirement,
     detect_dart_requirement, detect_go_requirement, detect_haskell_requirement,
     detect_java_requirement, detect_node_requirement, detect_php_extensions,
-    detect_php_requirement, detect_processes, detect_python_requirement, node_package_manager_spec,
-    node_version_matches, runtime_version_matches,
+    detect_php_requirement, detect_processes, detect_python_requirement, detect_zig_requirement,
+    node_package_manager_spec, node_version_matches, runtime_version_matches,
 };
 use sha2::{Digest, Sha384};
 use std::{
@@ -291,6 +291,7 @@ struct RuntimeInventory {
     dart: Option<ProgramInventory>,
     babashka: Option<ProgramInventory>,
     stack: Option<ProgramInventory>,
+    zig: Option<ProgramInventory>,
     php_extensions: HashSet<String>,
 }
 
@@ -4848,6 +4849,7 @@ fn resolve_environment_plan_with_tools_directory(
         RuntimeKind::Dart,
         RuntimeKind::Clojure,
         RuntimeKind::Haskell,
+        RuntimeKind::Zig,
     ] {
         let requirements = environment
             .runtime_requirements
@@ -4900,6 +4902,9 @@ fn resolve_environment_plan_with_tools_directory(
             RuntimeKind::Haskell => {
                 provider.resolve_stack_installation(&constraint_label, project_path, matches_all)?
             }
+            RuntimeKind::Zig => {
+                provider.resolve_zig_installation(&constraint_label, project_path, matches_all)?
+            }
             // Not installed by the app: Rust, Node and Flutter have their own installers, and
             // the other languages are only recognized for now.
             _ => continue,
@@ -4925,6 +4930,7 @@ fn resolve_environment_plan_with_tools_directory(
             RuntimeKind::Dart => ("dart", vec!["--version".into()]),
             RuntimeKind::Clojure => ("bb", vec!["--version".into()]),
             RuntimeKind::Haskell => ("stack", vec!["--version".into()]),
+            RuntimeKind::Zig => ("zig", vec!["version".into()]),
             _ => continue,
         };
         steps.push(InstallationStep {
@@ -6228,6 +6234,7 @@ fn inspect_runtime_inventory(environment_path: Option<&OsStr>) -> RuntimeInvento
         dart: inspect_program("dart", &["--version"], environment_path),
         babashka: inspect_program("bb", &["--version"], environment_path),
         stack: inspect_program("stack", &["--version"], environment_path),
+        zig: inspect_program("zig", &["version"], environment_path),
         php_extensions: inspect_php_extensions(environment_path),
     }
 }
@@ -6315,6 +6322,10 @@ fn inspect_project_environment_with_inventory(
             (
                 detect_haskell_requirement(directory, &project.path),
                 runtime_inventory.stack.as_ref(),
+            ),
+            (
+                detect_zig_requirement(directory, &project.path),
+                runtime_inventory.zig.as_ref(),
             ),
         ] {
             let Some(mut requirement) = detected else {

@@ -354,7 +354,7 @@ pub const LANGUAGES: &[Language] = &[
         programs: &[program("zig", &["version"])],
         images: &[],
         install_dirs: &[],
-        starts: false,
+        starts: true,
     },
 ];
 

@@ -28,6 +28,7 @@ const GO_PACKAGE_ID: &str = "GoLang.Go";
 const DART_PACKAGE_ID: &str = "Google.DartSDK";
 const BABASHKA_PACKAGE_ID: &str = "Babashka.Babashka";
 const STACK_PACKAGE_ID: &str = "commercialhaskell.stack";
+const ZIG_PACKAGE_ID: &str = "zig.zig";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramInventory {
@@ -114,6 +115,21 @@ impl WindowsWingetProvider {
         self.resolve_package_installation(
             STACK_PACKAGE_ID,
             "Haskell Stack",
+            version_constraint,
+            working_directory,
+            matches,
+        )
+    }
+
+    pub fn resolve_zig_installation(
+        &self,
+        version_constraint: &str,
+        working_directory: &Path,
+        matches: impl Fn(&str, &str) -> Option<bool>,
+    ) -> Result<InstallationStep, String> {
+        self.resolve_package_installation(
+            ZIG_PACKAGE_ID,
+            "Zig",
             version_constraint,
             working_directory,
             matches,
