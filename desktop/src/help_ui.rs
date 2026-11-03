@@ -101,7 +101,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Com problema",
-                "algo impede ou interrompe a execução. Leia o motivo mostrado no projeto; Ver logs e Detalhes técnicos mostram o que aconteceu.",
+                "algo impede ou interrompe a execução. Leia o motivo mostrado no projeto; Ver logs e Detalhes técnicos mostram o que aconteceu. Depois de resolver a causa, Tentar de novo inicia o projeto outra vez.",
             ),
             Block::Text("Ao lado do endereço, um selo mostra o resultado da verificação do site:"),
             Block::Item("Site respondendo", "o endereço respondeu à verificação."),
