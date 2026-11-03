@@ -266,7 +266,7 @@ pub const LANGUAGES: &[Language] = &[
         ],
         images: &["scala-sbt"],
         install_dirs: &[],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Clojure,
