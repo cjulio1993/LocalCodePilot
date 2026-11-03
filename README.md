@@ -93,9 +93,9 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Django | Sim | Sim | Experimental | Sim | Sim |
 | Java / Spring Boot com Maven wrapper | Sim | Sim | Experimental | Sim | Sim |
 | Java com Gradle | Sim | Sim | Experimental | Experimental | Experimental |
-| Go | Sim | Sim | Implementação inicial não validada | Ainda não validado de ponta a ponta | Ainda não validado |
-| Dart | Sim | Sim | Implementação inicial não validada | Ainda não validado de ponta a ponta | Ainda não validado |
-| Flutter | Sim | Sim | Não | Ainda não validado de ponta a ponta | Só Flutter web, ainda não validado |
+| Go (`go run .` ou `go run ./cmd/<nome>`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
+| Dart (`bin/main.dart`, `bin/server.dart`, `bin/<pacote>.dart`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
+| Flutter | Sim | Sim | Não | Sim: web (`web-server`, porta 4180) e Windows | Flutter web sim; o app desktop abre a própria janela |
 | .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Ainda não | Ainda não |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Sim | Sim | Não | Ainda não | Ainda não |
 | Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
@@ -107,7 +107,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 
 "Verifica no computador" é a seção **Linguagens neste computador**, em Configurações: o aplicativo procura o programa de cada linguagem no `PATH` e nas pastas padrão de instalação, pergunta a versão com tempo limite de 10 segundos e mostra "Instalado · versão", "Instalado · Versão indisponível" ou "Não encontrado nos locais verificados"; os locais verificados e o caminho do programa ficam em Detalhes técnicos. O atalho `python.exe` da Microsoft Store, sem Python instalado por trás, conta como não encontrado. Nada é instalado por essa seção.
 
-Go, Dart e Flutter têm comandos detectados, mas ainda não foram validados de ponta a ponta. Para as linguagens marcadas "Ainda não", o cartão diz que a linguagem foi reconhecida e que o LocalCodePilot ainda não inicia projetos dela.
+Para as linguagens marcadas "Ainda não", o cartão diz que a linguagem foi reconhecida e que o LocalCodePilot ainda não inicia projetos dela.
 
 O endereço do site vem do que o servidor escreve no log (`http://localhost:3000`) ou, quando ele não escreve, da porta em que o próprio processo, ou um processo filho, está ouvindo, consultada no sistema (no Windows, a tabela TCP; no macOS, `lsof`; no Linux, `lsof` ou `ss`). Assim, servidores como Express, Spring Boot ou um servidor Rust próprio aparecem com **Abrir site** mesmo sem imprimir o endereço. Se o servidor fecha porque a porta já está em uso, o cartão diz "Outro programa está usando a porta" e o log informa qual programa é.
 
@@ -403,9 +403,9 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Django | Yes | Yes | Experimental | Yes | Yes |
 | Java / Spring Boot with the Maven wrapper | Yes | Yes | Experimental | Yes | Yes |
 | Java with Gradle | Yes | Yes | Experimental | Experimental | Experimental |
-| Go | Yes | Yes | Initial implementation, not validated | Not yet validated end to end | Not yet validated |
-| Dart | Yes | Yes | Initial implementation, not validated | Not yet validated end to end | Not yet validated |
-| Flutter | Yes | Yes | No | Not yet validated end to end | Flutter web only, not yet validated |
+| Go (`go run .` or `go run ./cmd/<name>`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
+| Dart (`bin/main.dart`, `bin/server.dart`, `bin/<package>.dart`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
+| Flutter | Yes | Yes | No | Yes: web (`web-server`, port 4180) and Windows | Flutter web yes; the desktop app opens its own window |
 | .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | Not yet | Not yet |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Yes | Yes | No | Not yet | Not yet |
 | Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
@@ -417,7 +417,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 
 "Checked on this computer" is the **Languages on this computer** section in Settings: the app looks for each language's program in `PATH` and in default install folders, asks for its version with a 10-second limit, and shows "Installed · version", "Installed · version unavailable", or "Not found in the checked locations"; the checked locations and the program path are under Technical details. The Microsoft Store `python.exe` shortcut without Python installed behind it counts as not found. Nothing is installed from this section.
 
-Go, Dart, and Flutter have detected commands but are not yet validated end to end. For languages marked "Not yet", the card says the language was recognized and that LocalCodePilot does not start its projects yet.
+For languages marked "Not yet", the card says the language was recognized and that LocalCodePilot does not start its projects yet.
 
 The site address comes from what the server prints in its log (`http://localhost:3000`) or, when it prints nothing, from the port the process itself or a child process listens on, read from the system (the TCP table on Windows, `lsof` on macOS, `lsof` or `ss` on Linux). Servers such as Express, Spring Boot, or a custom Rust server therefore show **Open site** even without printing their address. If the server closes because its port is already in use, the card says "Another program is using the port" and the log names the program.
 

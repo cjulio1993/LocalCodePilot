@@ -827,11 +827,8 @@ fn static_site_port(project_path: &Path) -> u16 {
     4200 + (hash % 4000) as u16
 }
 
-fn detect_go_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
-    if !directory.join("go.mod").is_file() {
-        return;
-    }
-    let has_main_package = fs::read_dir(directory).ok().is_some_and(|entries| {
+fn go_main_package(directory: &Path) -> bool {
+    fs::read_dir(directory).ok().is_some_and(|entries| {
         entries.flatten().any(|entry| {
             let path = entry.path();
             path.extension().is_some_and(|extension| extension == "go")
@@ -842,17 +839,48 @@ fn detect_go_process(project: &Project, directory: &Path, processes: &mut Vec<Pr
                     contents.lines().any(|line| line.trim() == "package main")
                 })
         })
-    });
-    if has_main_package {
+    })
+}
+
+/// `go run .` for a program at the module root; otherwise one command per program in the
+/// common `cmd/<name>/` layout, run from the module root as `go run ./cmd/<name>`.
+fn detect_go_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    if !directory.join("go.mod").is_file() {
+        return;
+    }
+    let mut programs = Vec::new();
+    if go_main_package(directory) {
+        programs.push((
+            "Executar aplicação Go".to_owned(),
+            ".".to_owned(),
+            directory.to_path_buf(),
+        ));
+    } else if let Ok(entries) = fs::read_dir(directory.join("cmd")) {
+        let mut folders = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir() && go_main_package(path))
+            .collect::<Vec<_>>();
+        folders.sort();
+        for folder in folders {
+            let name = folder
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            programs.push((format!("Executar {name}"), format!("./cmd/{name}"), folder));
+        }
+    }
+    for (name, package, source) in programs {
         push_process(
             processes,
             project,
             directory,
-            "Executar aplicação Go",
+            &name,
             "go",
-            &["run", "."],
+            &["run", &package],
         );
-        if let Some(port) = detect_go_server_port(directory)
+        if let Some(port) = detect_go_server_port(&source)
             && let Some(process) = processes.last_mut()
         {
             process.expected_port = Port::new(port);
@@ -922,8 +950,17 @@ fn detect_dart_or_flutter_process(
         return;
     }
 
-    let entrypoint = ["bin/main.dart", "main.dart", "lib/main.dart"]
+    // `dart create` writes `bin/<package>.dart`, and its server templates `bin/server.dart`.
+    let package = contents.lines().find_map(|line| {
+        line.strip_prefix("name:")
+            .map(|name| name.trim().trim_matches(['\'', '"']).to_owned())
+    });
+    let package_entrypoint = package.map(|name| format!("bin/{name}.dart"));
+    let entrypoint = ["bin/main.dart", "bin/server.dart"]
         .into_iter()
+        .map(str::to_owned)
+        .chain(package_entrypoint)
+        .chain(["main.dart".to_owned(), "lib/main.dart".to_owned()])
         .find(|path| directory.join(path).is_file());
     if let Some(entrypoint) = entrypoint {
         push_process(
@@ -932,7 +969,7 @@ fn detect_dart_or_flutter_process(
             directory,
             "Executar aplicação Dart",
             "dart",
-            &["run", entrypoint],
+            &["run", &entrypoint],
         );
     }
 }
@@ -2628,6 +2665,44 @@ version = "0.1.0"
         assert_eq!(go_processes[0].command_line(), "go run .");
         assert_eq!(go_processes[0].expected_port, Port::new(8000));
 
+        // The `cmd/<name>/main.go` layout: one command per program, from the module root.
+        let layout = root.join("go-layout");
+        fs::create_dir_all(layout.join("cmd/api")).unwrap();
+        fs::create_dir_all(layout.join("cmd/worker")).unwrap();
+        fs::create_dir_all(layout.join("internal")).unwrap();
+        fs::write(
+            layout.join("go.mod"),
+            "module example.com/layout\ngo 1.23\n",
+        )
+        .unwrap();
+        fs::write(
+            layout.join("cmd/api/main.go"),
+            "package main\nfunc main() { http.ListenAndServe(\":8091\", nil) }\n",
+        )
+        .unwrap();
+        fs::write(
+            layout.join("cmd/worker/main.go"),
+            "package main\nfunc main() {}\n",
+        )
+        .unwrap();
+        fs::write(layout.join("internal/lib.go"), "package internal\n").unwrap();
+        let layout_processes = detect_processes(&Project::new(layout.clone(), detect(&layout)));
+        assert_eq!(
+            layout_processes
+                .iter()
+                .map(|process| (process.command_line(), process.expected_port))
+                .collect::<Vec<_>>(),
+            [
+                ("go run ./cmd/api".to_owned(), Port::new(8091)),
+                ("go run ./cmd/worker".to_owned(), None),
+            ]
+        );
+        assert!(
+            layout_processes
+                .iter()
+                .all(|process| process.working_directory.ends_with("go-layout"))
+        );
+
         assert_eq!(detect(&dart), [RuntimeKind::Dart]);
         assert_eq!(
             detect_dart_requirement(&dart, &dart).unwrap().version.value,
@@ -2636,6 +2711,19 @@ version = "0.1.0"
         assert_eq!(
             detect_processes(&Project::new(dart.clone(), detect(&dart)))[0].command_line(),
             "dart run bin/main.dart"
+        );
+        // Templates of `dart create`: the server and the package-named console program.
+        fs::remove_file(dart.join("bin/main.dart")).unwrap();
+        fs::write(dart.join("bin/server.dart"), "void main() {}\n").unwrap();
+        assert_eq!(
+            detect_processes(&Project::new(dart.clone(), detect(&dart)))[0].command_line(),
+            "dart run bin/server.dart"
+        );
+        fs::remove_file(dart.join("bin/server.dart")).unwrap();
+        fs::write(dart.join("bin/sample.dart"), "void main() {}\n").unwrap();
+        assert_eq!(
+            detect_processes(&Project::new(dart.clone(), detect(&dart)))[0].command_line(),
+            "dart run bin/sample.dart"
         );
 
         assert_eq!(detect(&flutter), [RuntimeKind::Flutter]);
