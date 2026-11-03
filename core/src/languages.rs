@@ -277,10 +277,11 @@ pub const LANGUAGES: &[Language] = &[
         programs: &[
             program("clojure", &["--version"]),
             program("lein", &["version"]),
+            program("bb", &["--version"]),
         ],
         images: &["clojure"],
         install_dirs: &[],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Haskell,

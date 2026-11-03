@@ -421,6 +421,37 @@ pub fn detect_dart_requirement(
     })
 }
 
+/// A Clojure project with `deps.edn` runs through Babashka, whose `bb clojure` is the Clojure
+/// CLI and installs with winget on Windows. Leiningen projects (`project.clj`) are not covered.
+pub fn detect_clojure_requirement(
+    directory: &Path,
+    project_root: &Path,
+) -> Option<RuntimeRequirement> {
+    find_in_project_ancestors(directory, project_root, "deps.edn")?;
+    Some(RuntimeRequirement {
+        runtime: RuntimeKind::Clojure,
+        command: "bb".into(),
+        version: VersionConstraint::recommended("latest"),
+        source: RequirementSource::Recommended,
+        status: RequirementStatus::Pending,
+    })
+}
+
+/// Clojure runs on the JVM: a `deps.edn` project also needs Java 17 or newer.
+pub fn detect_clojure_java_requirement(
+    directory: &Path,
+    project_root: &Path,
+) -> Option<RuntimeRequirement> {
+    find_in_project_ancestors(directory, project_root, "deps.edn")?;
+    Some(RuntimeRequirement {
+        runtime: RuntimeKind::Java,
+        command: "java".into(),
+        version: VersionConstraint::recommended(">=17"),
+        source: RequirementSource::Recommended,
+        status: RequirementStatus::Pending,
+    })
+}
+
 fn is_flutter_pubspec(contents: &str) -> bool {
     contents.lines().any(|line| {
         let line = line.trim();
@@ -859,6 +890,7 @@ fn detect_processes_in_directory(
     detect_elixir_process(project, directory, processes);
     detect_swift_process(project, directory, processes);
     detect_scala_process(project, directory, processes);
+    detect_clojure_process(project, directory, processes);
     detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
@@ -1359,6 +1391,41 @@ fn detect_scala_process(project: &Project, directory: &Path, processes: &mut Vec
     if play && let Some(process) = processes.last_mut() {
         process.expected_port = Port::new(9000);
     }
+}
+
+/// Clojure with `deps.edn`: the first alias meant to run the program (`:run`, `:dev`,
+/// `:serve` or `:server`) that has `:main-opts`, through Babashka's Clojure CLI
+/// (`bb clojure -M:run`). Without such an alias there is no convention to follow.
+fn detect_clojure_process(
+    project: &Project,
+    directory: &Path,
+    processes: &mut Vec<ProjectProcess>,
+) {
+    let Ok(deps) = fs::read_to_string(directory.join("deps.edn")) else {
+        return;
+    };
+    let compact = deps.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some(alias) = ["run", "dev", "serve", "server"].into_iter().find(|alias| {
+        compact
+            .split(&format!(":{alias} {{"))
+            .nth(1)
+            .is_some_and(|rest| {
+                rest.split('}')
+                    .next()
+                    .is_some_and(|body| body.contains(":main-opts"))
+            })
+    }) else {
+        return;
+    };
+    let option = format!("-M:{alias}");
+    push_process(
+        processes,
+        project,
+        directory,
+        "Executar projeto Clojure",
+        "bb",
+        &["clojure", &option],
+    );
 }
 
 fn detect_dart_or_flutter_process(
@@ -3250,6 +3317,49 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_clojure_deps_projects_through_babashka() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-clojure-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+
+        fs::create_dir_all(root.join("api")).unwrap();
+        fs::write(
+            root.join("api/deps.edn"),
+            "{:deps {ring/ring {:mvn/version \"1.12.2\"}}\n :aliases {:test {:extra-paths [\"test\"]}\n           :run {:main-opts [\"-m\" \"api.core\"]}}}\n",
+        )
+        .unwrap();
+        let api = detect_processes(&project("api"));
+        assert_eq!(api.len(), 1);
+        assert_eq!(api[0].command_line(), "bb clojure -M:run");
+        let api_path = root.join("api");
+        assert_eq!(
+            detect_clojure_requirement(&api_path, &api_path)
+                .unwrap()
+                .command,
+            "bb"
+        );
+        assert_eq!(
+            detect_clojure_java_requirement(&api_path, &api_path)
+                .unwrap()
+                .runtime,
+            RuntimeKind::Java
+        );
+
+        // Without an alias to run, nothing is guessed.
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib/deps.edn"), "{:deps {}}\n").unwrap();
+        assert!(detect_processes(&project("lib")).is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }
