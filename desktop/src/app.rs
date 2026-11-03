@@ -6799,7 +6799,7 @@ fn open_in_vscode(path: &Path) -> Result<(), String> {
         }
         if let Some(executable) = candidates.into_iter().find(|candidate| candidate.is_file()) {
             return Command::new(executable)
-                .arg(path)
+                .arg(plain_path(path))
                 .spawn()
                 .map(|_| ())
                 .map_err(|error| format!("Não foi possível abrir o VS Code: {error}"));
@@ -6808,9 +6808,13 @@ fn open_in_vscode(path: &Path) -> Result<(), String> {
 
     let mut command = Command::new(if cfg!(windows) { "code.cmd" } else { "code" });
     configure_background_command(&mut command);
-    command.arg(path).spawn().map(|_| ()).map_err(|_| {
-        "VS Code não encontrado. Instale-o ou adicione o comando 'code' ao PATH.".into()
-    })
+    command
+        .arg(plain_path(path))
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| {
+            "VS Code não encontrado. Instale-o ou adicione o comando 'code' ao PATH.".into()
+        })
 }
 
 fn runtime_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
