@@ -27,6 +27,7 @@ const BUN_PACKAGE_ID: &str = "Oven-sh.Bun";
 const GO_PACKAGE_ID: &str = "GoLang.Go";
 const DART_PACKAGE_ID: &str = "Google.DartSDK";
 const BABASHKA_PACKAGE_ID: &str = "Babashka.Babashka";
+const STACK_PACKAGE_ID: &str = "commercialhaskell.stack";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramInventory {
@@ -97,6 +98,22 @@ impl WindowsWingetProvider {
         self.resolve_package_installation(
             BABASHKA_PACKAGE_ID,
             "Babashka (Clojure)",
+            version_constraint,
+            working_directory,
+            matches,
+        )
+    }
+
+    /// Stack builds Haskell projects and downloads the GHC each one asks for.
+    pub fn resolve_stack_installation(
+        &self,
+        version_constraint: &str,
+        working_directory: &Path,
+        matches: impl Fn(&str, &str) -> Option<bool>,
+    ) -> Result<InstallationStep, String> {
+        self.resolve_package_installation(
+            STACK_PACKAGE_ID,
+            "Haskell Stack",
             version_constraint,
             working_directory,
             matches,

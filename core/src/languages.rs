@@ -289,10 +289,13 @@ pub const LANGUAGES: &[Language] = &[
         manifests: &["stack.yaml", "cabal.project"],
         manifest_extensions: &["cabal"],
         source_extensions: &["hs"],
-        programs: &[program("ghc", &["--version"])],
+        programs: &[
+            program("ghc", &["--version"]),
+            program("stack", &["--version"]),
+        ],
         images: &["haskell"],
         install_dirs: &[InstallDir::Home(".ghcup/bin")],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Perl,

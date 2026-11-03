@@ -437,6 +437,22 @@ pub fn detect_clojure_requirement(
     })
 }
 
+/// A Haskell project with `stack.yaml` needs Stack, which installs with winget and downloads
+/// the GHC compiler the project asks for.
+pub fn detect_haskell_requirement(
+    directory: &Path,
+    project_root: &Path,
+) -> Option<RuntimeRequirement> {
+    find_in_project_ancestors(directory, project_root, "stack.yaml")?;
+    Some(RuntimeRequirement {
+        runtime: RuntimeKind::Haskell,
+        command: "stack".into(),
+        version: VersionConstraint::recommended("latest"),
+        source: RequirementSource::Recommended,
+        status: RequirementStatus::Pending,
+    })
+}
+
 /// Clojure runs on the JVM: a `deps.edn` project also needs Java 17 or newer.
 pub fn detect_clojure_java_requirement(
     directory: &Path,
@@ -891,6 +907,7 @@ fn detect_processes_in_directory(
     detect_swift_process(project, directory, processes);
     detect_scala_process(project, directory, processes);
     detect_clojure_process(project, directory, processes);
+    detect_haskell_process(project, directory, processes);
     detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
@@ -1426,6 +1443,36 @@ fn detect_clojure_process(
         "bb",
         &["clojure", &option],
     );
+}
+
+/// Haskell with Stack: `stack run` builds and runs the project's executable. Projects with
+/// only Cabal (no `stack.yaml`) are not covered.
+fn detect_haskell_process(
+    project: &Project,
+    directory: &Path,
+    processes: &mut Vec<ProjectProcess>,
+) {
+    if !directory.join("stack.yaml").is_file() {
+        return;
+    }
+    let executable = fs::read_dir(directory).ok().is_some_and(|entries| {
+        entries.flatten().any(|entry| {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            (name == "package.yaml" || name.ends_with(".cabal"))
+                && fs::read_to_string(entry.path())
+                    .is_ok_and(|contents| contents.contains("executable"))
+        })
+    });
+    if executable {
+        push_process(
+            processes,
+            project,
+            directory,
+            "Executar projeto Haskell",
+            "stack",
+            &["run"],
+        );
+    }
 }
 
 fn detect_dart_or_flutter_process(
@@ -3317,6 +3364,49 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_stack_projects() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-haskell-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(root.join("app/stack.yaml"), "resolver: lts-24.0\n").unwrap();
+        fs::write(
+            root.join("app/package.yaml"),
+            "name: app\nexecutables:\n  app:\n    main: Main.hs\n",
+        )
+        .unwrap();
+        let app = detect_processes(&project("app"));
+        assert_eq!(app.len(), 1);
+        assert_eq!(app[0].command_line(), "stack run");
+        let app_path = root.join("app");
+        assert_eq!(
+            detect_haskell_requirement(&app_path, &app_path)
+                .unwrap()
+                .command,
+            "stack"
+        );
+
+        // A library has nothing to run.
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib/stack.yaml"), "resolver: lts-24.0\n").unwrap();
+        fs::write(
+            root.join("lib/package.yaml"),
+            "name: lib\nlibrary:\n  source-dirs: src\n",
+        )
+        .unwrap();
+        assert!(detect_processes(&project("lib")).is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }
