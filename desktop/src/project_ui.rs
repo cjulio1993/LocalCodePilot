@@ -83,6 +83,8 @@ pub(super) enum PrimaryAction {
     ViewInstallLogs,
     PrepareEnvironment,
     InstallDependencies,
+    /// No command was found: the person tells how the project starts.
+    DefineCommand,
     Details,
     /// Something is in progress; no button.
     Wait,
@@ -96,6 +98,7 @@ impl PrimaryAction {
             Self::ViewLogs | Self::ViewInstallLogs => format!("{TERMINAL}  Ver logs"),
             Self::PrepareEnvironment => "Preparar ambiente".into(),
             Self::InstallDependencies => "Instalar dependências".into(),
+            Self::DefineCommand => "Definir comando de início".into(),
             Self::Details => "Detalhes".into(),
             Self::Wait => return None,
         })
@@ -152,17 +155,14 @@ pub(super) struct ProjectFacts<'a> {
 fn no_command_reason(languages: &[RuntimeKind]) -> String {
     match languages {
         [] => "Nenhum comando para iniciar foi encontrado".into(),
-        languages if languages.iter().all(|language| !language.starts()) => {
+        languages => {
             let names = languages
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(
-                "Linguagem reconhecida: {names}. O LocalCodePilot ainda não inicia projetos desta linguagem"
-            )
+            format!("Reconhecemos {names}, mas precisamos do comando para iniciar este projeto")
         }
-        _ => "Linguagem reconhecida. Nenhum comando para iniciar foi identificado".into(),
     }
 }
 
@@ -303,7 +303,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         return summary(
             ProjectState::Stopped,
             Some(no_command_reason(facts.languages)),
-            PrimaryAction::Details,
+            PrimaryAction::DefineCommand,
         );
     }
     // A SQLite file that does not exist yet is created when the project starts; only a
@@ -526,6 +526,13 @@ impl LocalCodePilot {
             }
             ProjectCardAction::ViewDependencyLogs(path) => {
                 self.dependency_terminal = Some(path);
+            }
+            ProjectCardAction::DefineCommand(path) => self.open_command_dialog(&path, None),
+            ProjectCardAction::EditCommand(path, name) => {
+                self.open_command_dialog(&path, Some(&name));
+            }
+            ProjectCardAction::RemoveCommand(path, name) => {
+                self.remove_custom_command(&path, &name);
             }
             ProjectCardAction::PrepareLaravelMigration(path) => {
                 self.prepare_laravel_migration(&path);
@@ -806,6 +813,7 @@ impl LocalCodePilot {
                             project,
                             summary,
                             languages: self.language_lines(project),
+                            custom_commands: self.custom_commands_of(&project.path),
                             environment: self.project_environments.get(&project.path),
                             favorite: self.is_favorite(&project.path),
                             expanded: self.project_ui.expanded.contains(&project.path),
@@ -845,6 +853,7 @@ fn primary_to_card_action(project: &Project, summary: &ProjectSummary) -> Projec
         PrimaryAction::ViewInstallLogs => ProjectCardAction::ViewDependencyLogs(path),
         PrimaryAction::PrepareEnvironment => ProjectCardAction::PrepareEnvironment(path),
         PrimaryAction::InstallDependencies => ProjectCardAction::InstallDependencies(path),
+        PrimaryAction::DefineCommand => ProjectCardAction::DefineCommand(path),
         PrimaryAction::Details | PrimaryAction::Wait => {
             ProjectCardAction::ShowInProjects(path, project.name.clone())
         }
@@ -1052,6 +1061,8 @@ fn project_row(
 struct ProjectCard<'a> {
     project: &'a Project,
     summary: &'a ProjectSummary,
+    /// Start commands the person defined for this project.
+    custom_commands: Vec<CustomCommand>,
     /// Each language, where it was found and whether this computer has it.
     languages: Vec<String>,
     environment: Option<&'a ProjectEnvironment>,
@@ -1141,6 +1152,13 @@ impl ProjectCard<'_> {
                 if let Some(reason) = &summary.reason {
                     ui.label(RichText::new(reason).size(13.0));
                 }
+                if !self.custom_commands.is_empty() {
+                    ui.label(
+                        RichText::new("Comando definido por você")
+                            .color(theme::MUTED)
+                            .size(12.0),
+                    );
+                }
                 ui.add_space(10.0);
                 if primary_button(ui, &summary.primary, ui.available_width()) {
                     action = Some(match summary.primary {
@@ -1214,11 +1232,12 @@ impl ProjectCard<'_> {
             }
         });
         if let Some(environment) = self.environment {
-            if environment.command_count > 0 {
-                detail(
-                    ui,
-                    &format!("Comandos detectados: {}", environment.command_count),
-                );
+            // Commands the person defined are listed below on their own.
+            let detected = environment
+                .command_count
+                .saturating_sub(self.custom_commands.len());
+            if detected > 0 {
+                detail(ui, &format!("Comandos detectados: {detected}"));
             }
             if let Some(problem) = environment.problem_details() {
                 detail(ui, &problem);
@@ -1232,6 +1251,30 @@ impl ProjectCard<'_> {
                 }
             }
         }
+        for command in &self.custom_commands {
+            ui.label(
+                RichText::new(format!(
+                    "Comando definido por você · {}: {}",
+                    command.name,
+                    command.command_line()
+                ))
+                .color(theme::MUTED)
+                .size(12.0),
+            );
+            ui.horizontal_wrapped(|ui| {
+                let edit = format!("Editar {}", command.name);
+                if announced(ui.link("Editar"), egui::Role::Link, &edit).clicked() {
+                    action = Some(ProjectCardAction::EditCommand(path(), command.name.clone()));
+                }
+                let remove = format!("Remover {}", command.name);
+                if announced(ui.link("Remover"), egui::Role::Link, &remove).clicked() {
+                    action = Some(ProjectCardAction::RemoveCommand(
+                        path(),
+                        command.name.clone(),
+                    ));
+                }
+            });
+        }
         ui.add_space(4.0);
         let logs = format!("{TERMINAL}  Ver logs e processos");
         if announced(ui.link(&logs), egui::Role::Link, &logs).clicked() {
@@ -1241,6 +1284,14 @@ impl ProjectCard<'_> {
             && ui.link("Ver containers").clicked()
         {
             action = Some(ProjectCardAction::ViewContainers(path()));
+        }
+        let define = if self.custom_commands.is_empty() {
+            "Definir comando de início"
+        } else {
+            "Adicionar outro comando de início"
+        };
+        if ui.link(define).clicked() {
+            action = Some(ProjectCardAction::DefineCommand(path()));
         }
         if self.has_install_logs && ui.link("Ver logs da instalação").clicked() {
             action = Some(ProjectCardAction::ViewDependencyLogs(path()));
@@ -1515,21 +1566,16 @@ mod tests {
             summary.reason.as_deref(),
             Some("Nenhum comando para iniciar foi encontrado")
         );
-        // A recognized language says so, and whether the app starts it at all.
+        // Any project without a command can be given one.
+        assert_eq!(summary.primary, PrimaryAction::DefineCommand);
         let mut ruby = facts(&empty);
-        ruby.languages = &[RuntimeKind::Ruby];
+        ruby.languages = &[RuntimeKind::Ruby, RuntimeKind::Lua];
+        let summary = summarize_project(&ruby);
         assert_eq!(
-            summarize_project(&ruby).reason.as_deref(),
-            Some(
-                "Linguagem reconhecida: Ruby. O LocalCodePilot ainda não inicia projetos desta linguagem"
-            )
+            summary.reason.as_deref(),
+            Some("Reconhecemos Ruby, Lua, mas precisamos do comando para iniciar este projeto")
         );
-        let mut python = facts(&empty);
-        python.languages = &[RuntimeKind::Python];
-        assert_eq!(
-            summarize_project(&python).reason.as_deref(),
-            Some("Linguagem reconhecida. Nenhum comando para iniciar foi identificado")
-        );
+        assert_eq!(summary.primary, PrimaryAction::DefineCommand);
     }
 
     #[test]

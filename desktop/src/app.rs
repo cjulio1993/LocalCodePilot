@@ -1,3 +1,5 @@
+#[path = "command_ui.rs"]
+mod command_ui;
 #[path = "container_ui.rs"]
 mod container_ui;
 #[path = "help_ui.rs"]
@@ -19,6 +21,7 @@ use egui_phosphor::regular::{
     FOLDER_OPEN, GEAR, LAYOUT, PLAY, PLUS, STAR, TERMINAL,
 };
 use localcodepilot_core::{
+    custom_commands::{self, CustomCommand},
     discovery::DiscoveryService,
     environments::{
         InstallationPlan, InstallationStep, InstallationStepKind, RequirementStatus,
@@ -508,6 +511,9 @@ enum ProjectCardAction {
     PrepareEnvironment(PathBuf),
     InstallDependencies(PathBuf),
     ViewDependencyLogs(PathBuf),
+    DefineCommand(PathBuf),
+    EditCommand(PathBuf, String),
+    RemoveCommand(PathBuf, String),
     PrepareLaravelMigration(PathBuf),
     ToggleFavorite(PathBuf),
     ToggleRecentVisibility(PathBuf),
@@ -564,6 +570,7 @@ pub struct LocalCodePilot {
     project_ui: project_ui::ProjectUiState,
     help: help_ui::HelpState,
     languages: language_ui::LanguageState,
+    command_draft: Option<command_ui::CommandDraft>,
 }
 
 impl LocalCodePilot {
@@ -586,11 +593,16 @@ impl LocalCodePilot {
         let scan_roots = source.roots().to_vec();
         let cached_projects = config::load_project_cache();
         let environment_path = refreshed_environment_path().ok();
-        let receiver = spawn_discovery(source, environment_path.clone(), cc.egui_ctx.clone());
+        let mut workspace_state = config::load_workspace_state();
+        let receiver = spawn_discovery(
+            source,
+            environment_path.clone(),
+            workspace_state.custom_commands.clone(),
+            cc.egui_ctx.clone(),
+        );
         let logo_texture = load_logo_texture(&cc.egui_ctx);
         let username = current_username();
         let user_initials = initials_from_username(&username);
-        let mut workspace_state = config::load_workspace_state();
         let recovered_preparation = workspace_state
             .preparations
             .iter_mut()
@@ -656,6 +668,7 @@ impl LocalCodePilot {
             project_ui: project_ui::ProjectUiState::default(),
             help: help_ui::HelpState::default(),
             languages: language_ui::LanguageState::default(),
+            command_draft: None,
         }
     }
 
@@ -1317,6 +1330,7 @@ impl LocalCodePilot {
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
+            self.workspace_state.custom_commands.clone(),
             ctx.clone(),
         ));
     }
@@ -1339,6 +1353,7 @@ impl LocalCodePilot {
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
+            self.workspace_state.custom_commands.clone(),
             ctx.clone(),
         ));
     }
@@ -1356,6 +1371,7 @@ impl LocalCodePilot {
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
+            self.workspace_state.custom_commands.clone(),
             ctx.clone(),
         ));
     }
@@ -1373,6 +1389,7 @@ impl LocalCodePilot {
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
+            self.workspace_state.custom_commands.clone(),
             ctx.clone(),
         ));
     }
@@ -2026,7 +2043,8 @@ impl LocalCodePilot {
                         .iter()
                         .find(|project| project.path == project_path)
                     {
-                        let refreshed_processes = detect_processes(project);
+                        let refreshed_processes =
+                            project_processes(project, &self.workspace_state.custom_commands);
                         self.processes
                             .retain(|process| process.project_path != project_path);
                         self.processes.extend(refreshed_processes);
@@ -4311,6 +4329,7 @@ impl LocalCodePilot {
             });
         // Cards and Containers both ask to confirm container actions.
         self.container_confirmation(&ctx);
+        self.command_dialog(&ctx);
     }
 }
 
@@ -4372,6 +4391,7 @@ impl Drop for LocalCodePilot {
 fn spawn_discovery(
     source: FilesystemProjectSource,
     environment_path: Option<OsString>,
+    custom_commands: Vec<CustomCommand>,
     repaint: egui::Context,
 ) -> Receiver<DiscoveryEvent> {
     let (sender, receiver) = mpsc::channel();
@@ -4395,7 +4415,7 @@ fn spawn_discovery(
         repaint.request_repaint();
         let processes = projects
             .iter()
-            .flat_map(detect_processes)
+            .flat_map(|project| project_processes(project, &custom_commands))
             .collect::<Vec<_>>();
         if sender
             .send(DiscoveryEvent::Processes(processes.clone()))
@@ -4423,6 +4443,13 @@ fn spawn_discovery(
         repaint.request_repaint();
     });
     receiver
+}
+
+/// Detected commands of a project, then those the person defined for it.
+fn project_processes(project: &Project, custom_commands: &[CustomCommand]) -> Vec<ProjectProcess> {
+    let mut processes = detect_processes(project);
+    processes.extend(custom_commands::processes_for(project, custom_commands));
+    processes
 }
 
 fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {

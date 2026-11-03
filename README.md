@@ -96,8 +96,8 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Go (`go run .` ou `go run ./cmd/<nome>`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
 | Dart (`bin/main.dart`, `bin/server.dart`, `bin/<pacote>.dart`) | Sim | Sim | Implementação inicial não validada | Sim | Sim, quando o programa é um servidor web |
 | Flutter | Sim | Sim | Não | Sim: web (`web-server`, porta 4180) e Windows | Flutter web sim; o app desktop abre a própria janela |
-| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Ainda não | Ainda não |
-| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Sim | Sim | Não | Ainda não | Ainda não |
+| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
+| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
 | Containers / Docker / Podman | Experimental | Não instala o motor | Não | Docker e Podman validados pela interface no Windows 11 | Endereço provável, em Containers |
 
@@ -107,7 +107,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 
 "Verifica no computador" é a seção **Linguagens neste computador**, em Configurações: o aplicativo procura o programa de cada linguagem no `PATH` e nas pastas padrão de instalação, pergunta a versão com tempo limite de 10 segundos e mostra "Instalado · versão", "Instalado · Versão indisponível" ou "Não encontrado nos locais verificados"; os locais verificados e o caminho do programa ficam em Detalhes técnicos. O atalho `python.exe` da Microsoft Store, sem Python instalado por trás, conta como não encontrado. Nada é instalado por essa seção.
 
-Para as linguagens marcadas "Ainda não", o cartão diz que a linguagem foi reconhecida e que o LocalCodePilot ainda não inicia projetos dela.
+**Definir comando de início.** Quando o aplicativo não encontra um comando, o cartão diz "Reconhecemos Perl, mas precisamos do comando para iniciar este projeto" e oferece **Definir comando de início**. A pessoa informa um nome, o programa (no `PATH`, dentro do projeto ou pelo caminho completo), os argumentos, a pasta de execução dentro do projeto e, se quiser, a porta; a janela mostra exatamente o que será executado. O comando roda sem terminal: `&&`, `|`, `;`, redirecionamentos e variáveis são recusados com a orientação de colocar o comando num script do projeto. Depois de salvo, o comando funciona como um detectado (iniciar, parar, logs, porta e **Abrir site**), o cartão mostra "Comando definido por você", e Detalhes técnicos permite editar, remover ou adicionar outro. Os comandos ficam salvos no estado do aplicativo e não podem ser alterados enquanto rodam.
 
 O endereço do site vem do que o servidor escreve no log (`http://localhost:3000`) ou, quando ele não escreve, da porta em que o próprio processo, ou um processo filho, está ouvindo, consultada no sistema (no Windows, a tabela TCP; no macOS, `lsof`; no Linux, `lsof` ou `ss`). Assim, servidores como Express, Spring Boot ou um servidor Rust próprio aparecem com **Abrir site** mesmo sem imprimir o endereço. Se o servidor fecha porque a porta já está em uso, o cartão diz "Outro programa está usando a porta" e o log informa qual programa é.
 
@@ -406,8 +406,8 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Go (`go run .` or `go run ./cmd/<name>`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
 | Dart (`bin/main.dart`, `bin/server.dart`, `bin/<package>.dart`) | Yes | Yes | Initial implementation, not validated | Yes | Yes, when the program is a web server |
 | Flutter | Yes | Yes | No | Yes: web (`web-server`, port 4180) and Windows | Flutter web yes; the desktop app opens its own window |
-| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | Not yet | Not yet |
-| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig | Yes | Yes | No | Not yet | Not yet |
+| .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | With the command you define | Yes, when the program is a web server |
+| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
 | Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
 | Containers / Docker / Podman | Experimental | Does not install the engine | No | Docker and Podman validated in the Windows 11 UI | Likely address, in Containers |
 
@@ -417,7 +417,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 
 "Checked on this computer" is the **Languages on this computer** section in Settings: the app looks for each language's program in `PATH` and in default install folders, asks for its version with a 10-second limit, and shows "Installed · version", "Installed · version unavailable", or "Not found in the checked locations"; the checked locations and the program path are under Technical details. The Microsoft Store `python.exe` shortcut without Python installed behind it counts as not found. Nothing is installed from this section.
 
-For languages marked "Not yet", the card says the language was recognized and that LocalCodePilot does not start its projects yet.
+**Define start command.** When the app finds no command, the card says it recognized the language but needs the command to start the project, and offers **Define start command**. You enter a name, the program (in `PATH`, inside the project, or by full path), the arguments, the working folder inside the project, and optionally the port; the dialog shows exactly what will run. The command runs without a terminal: `&&`, `|`, `;`, redirections, and variables are refused with the advice to put the command in a project script. Once saved, it works like a detected command (start, stop, logs, port, and **Open site**), the card shows "Command you defined", and Technical details lets you edit, remove, or add another. Commands are stored in the app state and cannot be changed while they run.
 
 The site address comes from what the server prints in its log (`http://localhost:3000`) or, when it prints nothing, from the port the process itself or a child process listens on, read from the system (the TCP table on Windows, `lsof` on macOS, `lsof` or `ss` on Linux). Servers such as Express, Spring Boot, or a custom Rust server therefore show **Open site** even without printing their address. If the server closes because its port is already in use, the card says "Another program is using the port" and the log names the program.
 
