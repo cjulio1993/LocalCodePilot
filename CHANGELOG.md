@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- Pacotes Swift com alvo executável iniciam sem pedir comando, com `swift run` (servidores Vapor na porta 8080). No Windows, o Swift só compila no ambiente de desenvolvedor do Visual Studio: o app localiza o Visual Studio pelo `vswhere`, aplica o ambiente do `vcvars64` e o `SDKROOT` salvo pelo instalador só aos processos `swift`, sem que seja preciso abrir um prompt especial.
 - Projetos Elixir iniciam sem pedir comando: Phoenix com `mix phx.server` (porta 4000) e aplicações com árvore de supervisão (`mod:` no `mix.exs`) com `mix run --no-halt`. **Instalar dependências** roda `mix deps.get` e, antes, instala o Hex e o Rebar quando faltam, sem a pergunta que travaria a instalação.
 - Projetos Kotlin e Java com o plugin `application` do Gradle, como os servidores Ktor, iniciam sem pedir comando, com `gradlew run --no-daemon` (porta 8080 no Ktor). Projetos Gradle com o plugin Kotlin aparecem como Kotlin.
 - Projetos Deno iniciam sem pedir comando: as tarefas contínuas do `deno.json` ou `deno.jsonc` (`deno task dev`) ou, sem tarefas, o arquivo de entrada (`main.ts`, `server.ts`) com `deno run --allow-net --allow-read --allow-env`.

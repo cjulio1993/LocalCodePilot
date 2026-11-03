@@ -5,6 +5,7 @@ pub mod filesystem;
 pub mod installations;
 pub mod languages;
 pub mod ports;
+pub mod toolchains;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatingSystem {

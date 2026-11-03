@@ -857,6 +857,7 @@ fn detect_processes_in_directory(
     detect_dotnet_process(project, directory, processes);
     detect_deno_process(project, directory, processes);
     detect_elixir_process(project, directory, processes);
+    detect_swift_process(project, directory, processes);
     detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
@@ -1298,6 +1299,27 @@ fn detect_elixir_process(project: &Project, directory: &Path, processes: &mut Ve
             "mix",
             &["run", "--no-halt"],
         );
+    }
+}
+
+/// Swift Package Manager: a package with an executable target runs with `swift run`; a Vapor
+/// server listens on port 8080. Libraries have nothing to start.
+fn detect_swift_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let Ok(manifest) = fs::read_to_string(directory.join("Package.swift")) else {
+        return;
+    };
+    if !manifest.contains(".executableTarget(") && !manifest.contains(".executable(") {
+        return;
+    }
+    let vapor = manifest.contains("vapor/vapor");
+    let name = if vapor {
+        "Servidor Vapor"
+    } else {
+        "Executar pacote Swift"
+    };
+    push_process(processes, project, directory, name, "swift", &["run"]);
+    if vapor && let Some(process) = processes.last_mut() {
+        process.expected_port = Port::new(8080);
     }
 }
 
@@ -3190,6 +3212,47 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_swift_executables_and_vapor() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-swift-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+        let write = |name: &str, manifest: &str| {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(root.join(name).join("Package.swift"), manifest).unwrap();
+        };
+
+        write(
+            "cli",
+            "let package = Package(targets: [.executableTarget(name: \"Cli\")])\n",
+        );
+        let cli = detect_processes(&project("cli"));
+        assert_eq!(cli.len(), 1);
+        assert_eq!(cli[0].command_line(), "swift run");
+
+        write(
+            "api",
+            ".package(url: \"https://github.com/vapor/vapor.git\", from: \"4.0.0\")\n.executableTarget(name: \"App\")\n",
+        );
+        let api = detect_processes(&project("api"));
+        assert_eq!(api[0].name, "Servidor Vapor");
+        assert_eq!(api[0].expected_port, Port::new(8080));
+
+        write(
+            "lib",
+            "let package = Package(targets: [.target(name: \"Lib\")])\n",
+        );
+        assert!(detect_processes(&project("lib")).is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }

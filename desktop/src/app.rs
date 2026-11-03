@@ -5775,6 +5775,28 @@ fn process_command_on_port(
         if let Some(path) = environment_path {
             command.env("PATH", path);
         }
+        // Swift links with the Microsoft linker: the Visual Studio developer environment and
+        // the SDKROOT of its installer, set up by the app.
+        if let Some(toolchain) =
+            localcodepilot_platform::toolchains::environment_for(&process.program)
+        {
+            for (key, value) in &toolchain.variables {
+                command.env(key, value);
+            }
+            let base = environment_path
+                .map(OsStr::to_os_string)
+                .or_else(|| std::env::var_os("PATH"))
+                .unwrap_or_default();
+            if let Ok(path) = std::env::join_paths(
+                toolchain
+                    .path_prefix
+                    .iter()
+                    .cloned()
+                    .chain(std::env::split_paths(&base)),
+            ) {
+                command.env("PATH", path);
+            }
+        }
         command
     }
     #[cfg(not(target_os = "windows"))]

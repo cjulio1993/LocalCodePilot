@@ -101,7 +101,8 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Deno | Sim | Sim | Não | Sim (`deno task dev` ou `deno run main.ts`) | Sim |
 | Kotlin (Gradle: Ktor, Spring Boot, `application`) | Sim | Sim | Não; o Gradle baixa o compilador | Sim (`gradlew run` ou `bootRun`) | Sim |
 | Elixir (Phoenix, Mix) | Sim | Sim | Não; `mix deps.get`, com Hex e Rebar quando faltam | Sim (`mix phx.server` ou `mix run --no-halt`) | Sim |
-| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
+| Swift (Swift Package Manager, Vapor) | Sim | Sim | Não; no Windows, precisa do Visual Studio Build Tools com C++ | Sim (`swift run`, com o ambiente do Visual Studio montado pelo app) | Sim, quando o pacote é um servidor |
+| C/C++, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
 | Containers / Docker / Podman | Sim | Sim; não instala o motor | Não | Sim, com Docker ou Podman (escolha em "Iniciar com") | Sim, pelo endereço publicado, em Containers |
 
@@ -417,7 +418,8 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Deno | Yes | Yes | No | Yes (`deno task dev` or `deno run main.ts`) | Yes |
 | Kotlin (Gradle: Ktor, Spring Boot, `application`) | Yes | Yes | No; Gradle downloads the compiler | Yes (`gradlew run` or `bootRun`) | Yes |
 | Elixir (Phoenix, Mix) | Yes | Yes | No; `mix deps.get`, with Hex and Rebar when missing | Yes (`mix phx.server` or `mix run --no-halt`) | Yes |
-| C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
+| Swift (Swift Package Manager, Vapor) | Yes | Yes | No; on Windows it needs Visual Studio Build Tools with C++ | Yes (`swift run`, with the Visual Studio environment set up by the app) | Yes, when the package is a server |
+| C/C++, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
 | Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
 | Containers / Docker / Podman | Yes | Yes; does not install the engine | No | Yes, with Docker or Podman (choose under "Start with") | Yes, through the published address, in Containers |
 
