@@ -175,7 +175,7 @@ pub const LANGUAGES: &[Language] = &[
             InstallDir::ProgramFiles("dotnet"),
             InstallDir::Home(".dotnet"),
         ],
-        starts: false,
+        starts: true,
     },
     Language {
         kind: RuntimeKind::Ruby,
