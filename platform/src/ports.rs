@@ -131,11 +131,95 @@ fn process_name(process_id: u32) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn windows_listener_process_id(port: Port) -> Option<u32> {
-    let output = hidden_windows_command("netstat")
-        .args(["-ano", "-p", "tcp"])
-        .output()
-        .ok()?;
-    listener_process_id_from_netstat(&String::from_utf8_lossy(&output.stdout), port)
+    windows_tcp_listeners()
+        .into_iter()
+        .find(|(_, listener, _)| *listener == port.value())
+        .map(|(_, _, process_id)| process_id)
+}
+
+/// Every TCP listener of this computer, from the system table (`GetExtendedTcpTable`), as
+/// `(address, port, process id)`. `netstat` reads the same table but prints translated text
+/// that was seen with wrong state labels and missing rows.
+#[cfg(target_os = "windows")]
+fn windows_tcp_listeners() -> Vec<(IpAddr, u16, u32)> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
+        TCP_TABLE_OWNER_PID_LISTENER,
+    };
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+
+    const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+
+    /// One table: a `u32` row count followed by the rows, all 4-byte aligned.
+    fn table<Row: Copy>(family: u16) -> Vec<Row> {
+        let mut size = 0_u32;
+        // SAFETY: a null buffer with a size of 0 only asks for the size the table needs.
+        unsafe {
+            GetExtendedTcpTable(
+                std::ptr::null_mut(),
+                &mut size,
+                0,
+                u32::from(family),
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        // The table may grow between calls.
+        for _ in 0..3 {
+            let mut buffer = vec![0_u32; (size as usize).div_ceil(4) + 1];
+            let mut length = (buffer.len() * 4) as u32;
+            // SAFETY: `length` is the real size of `buffer`, which is 4-byte aligned.
+            let result = unsafe {
+                GetExtendedTcpTable(
+                    buffer.as_mut_ptr().cast(),
+                    &mut length,
+                    0,
+                    u32::from(family),
+                    TCP_TABLE_OWNER_PID_LISTENER,
+                    0,
+                )
+            };
+            if result == ERROR_INSUFFICIENT_BUFFER {
+                size = length;
+                continue;
+            }
+            if result != 0 {
+                return Vec::new();
+            }
+            let count = buffer[0] as usize;
+            let row_words = std::mem::size_of::<Row>() / 4;
+            if 1 + count * row_words > buffer.len() {
+                return Vec::new();
+            }
+            let rows = buffer[1..].as_ptr().cast::<Row>();
+            // SAFETY: the bounds were checked above and `Row` is plain data.
+            return (0..count)
+                .map(|index| unsafe { rows.add(index).read_unaligned() })
+                .collect();
+        }
+        Vec::new()
+    }
+
+    let port = |raw: u32| u16::from_be((raw & 0xFFFF) as u16);
+    let ipv4 = table::<MIB_TCPROW_OWNER_PID>(AF_INET)
+        .into_iter()
+        .map(|row| {
+            (
+                IpAddr::V4(Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes())),
+                port(row.dwLocalPort),
+                row.dwOwningPid,
+            )
+        });
+    let ipv6 = table::<MIB_TCP6ROW_OWNER_PID>(AF_INET6)
+        .into_iter()
+        .map(|row| {
+            (
+                IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
+                port(row.dwLocalPort),
+                row.dwOwningPid,
+            )
+        });
+    ipv4.chain(ipv6).collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -146,26 +230,126 @@ fn hidden_windows_command(program: &str) -> Command {
     command
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn listener_process_id_from_netstat(output: &str, port: Port) -> Option<u32> {
-    output.lines().find_map(|line| {
-        let columns: Vec<_> = line.split_whitespace().collect();
-        if columns.len() < 5 || !columns[0].eq_ignore_ascii_case("TCP") {
-            return None;
-        }
-        let state = columns[3].to_ascii_uppercase();
-        let is_listening =
-            state.contains("LISTEN") || state.contains("ESCUT") || state.contains("OUVIN");
-        if !is_listening || endpoint_port(columns[1]) != Some(port.value()) {
-            return None;
-        }
-        columns.last()?.parse().ok()
-    })
+/// Every process listening on `port` on this computer. A project and another program can
+/// listen on the same port at once on Windows, for example one on `127.0.0.1` and the other
+/// on `[::]`.
+pub fn listener_process_ids(port: Port) -> Vec<u32> {
+    let mut ids = local_listeners()
+        .into_iter()
+        .filter(|(listener, _)| *listener == port.value())
+        .map(|(_, process_id)| process_id)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn endpoint_port(endpoint: &str) -> Option<u16> {
-    endpoint.rsplit_once(':')?.1.parse().ok()
+/// Ports on this computer where `root` or one of its descendants listens. Servers that do not
+/// print their address (Express, Spring, Go, many Rust servers) are found this way.
+pub fn listening_ports(root: u32) -> Vec<Port> {
+    let listeners = local_listeners();
+    if listeners.is_empty() {
+        return Vec::new();
+    }
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, false);
+    let descends = |process_id: u32| {
+        let mut current = Pid::from_u32(process_id);
+        // Bounded: a corrupted process table must not loop forever.
+        for _ in 0..64 {
+            if current.as_u32() == root {
+                return true;
+            }
+            let Some(parent) = system.process(current).and_then(|process| process.parent()) else {
+                return false;
+            };
+            current = parent;
+        }
+        false
+    };
+    let mut ports = listeners
+        .into_iter()
+        .filter(|(_, process_id)| descends(*process_id))
+        .filter_map(|(port, _)| Port::new(port))
+        .collect::<Vec<_>>();
+    ports.sort_by_key(|port| port.value());
+    ports.dedup();
+    ports
+}
+
+/// TCP listeners reachable from this computer, as `(port, process id)`.
+fn local_listeners() -> Vec<(u16, u32)> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_tcp_listeners()
+            .into_iter()
+            .filter(|(address, _, _)| address.is_unspecified() || address.is_loopback())
+            .map(|(_, port, process_id)| (port, process_id))
+            .collect()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let lsof = std::process::Command::new("lsof")
+            .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])
+            .output();
+        if let Ok(output) = lsof
+            && output.status.success()
+        {
+            return lsof_listeners(&String::from_utf8_lossy(&output.stdout));
+        }
+        // Linux without lsof.
+        std::process::Command::new("ss")
+            .args(["-ltnpH"])
+            .output()
+            .map(|output| ss_listeners(&String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or_default()
+    }
+}
+
+/// `host:port` on an address the browser reaches from this computer.
+#[cfg(any(not(target_os = "windows"), test))]
+fn local_endpoint_port(endpoint: &str) -> Option<u16> {
+    let (host, port) = endpoint.rsplit_once(':')?;
+    matches!(
+        host,
+        "0.0.0.0" | "127.0.0.1" | "*" | "localhost" | "[::]" | "[::1]" | "::" | "::1"
+    )
+    .then(|| port.parse().ok())
+    .flatten()
+}
+
+/// `lsof -F pn`: a `p<pid>` line, then one `n<host>:<port>` line per listening socket.
+#[cfg(any(not(target_os = "windows"), test))]
+fn lsof_listeners(output: &str) -> Vec<(u16, u32)> {
+    let mut process_id = None;
+    let mut listeners = Vec::new();
+    for line in output.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            process_id = pid.parse().ok();
+        } else if let (Some(endpoint), Some(pid)) = (line.strip_prefix('n'), process_id)
+            && let Some(port) = local_endpoint_port(endpoint)
+        {
+            listeners.push((port, pid));
+        }
+    }
+    listeners
+}
+
+/// `ss -ltnpH`: `LISTEN 0 511 *:3000 *:* users:(("node",pid=123,fd=19))`.
+#[cfg(any(not(target_os = "windows"), test))]
+fn ss_listeners(output: &str) -> Vec<(u16, u32)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let columns: Vec<_> = line.split_whitespace().collect();
+            let port = local_endpoint_port(columns.get(3)?)?;
+            let pid = line.split("pid=").nth(1)?;
+            let pid = pid[..pid.find(|c: char| !c.is_ascii_digit())?]
+                .parse()
+                .ok()?;
+            Some((port, pid))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -173,20 +357,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_the_owner_of_ipv4_and_ipv6_listeners() {
-        let output = "\
-  TCP    0.0.0.0:3306       0.0.0.0:0       LISTENING       5952\n\
-  TCP    [::]:5173          [::]:0          LISTENING       8420\n\
-  TCP    127.0.0.1:5173     127.0.0.1:60000 ESTABLISHED     9999";
+    fn listeners_from_lsof_and_ss_skip_other_interfaces() {
+        let lsof = "p101\nf19\nn*:3000\nf20\nn[::1]:3001\np202\nf7\nn10.0.0.2:22\n";
+        assert_eq!(lsof_listeners(lsof), [(3000, 101), (3001, 101)]);
 
-        assert_eq!(
-            listener_process_id_from_netstat(output, Port::new(3306).unwrap()),
-            Some(5952)
+        let ss = "\
+LISTEN 0 511 *:3000 *:* users:((\"node\",pid=123,fd=19))
+LISTEN 0 128 127.0.0.1:631 0.0.0.0:* users:((\"cupsd\",pid=9,fd=7))
+LISTEN 0 128 10.0.0.2:22 0.0.0.0:* users:((\"sshd\",pid=8,fd=3))";
+        assert_eq!(ss_listeners(ss), [(3000, 123), (631, 9)]);
+    }
+
+    #[test]
+    fn finds_the_port_a_child_server_listens_on() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // This test process listens; it is its own root.
+        let ports = listening_ports(std::process::id());
+        assert!(
+            ports.iter().any(|found| found.value() == port),
+            "{port} not in {ports:?}"
         );
-        assert_eq!(
-            listener_process_id_from_netstat(output, Port::new(5173).unwrap()),
-            Some(8420)
-        );
+        drop(listener);
     }
 
     #[test]
@@ -211,14 +403,12 @@ mod tests {
         child.wait().ok();
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
-    fn ignores_connections_that_are_not_listening() {
-        let output = "TCP 127.0.0.1:5173 127.0.0.1:60000 ESTABLISHED 9999";
-
-        assert_eq!(
-            listener_process_id_from_netstat(output, Port::new(5173).unwrap()),
-            None
-        );
+    fn the_owner_of_a_port_comes_from_the_system_table() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = Port::new(listener.local_addr().unwrap().port()).unwrap();
+        assert_eq!(windows_listener_process_id(port), Some(std::process::id()));
     }
 
     #[test]

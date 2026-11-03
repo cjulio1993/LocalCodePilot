@@ -306,11 +306,12 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             PrimaryAction::Details,
         );
     }
+    // A SQLite file that does not exist yet is created when the project starts; only a
+    // database server that does not answer keeps the project from starting.
     if environment.is_ready()
-        && !environment
-            .databases
-            .iter()
-            .any(|(_, available)| *available == Some(false))
+        && !environment.databases.iter().any(|(database, available)| {
+            *available == Some(false) && database.engine != DatabaseEngine::Sqlite
+        })
     {
         return summary(ProjectState::Stopped, None, PrimaryAction::Start);
     }

@@ -16,6 +16,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Alterado
 
+- Num projeto Laravel recém-clonado, **Instalar dependências** também cria o `.env` a partir do `.env.example`, gera a chave da aplicação e, quando o projeto usa SQLite, cria as tabelas com `php artisan migrate`; cada etapa aparece no plano antes de executar.
+- A matriz de suporte separa **Inicia** e **Abre no navegador**. Rust, Node.js, PHP, Laravel, Python/Flask, Django, Spring Boot com Maven wrapper e site estático foram validados de ponta a ponta no Windows 11 e passaram de "Experimental" para "Sim".
 - A Visão geral mostra o que está rodando, o que precisa de atenção e o que está parado, com uma ação principal por projeto (Iniciar, Abrir site, Ver logs ou Detalhes). Os estados usam os mesmos nomes em todo o aplicativo: Rodando, Parado, Iniciando e Com problema.
 - Projetos ganhou busca por nome e filtros por estado, com visualização em cartões ou lista; filtro e visualização ficam salvos.
 - O selo do site descreve o resultado da verificação HTTP em linguagem simples (por exemplo, "Servidor respondeu; página não encontrada" para um 404) e mostra o código ao passar o mouse; sem verificação, não aparece selo. Em projetos com containers, o endereço aparece como "Endereço provável".
@@ -39,6 +41,11 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Projetos em pastas com espaço no nome (como "Área de Trabalho") voltaram a iniciar comandos `.cmd` e `.bat`, como `npm`, `mvnw` e `gradlew`: o aplicativo passava ao `cmd.exe` o caminho no formato `\\?\`, que ele não aceita, e o comando rodava na pasta do Windows ou era cortado no espaço.
+- Servidores que não escrevem o endereço no log (Express, Spring Boot, Go, servidores Rust próprios) passam a mostrar **Abrir site** e o selo do site: o aplicativo consulta no sistema a porta em que o processo do projeto, ou um processo filho, está ouvindo.
+- Quando um servidor fecha porque a porta já está em uso, o cartão diz "Outro programa está usando a porta" em vez de "O processo fechou inesperadamente", em Node, Spring Boot, Flask, PHP, Rust, Go e Python. Se outro programa ocupa a porta durante a execução, o motivo também é esse, e não "parou de responder".
+- No Windows, o dono de uma porta passa a ser lido da tabela TCP do sistema em vez do texto do `netstat`, que podia vir traduzido, com estados errados ou sem algumas linhas; um projeto que ouve na mesma porta que outro programa, em outro endereço, é reconhecido.
+- Laravel 11 ou mais novo com SQLite não ficava mais preso em "Arquivo SQLite será preparado ao iniciar o ambiente" sem botão para iniciar: o arquivo `database/database.sqlite`, usado quando `DB_DATABASE` está comentado, é criado ao iniciar.
 - A consulta de versão de cada linguagem tem tempo limite de 10 segundos; antes, um programa que não respondia prendia a verificação do ambiente.
 - Um site PHP com o Compose numa subpasta (como `docker/`) inicia pelos containers quando o Compose serve o site (serviço com `build:` próprio ou imagem de PHP, Apache, Nginx ou Caddy), não só no WordPress. Um Compose só com o banco ou com phpMyAdmin mantém o servidor PHP local.
 - Um `compose.yaml` salvo com BOM, comum em editores no Windows, não aparece mais como "YAML inválido".

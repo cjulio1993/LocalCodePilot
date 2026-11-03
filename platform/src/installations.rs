@@ -291,8 +291,8 @@ pub fn inspect_program(
     })
 }
 
-/// Runs `executable` with `version_args`, without a shell (only `.bat` and `.cmd` go through
-/// `cmd /C`), and returns the first line it prints. A program that does not answer within
+/// Runs `executable` with `version_args`, without a shell (`.bat` and `.cmd` go through
+/// `cmd.exe`, as Windows requires), and returns the first line it prints. A program that does not answer within
 /// `timeout` is stopped.
 pub fn read_version(
     executable: &Path,
@@ -300,20 +300,8 @@ pub fn read_version(
     path: Option<&OsStr>,
     timeout: Duration,
 ) -> VersionAnswer {
-    #[cfg(target_os = "windows")]
-    let mut command = if executable
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "bat" | "cmd"))
-    {
-        let mut command = Command::new("cmd.exe");
-        command.args(["/D", "/C"]).arg(executable);
-        command
-    } else {
-        Command::new(executable)
-    };
-    #[cfg(not(target_os = "windows"))]
-    let mut command = Command::new(executable);
+    // Batch files included: the standard library runs them through cmd.exe and quotes them.
+    let mut command = Command::new(localcodepilot_core::paths::plain_path(executable));
     command
         .args(version_args)
         .stdin(Stdio::null())

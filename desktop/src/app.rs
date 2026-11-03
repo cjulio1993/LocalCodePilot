@@ -24,8 +24,8 @@ use localcodepilot_core::{
         InstallationPlan, InstallationStep, InstallationStepKind, RequirementStatus,
         RuntimeRequirement,
     },
-    paths::display_path,
-    ports::{LocalServerUrl, Port, extract_local_urls, strip_terminal_sequences},
+    paths::{display_path, plain_path},
+    ports::{LocalServerUrl, Port, extract_local_urls, port_in_use, strip_terminal_sequences},
     processes::{ProcessState, ProjectProcess},
     projects::Project,
     runtimes::RuntimeKind,
@@ -38,8 +38,8 @@ use localcodepilot_platform::{
         inspect_program, managed_bin_directory, refreshed_environment_path,
     },
     ports::{
-        PortAvailability, PortOwner, inspect_tcp_port, process_descends_from,
-        terminate_process_tree,
+        PortAvailability, PortOwner, inspect_tcp_port, listener_process_ids, listening_ports,
+        process_descends_from, terminate_process_tree,
     },
 };
 use localcodepilot_runtime::databases::{
@@ -74,6 +74,8 @@ const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_START_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESS_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const PROCESS_PORT_LOSS_GRACE: Duration = Duration::from_secs(6);
+/// How often a running process without a known port is asked which ports it listens on.
+const LISTENER_PROBE_INTERVAL: Duration = Duration::from_secs(3);
 const HTTP_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 const HTTP_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const INSTALLATION_STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -128,6 +130,10 @@ struct RunningProcess {
     http_health: Option<HttpHealthCheckResult>,
     http_health_receiver: Option<Receiver<HttpHealthCheckResult>>,
     last_http_health_check: Option<Instant>,
+    /// Asks the system which ports this process (or a child) listens on, for servers that
+    /// do not print their address or were not started on a known port.
+    listener_probe: Option<Receiver<Vec<Port>>>,
+    last_listener_probe: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1632,7 +1638,7 @@ impl LocalCodePilot {
         let mut command =
             process_command_on_port(&process, alternative_port, self.environment_path.as_deref());
         command
-            .current_dir(&process.working_directory)
+            .current_dir(plain_path(&process.working_directory))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -1673,6 +1679,8 @@ impl LocalCodePilot {
                         http_health: None,
                         http_health_receiver: None,
                         last_http_health_check: None,
+                        listener_probe: None,
+                        last_listener_probe: None,
                     },
                 );
                 self.processes[index].state = if assigned_port.is_some() {
@@ -3048,6 +3056,7 @@ impl LocalCodePilot {
         let mut state_updates = Vec::new();
         let mut ready_updates = Vec::new();
         let mut history_updates = Vec::new();
+        let mut discovered_ports = Vec::new();
         let mut has_running_process = false;
         let now = Instant::now();
         for (id, running) in &mut self.running_processes {
@@ -3096,6 +3105,43 @@ impl LocalCodePilot {
                         state_updates.push((id.clone(), exit_state, status.code(), None));
                         continue;
                     }
+                    // A server that closed because its port was taken says so, with the
+                    // program holding the port, instead of "closed unexpectedly".
+                    let recent = running
+                        .logs
+                        .iter()
+                        .rev()
+                        .take(40)
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    let taken = port_in_use(&recent).and_then(|named| {
+                        named
+                            .and_then(Port::new)
+                            .or_else(|| assigned_ports.get(id).copied())
+                    });
+                    if let Some(port) = taken {
+                        let owner = match inspect_tcp_port(port) {
+                            PortAvailability::Occupied { owner } => owner,
+                            PortAvailability::Available => None,
+                        };
+                        if let Some(owner) = &owner {
+                            running.logs.push_back(format!(
+                                "[LocalCodePilot] {}",
+                                port_owner_detail(port, owner)
+                            ));
+                        }
+                        running.logs.push_back(format!(
+                            "[LocalCodePilot] Falha: outro programa está usando a porta {}.",
+                            port.value()
+                        ));
+                        state_updates.push((
+                            id.clone(),
+                            ProcessState::Failed,
+                            status.code(),
+                            Some(ProcessFailure::PortTaken { port, owner }),
+                        ));
+                        continue;
+                    }
                     let stopped_during_startup = state == ProcessState::Starting;
                     let failure = if stopped_during_startup {
                         ProcessFailure::ClosedBeforeReady
@@ -3134,6 +3180,13 @@ impl LocalCodePilot {
             }
 
             let Some(port) = assigned_ports.get(id).copied() else {
+                // No known port: once the server listens, its port becomes the one the app
+                // checks, opens and watches, as if it had been declared.
+                if state == ProcessState::Running
+                    && let Some(port) = probe_listening_port(running, now)
+                {
+                    discovered_ports.push((id.clone(), port));
+                }
                 continue;
             };
             let check_interval = if state == ProcessState::Starting {
@@ -3147,8 +3200,23 @@ impl LocalCodePilot {
             running.last_health_check = now;
             // The port only counts when this process (or a child) listens on it; otherwise the
             // app would mark the project as running and check another program's site.
+            // Any listener of the project counts, even when another program also listens on
+            // the same port on a different address.
+            let own_listener = listener_process_ids(port).into_iter().find(|process_id| {
+                running.verified_listener == Some(*process_id)
+                    || process_descends_from(*process_id, running.child.id())
+            });
+            let availability = match own_listener {
+                Some(process_id) => PortAvailability::Occupied {
+                    owner: Some(PortOwner {
+                        process_id,
+                        process_name: None,
+                    }),
+                },
+                None => inspect_tcp_port(port),
+            };
             let port_is_listening = match port_listener(
-                inspect_tcp_port(port),
+                availability,
                 running.verified_listener,
                 running.child.id(),
                 process_descends_from,
@@ -3224,22 +3292,50 @@ impl LocalCodePilot {
                 } else {
                     let unavailable_since = running.port_unavailable_since.get_or_insert(now);
                     if now.duration_since(*unavailable_since) >= PROCESS_PORT_LOSS_GRACE {
-                        running.logs.push_back(format!(
-                            "[LocalCodePilot] Falha: a porta {} deixou de responder por {} segundos.",
-                            port.value(),
-                            PROCESS_PORT_LOSS_GRACE.as_secs()
-                        ));
+                        // Another program holding the port is a different problem from a server
+                        // that stopped answering, and the card says which one it was.
+                        let failure = match &running.foreign_listener {
+                            Some(owner) => {
+                                running.logs.push_back(format!(
+                                    "[LocalCodePilot] {}",
+                                    port_owner_detail(port, owner)
+                                ));
+                                ProcessFailure::PortTaken {
+                                    port,
+                                    owner: Some(owner.clone()),
+                                }
+                            }
+                            None => {
+                                running.logs.push_back(format!(
+                                    "[LocalCodePilot] Falha: a porta {} deixou de responder por {} segundos.",
+                                    port.value(),
+                                    PROCESS_PORT_LOSS_GRACE.as_secs()
+                                ));
+                                ProcessFailure::PortLost(port)
+                            }
+                        };
                         terminate_process(&mut running.child);
                         running.finished = true;
-                        state_updates.push((
-                            id.clone(),
-                            ProcessState::Failed,
-                            None,
-                            Some(ProcessFailure::PortLost(port)),
-                        ));
+                        state_updates.push((id.clone(), ProcessState::Failed, None, Some(failure)));
                     }
                 }
             }
+        }
+        for (id, port) in discovered_ports {
+            if let Some(running) = self.running_processes.get_mut(&id) {
+                running.logs.push_back(format!(
+                    "[LocalCodePilot] O processo está ouvindo na porta {}.",
+                    port.value()
+                ));
+                if !running.urls.iter().any(|url| url.port() == port) {
+                    running.urls.extend(extract_local_urls(&format!(
+                        "http://localhost:{}",
+                        port.value()
+                    )));
+                }
+            }
+            self.assigned_ports.insert(id.clone(), port);
+            history_updates.push(id);
         }
         for (id, port) in ready_updates {
             let notification = self
@@ -4582,7 +4678,7 @@ fn run_laravel_migration_command(
         port_override: None,
     };
     let mut child = process_command(&process)
-        .current_dir(working_directory)
+        .current_dir(plain_path(working_directory))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -4975,7 +5071,12 @@ fn resolve_environment_plan_with_tools_directory(
             .install_steps
             .iter()
             .map(|step| InstallationStep {
-                label: format!("Instalar {}", step.label),
+                // Labels that already start with a verb ("Criar", "Gerar") are kept.
+                label: if step.label.starts_with(char::is_uppercase) {
+                    step.label.clone()
+                } else {
+                    format!("Instalar {}", step.label)
+                },
                 detail: format!(
                     "Executar no projeto: {} {}",
                     step.program,
@@ -5116,7 +5217,7 @@ fn run_installation_plan(
                 let command_line = installation_step_command(step);
                 let mut command = installation_command(program, args, environment_path.as_deref())?;
                 let mut child = command
-                    .current_dir(working_directory)
+                    .current_dir(plain_path(working_directory))
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
@@ -5249,7 +5350,7 @@ fn install_composer(
         "composer.phar".into(),
     ];
     let output = installation_command("php", &args, environment_path)?
-        .current_dir(install_directory)
+        .current_dir(plain_path(install_directory))
         .output()
         .map_err(|error| format!("Não foi possível executar o instalador do Composer: {error}"));
     let _ = fs::remove_file(&setup_path);
@@ -5438,26 +5539,9 @@ fn installation_command(
 ) -> Result<Command, String> {
     let executable = find_executable(program, environment_path)
         .ok_or_else(|| format!("O comando {program} não foi encontrado"))?;
-    #[cfg(target_os = "windows")]
-    let mut command = if executable
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "cmd" | "bat"))
-    {
-        let mut command = Command::new("cmd.exe");
-        command.args(["/D", "/C"]).arg(&executable).args(args);
-        command
-    } else {
-        let mut command = Command::new(&executable);
-        command.args(args);
-        command
-    };
-    #[cfg(not(target_os = "windows"))]
-    let mut command = {
-        let mut command = Command::new(&executable);
-        command.args(args);
-        command
-    };
+    // Batch files included: the standard library runs them through cmd.exe and quotes them.
+    let mut command = Command::new(plain_path(&executable));
+    command.args(args);
     if let Some(path) = environment_path {
         command.env("PATH", path);
     }
@@ -5649,16 +5733,10 @@ fn process_command_on_port(
     {
         let executable = find_executable(&process.program, environment_path)
             .unwrap_or_else(|| PathBuf::from(&process.program));
-        let is_script = executable.extension().is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        });
-        let mut command = if is_script {
-            let mut command = Command::new("cmd.exe");
-            command.args(["/D", "/C"]).arg(&executable);
-            command
-        } else {
-            Command::new(&executable)
-        };
+        // Batch files (npm.cmd, mvnw.cmd, gradlew.bat) included: the standard library runs
+        // them through cmd.exe with correct quoting, which a hand-made `cmd /C` did not do
+        // for paths with spaces.
+        let mut command = Command::new(plain_path(&executable));
         command.args(&args);
         configure_background_command(&mut command);
         if let Some(path) = environment_path {
@@ -5941,6 +6019,51 @@ fn process_matches_search(
             .to_lowercase()
             .contains(query)
         || project.is_some_and(|project| project.display_stack().to_lowercase().contains(query))
+}
+
+/// Collects the answer of a listener probe, or starts one every few seconds. Prefers the port
+/// of an address the process printed, and skips debugger ports that are not the site.
+fn probe_listening_port(running: &mut RunningProcess, now: Instant) -> Option<Port> {
+    if let Some(receiver) = &running.listener_probe {
+        match receiver.try_recv() {
+            Ok(ports) => {
+                running.listener_probe = None;
+                return choose_listening_port(&ports, &running.urls);
+            }
+            Err(TryRecvError::Disconnected) => running.listener_probe = None,
+            Err(TryRecvError::Empty) => return None,
+        }
+    }
+    if running
+        .last_listener_probe
+        .is_some_and(|last| now.duration_since(last) < LISTENER_PROBE_INTERVAL)
+    {
+        return None;
+    }
+    running.last_listener_probe = Some(now);
+    let root = running.child.id();
+    let (sender, receiver) = mpsc::channel();
+    running.listener_probe = Some(receiver);
+    std::thread::spawn(move || {
+        let _ = sender.send(listening_ports(root));
+    });
+    None
+}
+
+/// Node (9229), Java (5005) and live-reload (35729) debug ports are not the site.
+fn choose_listening_port(ports: &[Port], printed: &[LocalServerUrl]) -> Option<Port> {
+    const DEBUG_PORTS: [u16; 4] = [5005, 9229, 9230, 35729];
+    printed
+        .iter()
+        .rev()
+        .map(LocalServerUrl::port)
+        .find(|port| ports.contains(port))
+        .or_else(|| {
+            ports
+                .iter()
+                .copied()
+                .find(|port| !DEBUG_PORTS.contains(&port.value()))
+        })
 }
 
 fn process_exposes_application_url(project: &Project, process: &ProjectProcess) -> bool {
@@ -6294,6 +6417,62 @@ fn inspect_project_environment_with_inventory(
                     program: "composer".into(),
                     args: vec!["install".into()],
                     working_directory: process.working_directory.clone(),
+                });
+            }
+        }
+
+        // A cloned Laravel project has `.env.example` but no `.env`, and answers every page with
+        // an error until it has one with an application key. The key needs `vendor`, so these
+        // steps come after Composer.
+        let serves_laravel = process.program == "php"
+            && process
+                .args
+                .first()
+                .is_some_and(|argument| argument == "artisan");
+        let directory = &process.working_directory;
+        if serves_laravel
+            && directory.join(".env.example").is_file()
+            && !directory.join(".env").is_file()
+            && !install_steps.iter().any(|step: &DependencyInstall| {
+                step.args.first().is_some_and(|argument| argument == "-r")
+                    && step.working_directory == *directory
+            })
+        {
+            if !missing_dependencies
+                .iter()
+                .any(|item| item == "configuração do Laravel")
+            {
+                missing_dependencies.push("configuração do Laravel".to_owned());
+            }
+            install_steps.push(DependencyInstall {
+                label: "Criar o arquivo .env a partir de .env.example".into(),
+                program: "php".into(),
+                args: vec!["-r".into(), "copy('.env.example', '.env');".into()],
+                working_directory: directory.clone(),
+            });
+            install_steps.push(DependencyInstall {
+                label: "Gerar a chave da aplicação Laravel (APP_KEY)".into(),
+                program: "php".into(),
+                args: vec!["artisan".into(), "key:generate".into(), "--ansi".into()],
+                working_directory: directory.clone(),
+            });
+            // New projects keep sessions, cache and jobs in SQLite: without tables every page
+            // fails with "no such table". The database is new here, so nothing is lost.
+            if fs::read_to_string(directory.join(".env.example")).is_ok_and(|example| {
+                example
+                    .lines()
+                    .any(|line| line.trim() == "DB_CONNECTION=sqlite")
+            }) {
+                install_steps.push(DependencyInstall {
+                    label: "Criar as tabelas do banco SQLite (php artisan migrate)".into(),
+                    program: "php".into(),
+                    args: vec![
+                        "artisan".into(),
+                        "migrate".into(),
+                        "--force".into(),
+                        "--no-interaction".into(),
+                    ],
+                    working_directory: directory.clone(),
                 });
             }
         }
@@ -6763,6 +6942,7 @@ mod tests {
         technologies::TechnologyKind,
     };
     use localcodepilot_platform::installations::ProgramInventory;
+
     use std::{
         ffi::OsStr,
         fs,
@@ -6773,6 +6953,24 @@ mod tests {
         thread,
         time::SystemTime,
     };
+
+    #[test]
+    fn a_found_port_prefers_the_printed_address_and_skips_debuggers() {
+        let port = |value| Port::new(value).unwrap();
+        let printed =
+            localcodepilot_core::ports::extract_local_urls("ready at http://localhost:8080");
+        assert_eq!(
+            super::choose_listening_port(&[port(3000), port(8080)], &printed),
+            Some(port(8080))
+        );
+        // Node inspector first, then the server.
+        assert_eq!(
+            super::choose_listening_port(&[port(3000), port(9229)], &[]),
+            Some(port(3000))
+        );
+        assert_eq!(super::choose_listening_port(&[port(9229)], &[]), None);
+        assert_eq!(super::choose_listening_port(&[], &printed), None);
+    }
 
     #[test]
     fn a_saved_plugins_page_opens_the_overview() {

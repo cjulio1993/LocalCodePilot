@@ -104,6 +104,13 @@ fn sqlite_path(requirement: &DatabaseRequirement, project_root: &Path) -> Result
     }
     let contents = fs::read_to_string(&requirement.source)
         .map_err(|error| format!("Não foi possível ler a configuração do banco: {error}"))?;
+    // Laravel 11 and later ship `.env.example` with `DB_DATABASE` commented out: the framework
+    // then uses `database/database.sqlite`.
+    let laravel_default = requirement
+        .source
+        .parent()
+        .is_some_and(|folder| folder.join("artisan").is_file())
+        .then_some("database/database.sqlite");
     let name = contents
         .lines()
         .filter_map(|line| {
@@ -111,6 +118,7 @@ fn sqlite_path(requirement: &DatabaseRequirement, project_root: &Path) -> Result
             (key == "DB_DATABASE").then(|| value.trim().trim_matches(['\'', '"']))
         })
         .next_back()
+        .or(laravel_default)
         .ok_or("DB_DATABASE não foi definido para SQLite")?;
     if name.is_empty() || name == ":memory:" || name.contains(['$', '{', '}']) {
         return Err("DB_DATABASE não aponta para um arquivo SQLite local".into());
@@ -578,6 +586,13 @@ mod tests {
         .unwrap();
         assert!(prepare_sqlite_database(&database, &root).is_err());
         assert!(!root.parent().unwrap().join("outside.sqlite").exists());
+
+        // Laravel 11+: `DB_DATABASE` commented out means `database/database.sqlite`.
+        fs::write(&source, "DB_CONNECTION=sqlite\n# DB_DATABASE=laravel\n").unwrap();
+        assert!(prepare_sqlite_database(&database, &root).is_err());
+        fs::write(root.join("artisan"), "").unwrap();
+        prepare_sqlite_database(&database, &root).unwrap();
+        assert!(root.join("database/database.sqlite").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 }

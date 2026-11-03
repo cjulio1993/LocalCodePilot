@@ -8,6 +8,7 @@ use localcodepilot_core::containers::{
     ContainerAction, ContainerCommand, ContainerEngine, ContainerProject, EngineDiagnosis,
     EngineState, RuntimeContainer,
 };
+use localcodepilot_core::paths::plain_path;
 use localcodepilot_core::ports::strip_terminal_sequences;
 use std::{
     ffi::OsStr,
@@ -106,7 +107,7 @@ fn read_command_output_in(
     let executable = find_executable(program, path).ok_or("CLI indisponível")?;
     let mut command = Command::new(executable);
     if let Some(directory) = directory {
-        command.current_dir(directory);
+        command.current_dir(plain_path(directory));
     }
     command
         .args(args)
@@ -580,7 +581,7 @@ fn execute_container_command_with_timeout(
         let mut process = Command::new(executable);
         process
             .args(&command.args)
-            .current_dir(&command.working_directory)
+            .current_dir(plain_path(&command.working_directory))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

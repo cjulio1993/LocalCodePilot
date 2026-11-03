@@ -138,9 +138,89 @@ fn parse_local_url(candidate: &str) -> Option<LocalServerUrl> {
     })
 }
 
+/// Whether a server's log says its port was already taken, and which port when the message
+/// names it. Each runtime words it differently: Node `EADDRINUSE ... :::3000`, Spring `Port
+/// 8080 was already in use`, Flask `Port 5000 is in use by another program`, PHP `Failed to
+/// listen on localhost:8000`, Rust, Go and Python `address already in use` (Windows error
+/// 10048, translated by the system).
+pub fn port_in_use(lines: &[&str]) -> Option<Option<u16>> {
+    let mut found = false;
+    let mut port = None;
+    for line in lines {
+        let lower = strip_terminal_sequences(line).to_ascii_lowercase();
+        let in_use = lower.contains("eaddrinuse")
+            || lower.contains("address already in use")
+            || lower.contains("already in use")
+            || lower.contains("is in use by another program")
+            || lower.contains("failed to listen on")
+            || lower.contains("os error 10048")
+            || lower.contains("os error 98)")
+            || lower.contains("os error 48)");
+        if !in_use {
+            continue;
+        }
+        found = true;
+        port = named_port(&lower).or(port);
+    }
+    found.then_some(port)
+}
+
+/// The port in `...:3000`, `port 8080` or `localhost:8000`, ignoring OS error codes.
+fn named_port(line: &str) -> Option<u16> {
+    let after_port = line.split("port ").skip(1).filter_map(leading_number);
+    let after_colon = line.split(':').skip(1).filter_map(leading_number);
+    after_port
+        .chain(after_colon)
+        .filter(|port| *port >= 80)
+        .last()
+}
+
+fn leading_number(text: &str) -> Option<u16> {
+    let digits = text
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    digits.parse().ok().filter(|port| *port > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_a_taken_port_in_each_runtime_log() {
+        let cases: [(&[&str], Option<Option<u16>>); 8] = [
+            (
+                &["Error: listen EADDRINUSE: address already in use :::3000"],
+                Some(Some(3000)),
+            ),
+            (
+                &["Web server failed to start. Port 8080 was already in use."],
+                Some(Some(8080)),
+            ),
+            (
+                &[
+                    "Address already in use",
+                    "Port 5000 is in use by another program.",
+                ],
+                Some(Some(5000)),
+            ),
+            (
+                &["[Mon] Failed to listen on localhost:8000 (reason: Address already in use)"],
+                Some(Some(8000)),
+            ),
+            (
+                &["Error: Os { code: 10048, kind: AddrInUse, message: \"...\" } (os error 10048)"],
+                Some(None),
+            ),
+            (&["OSError: [Errno 98] Address already in use"], Some(None)),
+            (&["listening on port 3000"], None),
+            (&["Server running at http://localhost:3000"], None),
+        ];
+        for (lines, expected) in cases {
+            assert_eq!(port_in_use(lines), expected, "{lines:?}");
+        }
+    }
 
     #[test]
     fn extracts_local_urls_from_server_output() {
