@@ -99,7 +99,7 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Sim | Sim | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
-| Containers / Docker / Podman | Experimental | Não instala o motor | Não | Docker e Podman validados pela interface no Windows 11 | Endereço provável, em Containers |
+| Containers / Docker / Podman | Sim | Sim; não instala o motor | Não | Sim, com Docker ou Podman (escolha em "Iniciar com") | Sim, pelo endereço publicado, em Containers |
 
 "Sim" em **Inicia** e **Abre no navegador** quer dizer validado de ponta a ponta no Windows 11 com um projeto de referência: instalar dependências, iniciar, encontrar a porta do próprio processo, receber resposta do site, parar, reiniciar e avisar quando outro programa ocupa a porta. No macOS e no Linux, os testes automáticos rodam a cada alteração; a validação de ponta a ponta no macOS acontece antes da publicação da Alpha 8.
 
@@ -411,7 +411,7 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | .NET (C#, F#), Ruby, Kotlin, Elixir, Deno | Yes | Yes | No | With the command you define | Yes, when the program is a web server |
 | C/C++, Swift, Scala, Clojure, Haskell, Perl, Lua, R, Julia, Zig, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
 | Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
-| Containers / Docker / Podman | Experimental | Does not install the engine | No | Docker and Podman validated in the Windows 11 UI | Likely address, in Containers |
+| Containers / Docker / Podman | Yes | Yes; does not install the engine | No | Yes, with Docker or Podman (choose under "Start with") | Yes, through the published address, in Containers |
 
 "Yes" under **Starts** and **Opens in the browser** means validated end to end on Windows 11 with a reference project: install dependencies, start, find the port of the process itself, get a response from the site, stop, restart, and report when another program holds the port. On macOS and Linux, automated tests run on every change; end-to-end validation on macOS happens before Alpha 8 is published.
 
