@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- Projetos Elixir iniciam sem pedir comando: Phoenix com `mix phx.server` (porta 4000) e aplicações com árvore de supervisão (`mod:` no `mix.exs`) com `mix run --no-halt`. **Instalar dependências** roda `mix deps.get` e, antes, instala o Hex e o Rebar quando faltam, sem a pergunta que travaria a instalação.
 - Projetos Kotlin e Java com o plugin `application` do Gradle, como os servidores Ktor, iniciam sem pedir comando, com `gradlew run --no-daemon` (porta 8080 no Ktor). Projetos Gradle com o plugin Kotlin aparecem como Kotlin.
 - Projetos Deno iniciam sem pedir comando: as tarefas contínuas do `deno.json` ou `deno.jsonc` (`deno task dev`) ou, sem tarefas, o arquivo de entrada (`main.ts`, `server.ts`) com `deno run --allow-net --allow-read --allow-env`.
 - Projetos Ruby iniciam sem pedir comando: Rails com `ruby bin/rails server` (porta 3000), apps Rack com `bundle exec rackup` (9292), Sinatra com `ruby app.rb` (4567) e programas `main.rb`/`app.rb`. Com Gemfile, **Instalar dependências** roda `bundle install` dentro de `vendor/bundle` do próprio projeto, sem misturar com as gems de outros projetos.
@@ -47,6 +48,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Uma linguagem instalada numa pasta padrão, mas fora do PATH (como o Elixir e o Erlang instalados pelo winget), passa a iniciar e a instalar dependências: as pastas de instalação conhecidas entram no fim do PATH dos processos. A verificação antes de iniciar também usa o PATH atualizado, então um programa instalado depois de abrir o app é encontrado sem reiniciá-lo.
+- As pastas `deps` e `_build` do Elixir não são mais examinadas como projetos; antes, os pacotes em `deps/` (como `deps/phoenix`, com `package.json`) apareciam como subprojetos Node.js. O TypeScript da pasta `assets/` do Phoenix não faz mais o projeto aparecer como TypeScript.
 - O comando de projetos com Gradle Wrapper ou Maven Wrapper aparece com o caminho normal (`C:\...\gradlew.bat`), sem o prefixo interno `\\?\` do Windows.
 - Depois de uma falha ao iniciar (porta ocupada, servidor que fechou antes de ficar pronto, programa que parou com erro), o projeto mostra **Tentar de novo** ao lado de Ver logs. Antes, o cartão só oferecia Ver logs, e não havia como iniciar de novo pelo próprio projeto depois de resolver a causa.
 - **Abrir no VS Code** não abre mais o projeto em modo restrito. O app passava ao VS Code o caminho no formato interno do Windows, com o prefixo `\\?\`, que o VS Code trata como uma pasta diferente da que você marcou como confiável; agora passa o caminho normal.

@@ -120,6 +120,18 @@ fn is_store_shortcut(executable: &Path) -> bool {
         .contains("\\microsoft\\windowsapps\\")
 }
 
+/// The standard install folders of every language that exist on this computer. They go at
+/// the end of the PATH of the processes the app starts, so a language installed without
+/// adding itself to the PATH (Elixir from winget, for example) still runs.
+pub fn existing_install_dirs() -> Vec<PathBuf> {
+    localcodepilot_core::languages::LANGUAGES
+        .iter()
+        .flat_map(|language| language.install_dirs)
+        .flat_map(expand_install_dir)
+        .filter(|folder| folder.is_dir())
+        .collect()
+}
+
 /// Existing folders an install directory names, expanding one `*` segment.
 fn expand_install_dir(dir: &InstallDir) -> Vec<PathBuf> {
     let (base, relative) = match dir {

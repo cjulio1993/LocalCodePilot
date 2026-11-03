@@ -1598,7 +1598,7 @@ impl LocalCodePilot {
             ));
             return;
         }
-        if !executable_available(&process.program) {
+        if find_executable(&process.program, self.environment_path.as_deref()).is_none() {
             self.processes[index].state = ProcessState::Failed;
             self.processes[index].process_id = None;
             self.processes[index].exit_code = None;
@@ -5184,7 +5184,8 @@ fn run_installation_plan(
     sender: &mpsc::Sender<DependencyInstallEvent>,
     cancel: &AtomicBool,
 ) -> Result<InstallationOutcome, String> {
-    let mut environment_path = None;
+    // The current PATH plus the language install folders, like the processes the app starts.
+    let mut environment_path = refreshed_environment_path().ok();
     for (index, step) in plan.steps.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("A preparação foi cancelada".into());
@@ -5784,58 +5785,6 @@ fn process_command_on_port(
             command.env("PATH", path);
         }
         command
-    }
-}
-
-fn executable_available(program: &str) -> bool {
-    let program_path = Path::new(program);
-    if program_path.components().count() > 1 {
-        return executable_candidate(program_path);
-    }
-
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|directory| {
-        let candidate = directory.join(program);
-        if executable_candidate(&candidate) {
-            return true;
-        }
-
-        #[cfg(target_os = "windows")]
-        if candidate.extension().is_none() {
-            let path_extensions =
-                std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
-            return path_extensions
-                .to_string_lossy()
-                .split(';')
-                .any(|extension| {
-                    let extension = extension.trim().trim_start_matches('.');
-                    !extension.is_empty()
-                        && executable_candidate(&candidate.with_extension(extension))
-                });
-        }
-
-        false
-    })
-}
-
-fn executable_candidate(path: &Path) -> bool {
-    let Ok(metadata) = path.metadata() else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
     }
 }
 
@@ -6442,6 +6391,42 @@ fn inspect_project_environment_with_inventory(
             }
         }
 
+        // Mix keeps the project's dependencies in `deps`.
+        if process.program == "mix"
+            && process.working_directory.join("mix.exs").is_file()
+            && !process.working_directory.join("deps").is_dir()
+        {
+            if !missing_dependencies
+                .iter()
+                .any(|item| item == "Elixir (Mix)")
+            {
+                missing_dependencies.push("Elixir (Mix)".to_owned());
+            }
+            if !install_steps.iter().any(|step: &DependencyInstall| {
+                step.program == "mix" && step.working_directory == process.working_directory
+            }) {
+                // A fresh Elixir has no Hex or Rebar, and `deps.get` would stop to ask for
+                // them; each step does nothing when they are already there.
+                for (label, tool) in [
+                    ("gerenciador de pacotes Hex", "local.hex"),
+                    ("ferramenta de build Rebar", "local.rebar"),
+                ] {
+                    install_steps.push(DependencyInstall {
+                        label: label.into(),
+                        program: "mix".into(),
+                        args: vec![tool.into(), "--force".into(), "--if-missing".into()],
+                        working_directory: process.working_directory.clone(),
+                    });
+                }
+                install_steps.push(DependencyInstall {
+                    label: "dependências Elixir (mix deps.get)".into(),
+                    program: "mix".into(),
+                    args: vec!["deps.get".into()],
+                    working_directory: process.working_directory.clone(),
+                });
+            }
+        }
+
         // Ruby gems go to the project's vendor/bundle, so a missing folder means they are not
         // installed yet, like Composer's vendor.
         let uses_bundler = matches!(process.program.as_str(), "ruby" | "bundle" | "rackup")
@@ -7027,11 +7012,11 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
 mod tests {
     use super::{
         DependencyInstall, DependencyInstallEvent, HttpHealthStatus, Page, ProjectEnvironment,
-        classify_http_health, dependency_error_suggestion, executable_available,
-        initials_from_username, inspect_project_environment, is_localcodepilot_qa_project,
-        laravel_major, lowercase_hex, nav_name, prepare_laravel_migration_files, probe_http_health,
-        process_error_suggestion, process_exposes_application_url, process_matches_search,
-        project_count_text, project_process_ids, resolve_environment_plan,
+        classify_http_health, dependency_error_suggestion, find_executable, initials_from_username,
+        inspect_project_environment, is_localcodepilot_qa_project, laravel_major, lowercase_hex,
+        nav_name, prepare_laravel_migration_files, probe_http_health, process_error_suggestion,
+        process_exposes_application_url, process_matches_search, project_count_text,
+        project_process_ids, resolve_environment_plan,
         resolve_environment_plan_with_tools_directory, run_dependency_installs,
         runtime_requirement_status, scan_roots_text, words,
     };
@@ -7410,14 +7395,14 @@ mod tests {
     fn finds_an_executable_by_its_full_path() {
         let current_executable = std::env::current_exe().expect("current executable should exist");
 
-        assert!(executable_available(&current_executable.to_string_lossy()));
+        assert!(find_executable(&current_executable.to_string_lossy(), None).is_some());
     }
 
     #[test]
     fn rejects_a_program_that_does_not_exist() {
-        assert!(!executable_available(
-            "localcodepilot-program-that-does-not-exist-7d2bcfd8"
-        ));
+        assert!(
+            find_executable("localcodepilot-program-that-does-not-exist-7d2bcfd8", None).is_none()
+        );
     }
 
     #[test]
