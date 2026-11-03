@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- Projetos Clojure com `deps.edn` iniciam sem pedir comando, pelo alias de execução (`:run`, `:dev`, `:serve` ou `:server`, com `:main-opts`), com `bb clojure -M:<alias>`. Quando o computador não tem o que o projeto precisa, o cartão mostra **Preparar ambiente**, que instala o Babashka (o Clojure CLI embutido) pelo winget e o Java 17 ou mais novo, se faltar. Projetos Leiningen (`project.clj`) ainda pedem o comando.
 - Projetos Scala com sbt iniciam sem pedir comando. No sbt 2, o app usa `sbt --server run`: sem essa opção, o `sbt` é um cliente que deixa um servidor rodando em segundo plano, que o app não conseguiria parar. Projetos com sbt 1.x seguem com `sbt run`. Aplicações Play usam a porta 9000.
 - Pacotes Swift com alvo executável iniciam sem pedir comando, com `swift run` (servidores Vapor na porta 8080). No Windows, o Swift só compila no ambiente de desenvolvedor do Visual Studio: o app localiza o Visual Studio pelo `vswhere`, aplica o ambiente do `vcvars64` e o `SDKROOT` salvo pelo instalador só aos processos `swift`, sem que seja preciso abrir um prompt especial.
 - Projetos Elixir iniciam sem pedir comando: Phoenix com `mix phx.server` (porta 4000) e aplicações com árvore de supervisão (`mod:` no `mix.exs`) com `mix run --no-halt`. **Instalar dependências** roda `mix deps.get` e, antes, instala o Hex e o Rebar quando faltam, sem a pergunta que travaria a instalação.
@@ -50,6 +51,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- O aviso de linguagem ausente não mostra mais "latest" ou "stable" como se fossem versões: diz "Instale Clojure", "Instale Go" e assim por diante.
 - Uma linguagem instalada numa pasta padrão, mas fora do PATH (como o Elixir e o Erlang instalados pelo winget), passa a iniciar e a instalar dependências: as pastas de instalação conhecidas entram no fim do PATH dos processos. A verificação antes de iniciar também usa o PATH atualizado, então um programa instalado depois de abrir o app é encontrado sem reiniciá-lo.
 - As pastas `deps` e `_build` do Elixir não são mais examinadas como projetos; antes, os pacotes em `deps/` (como `deps/phoenix`, com `package.json`) apareciam como subprojetos Node.js. O TypeScript da pasta `assets/` do Phoenix não faz mais o projeto aparecer como TypeScript.
 - O comando de projetos com Gradle Wrapper ou Maven Wrapper aparece com o caminho normal (`C:\...\gradlew.bat`), sem o prefixo interno `\\?\` do Windows.

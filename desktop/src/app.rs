@@ -50,10 +50,11 @@ use localcodepilot_runtime::databases::{
     probe_local_tcp, probe_sqlite_database,
 };
 use localcodepilot_runtime::{
-    ManifestRuntimeDetector, detect_dart_requirement, detect_go_requirement,
-    detect_java_requirement, detect_node_requirement, detect_php_extensions,
-    detect_php_requirement, detect_processes, detect_python_requirement, node_package_manager_spec,
-    node_version_matches, runtime_version_matches,
+    ManifestRuntimeDetector, detect_clojure_java_requirement, detect_clojure_requirement,
+    detect_dart_requirement, detect_go_requirement, detect_java_requirement,
+    detect_node_requirement, detect_php_extensions, detect_php_requirement, detect_processes,
+    detect_python_requirement, node_package_manager_spec, node_version_matches,
+    runtime_version_matches,
 };
 use sha2::{Digest, Sha384};
 use std::{
@@ -288,6 +289,7 @@ struct RuntimeInventory {
     java: Option<ProgramInventory>,
     go: Option<ProgramInventory>,
     dart: Option<ProgramInventory>,
+    babashka: Option<ProgramInventory>,
     php_extensions: HashSet<String>,
 }
 
@@ -432,10 +434,11 @@ impl ProjectEnvironment {
             .iter()
             .find(|requirement| matches!(requirement.status, RequirementStatus::Missing))
         {
-            Some(format!(
-                "Instale {} {}",
-                requirement.runtime, requirement.version.value
-            ))
+            // "latest" and "stable" are what the app recommends, not a version to show.
+            Some(match requirement.version.value.as_str() {
+                "latest" | "stable" => format!("Instale {}", requirement.runtime),
+                version => format!("Instale {} {version}", requirement.runtime),
+            })
         } else if !self.missing_programs.is_empty() {
             Some(format!("Instale: {}", self.missing_programs.join(", ")))
         } else if !self.missing_php_extensions.is_empty() {
@@ -4842,6 +4845,7 @@ fn resolve_environment_plan_with_tools_directory(
         RuntimeKind::Php,
         RuntimeKind::Go,
         RuntimeKind::Dart,
+        RuntimeKind::Clojure,
     ] {
         let requirements = environment
             .runtime_requirements
@@ -4886,6 +4890,11 @@ fn resolve_environment_plan_with_tools_directory(
             RuntimeKind::Dart => {
                 provider.resolve_dart_installation(&constraint_label, project_path, matches_all)?
             }
+            RuntimeKind::Clojure => provider.resolve_babashka_installation(
+                &constraint_label,
+                project_path,
+                matches_all,
+            )?,
             // Not installed by the app: Rust, Node and Flutter have their own installers, and
             // the other languages are only recognized for now.
             _ => continue,
@@ -4909,6 +4918,7 @@ fn resolve_environment_plan_with_tools_directory(
             ),
             RuntimeKind::Go => ("go", vec!["version".into()]),
             RuntimeKind::Dart => ("dart", vec!["--version".into()]),
+            RuntimeKind::Clojure => ("bb", vec!["--version".into()]),
             _ => continue,
         };
         steps.push(InstallationStep {
@@ -6224,6 +6234,7 @@ fn inspect_runtime_inventory(environment_path: Option<&OsStr>) -> RuntimeInvento
         java: inspect_program("java", &["-version"], environment_path),
         go: inspect_program("go", &["version"], environment_path),
         dart: inspect_program("dart", &["--version"], environment_path),
+        babashka: inspect_program("bb", &["--version"], environment_path),
         php_extensions: inspect_php_extensions(environment_path),
     }
 }
@@ -6299,6 +6310,14 @@ fn inspect_project_environment_with_inventory(
             (
                 detect_dart_requirement(directory, &project.path),
                 runtime_inventory.dart.as_ref(),
+            ),
+            (
+                detect_clojure_requirement(directory, &project.path),
+                runtime_inventory.babashka.as_ref(),
+            ),
+            (
+                detect_clojure_java_requirement(directory, &project.path),
+                runtime_inventory.java.as_ref(),
             ),
         ] {
             let Some(mut requirement) = detected else {

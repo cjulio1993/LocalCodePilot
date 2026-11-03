@@ -26,6 +26,7 @@ const NODE_LTS_PACKAGE_ID: &str = "OpenJS.NodeJS.LTS";
 const BUN_PACKAGE_ID: &str = "Oven-sh.Bun";
 const GO_PACKAGE_ID: &str = "GoLang.Go";
 const DART_PACKAGE_ID: &str = "Google.DartSDK";
+const BABASHKA_PACKAGE_ID: &str = "Babashka.Babashka";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramInventory {
@@ -80,6 +81,22 @@ impl WindowsWingetProvider {
         self.resolve_package_installation(
             GO_PACKAGE_ID,
             "Go",
+            version_constraint,
+            working_directory,
+            matches,
+        )
+    }
+
+    /// Babashka runs Clojure `deps.edn` projects with its built-in Clojure CLI.
+    pub fn resolve_babashka_installation(
+        &self,
+        version_constraint: &str,
+        working_directory: &Path,
+        matches: impl Fn(&str, &str) -> Option<bool>,
+    ) -> Result<InstallationStep, String> {
+        self.resolve_package_installation(
+            BABASHKA_PACKAGE_ID,
+            "Babashka (Clojure)",
             version_constraint,
             working_directory,
             matches,
