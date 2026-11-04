@@ -453,6 +453,18 @@ pub fn detect_haskell_requirement(
     })
 }
 
+/// A Zig project with `build.zig` needs the `zig` compiler, which installs with winget.
+pub fn detect_zig_requirement(directory: &Path, project_root: &Path) -> Option<RuntimeRequirement> {
+    find_in_project_ancestors(directory, project_root, "build.zig")?;
+    Some(RuntimeRequirement {
+        runtime: RuntimeKind::Zig,
+        command: "zig".into(),
+        version: VersionConstraint::recommended("latest"),
+        source: RequirementSource::Recommended,
+        status: RequirementStatus::Pending,
+    })
+}
+
 /// Clojure runs on the JVM: a `deps.edn` project also needs Java 17 or newer.
 pub fn detect_clojure_java_requirement(
     directory: &Path,
@@ -908,6 +920,7 @@ fn detect_processes_in_directory(
     detect_scala_process(project, directory, processes);
     detect_clojure_process(project, directory, processes);
     detect_haskell_process(project, directory, processes);
+    detect_zig_process(project, directory, processes);
     detect_ruby_process(project, directory, processes);
     detect_dart_or_flutter_process(project, directory, processes);
     if belongs_to_artisan_app {
@@ -1471,6 +1484,23 @@ fn detect_haskell_process(
             "Executar projeto Haskell",
             "stack",
             &["run"],
+        );
+    }
+}
+
+/// Zig: `zig build run` when `build.zig` declares the `run` step, as `zig init` does.
+fn detect_zig_process(project: &Project, directory: &Path, processes: &mut Vec<ProjectProcess>) {
+    let Ok(build) = fs::read_to_string(directory.join("build.zig")) else {
+        return;
+    };
+    if build.contains("step(\"run\"") {
+        push_process(
+            processes,
+            project,
+            directory,
+            "Executar projeto Zig",
+            "zig",
+            &["build", "run"],
         );
     }
 }
@@ -3364,6 +3394,46 @@ version = "0.1.0"
         fs::create_dir_all(root.join("script")).unwrap();
         fs::write(root.join("script/main.rb"), "puts 'oi'\n").unwrap();
         assert_eq!(only("script"), ("ruby main.rb".into(), None));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starts_zig_projects_with_a_run_step() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("localcodepilot-zig-{nonce}"));
+        let project = |name: &str| {
+            let path = root.join(name);
+            Project::new(path.clone(), detect(&path)).with_technologies(detect_technologies(&path))
+        };
+
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/build.zig"),
+            "const run_step = b.step(\"run\", \"Run the app\");\n",
+        )
+        .unwrap();
+        let app = detect_processes(&project("app"));
+        assert_eq!(app.len(), 1);
+        assert_eq!(app[0].command_line(), "zig build run");
+        let app_path = root.join("app");
+        assert_eq!(
+            detect_zig_requirement(&app_path, &app_path)
+                .unwrap()
+                .command,
+            "zig"
+        );
+
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/build.zig"),
+            "const lib = b.addLibrary(.{});\n",
+        )
+        .unwrap();
+        assert!(detect_processes(&project("lib")).is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }

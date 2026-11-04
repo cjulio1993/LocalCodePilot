@@ -105,7 +105,8 @@ Reconhecer um projeto não significa que todo o fluxo de preparação, execuçã
 | Scala (sbt, Play) | Sim | Sim | Não; o sbt baixa as dependências | Sim (`sbt --server run`, ou `sbt run` no sbt 1.x) | Sim |
 | Clojure (`deps.edn`) | Sim | Sim | Sim: **Preparar ambiente** instala o Babashka pelo winget (e o Java 17+, se faltar) | Sim (`bb clojure -M:run`) | Sim |
 | Haskell (Stack) | Sim | Sim | Sim: **Preparar ambiente** instala o Stack pelo winget; **Instalar dependências** baixa o GHC e compila | Sim (`stack run`) | Sim, quando o programa é um servidor web |
-| C/C++, Perl, Lua, R, Julia, Zig e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
+| Zig | Sim | Sim | Sim: **Preparar ambiente** instala o Zig pelo winget | Sim (`zig build run`) | Sim, quando o programa é um servidor web |
+| C/C++, Perl, Lua, R, Julia e qualquer outra linguagem | Sim, as da lista | Sim, as da lista | Não | Com o comando definido por você | Sim, quando o programa é um servidor web |
 | Site estático / JavaScript sem framework | Sim | Requer um servidor local disponível | Não | Sim | Sim |
 | Containers / Docker / Podman | Sim | Sim; não instala o motor | Não | Sim, com Docker ou Podman (escolha em "Iniciar com") | Sim, pelo endereço publicado, em Containers |
 
@@ -425,7 +426,8 @@ Recognizing a project does not mean that its preparation, execution, and browser
 | Scala (sbt, Play) | Yes | Yes | No; sbt downloads the dependencies | Yes (`sbt --server run`, or `sbt run` on sbt 1.x) | Yes |
 | Clojure (`deps.edn`) | Yes | Yes | Yes: **Prepare environment** installs Babashka with winget (and Java 17+, if missing) | Yes (`bb clojure -M:run`) | Yes |
 | Haskell (Stack) | Yes | Yes | Yes: **Prepare environment** installs Stack with winget; **Install dependencies** downloads GHC and builds | Yes (`stack run`) | Yes, when the program is a web server |
-| C/C++, Perl, Lua, R, Julia, Zig, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
+| Zig | Yes | Yes | Yes: **Prepare environment** installs Zig with winget | Yes (`zig build run`) | Yes, when the program is a web server |
+| C/C++, Perl, Lua, R, Julia, and any other language | Yes, those listed | Yes, those listed | No | With the command you define | Yes, when the program is a web server |
 | Static site / frameworkless JavaScript | Yes | Requires an available local server | No | Yes | Yes |
 | Containers / Docker / Podman | Yes | Yes; does not install the engine | No | Yes, with Docker or Podman (choose under "Start with") | Yes, through the published address, in Containers |
 
