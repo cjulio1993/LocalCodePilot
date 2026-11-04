@@ -28,6 +28,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Alterado
 
+- O README foi reescrito para o público geral: o que o app faz, como baixar e instalar (instalador ou zip, e o aviso do Windows), primeiros passos, uma tabela simples de linguagens e as limitações. O detalhamento técnico que estava nele foi para [docs/DETALHES-TECNICOS.md](docs/DETALHES-TECNICOS.md), sem cortes.
 - Num projeto Laravel recém-clonado, **Instalar dependências** também cria o `.env` a partir do `.env.example`, gera a chave da aplicação e, quando o projeto usa SQLite, cria as tabelas com `php artisan migrate`; cada etapa aparece no plano antes de executar.
 - A matriz de suporte separa **Inicia** e **Abre no navegador**. Rust, Node.js, PHP, Laravel, Python/Flask, Django, Spring Boot com Maven wrapper, site estático, Lumen, Spring Boot com Gradle wrapper, Go, Dart e Flutter (web e Windows) foram validados de ponta a ponta no Windows 11 e passaram para "Sim".
 - A Visão geral mostra o que está rodando, o que precisa de atenção e o que está parado, com uma ação principal por projeto (Iniciar, Abrir site, Ver logs ou Detalhes). Os estados usam os mesmos nomes em todo o aplicativo: Rodando, Parado, Iniciando e Com problema.
