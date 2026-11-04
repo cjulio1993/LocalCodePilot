@@ -53,6 +53,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- No Windows, um servidor que escuta em `0.0.0.0` (como o Deno) conseguia abrir a mesma porta que outro programa já usava em `127.0.0.1`, e o cartão mostrava "Site respondendo" com a resposta do outro programa. Agora o app detecta o outro programa na porta e mostra "Outro programa está usando a porta", com Tentar de novo.
 - O aviso de linguagem ausente não mostra mais "latest" ou "stable" como se fossem versões: diz "Instale Clojure", "Instale Go" e assim por diante.
 - Uma linguagem instalada numa pasta padrão, mas fora do PATH (como o Elixir e o Erlang instalados pelo winget), passa a iniciar e a instalar dependências: as pastas de instalação conhecidas entram no fim do PATH dos processos. A verificação antes de iniciar também usa o PATH atualizado, então um programa instalado depois de abrir o app é encontrado sem reiniciá-lo.
 - As pastas `deps` e `_build` do Elixir não são mais examinadas como projetos; antes, os pacotes em `deps/` (como `deps/phoenix`, com `package.json`) apareciam como subprojetos Node.js. O TypeScript da pasta `assets/` do Phoenix não faz mais o projeto aparecer como TypeScript.

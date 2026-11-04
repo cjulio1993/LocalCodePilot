@@ -42,7 +42,7 @@ use localcodepilot_platform::{
     },
     ports::{
         PortAvailability, PortOwner, answers_http, inspect_tcp_port, listener_process_ids,
-        listening_ports, process_descends_from, terminate_process_tree,
+        listening_ports, process_descends_from, process_name, terminate_process_tree,
     },
 };
 use localcodepilot_runtime::databases::{
@@ -3228,20 +3228,37 @@ impl LocalCodePilot {
             running.last_health_check = now;
             // The port only counts when this process (or a child) listens on it; otherwise the
             // app would mark the project as running and check another program's site.
-            // Any listener of the project counts, even when another program also listens on
-            // the same port on a different address.
-            let own_listener = listener_process_ids(port).into_iter().find(|process_id| {
+            let listeners = listener_process_ids(port);
+            let belongs = |process_id: &u32| {
                 running.verified_listener == Some(*process_id)
                     || process_descends_from(*process_id, running.child.id())
-            });
-            let availability = match own_listener {
-                Some(process_id) => PortAvailability::Occupied {
+            };
+            let own_listener = listeners
+                .iter()
+                .copied()
+                .find(|process_id| belongs(process_id));
+            // Windows lets a server on 0.0.0.0 share the port with another program on
+            // 127.0.0.1, and the browser and the check then reach that other program: a port
+            // conflict, not the project's site. Listeners of the project itself on IPv4 and
+            // IPv6 are not a conflict.
+            let foreign_listener = listeners
+                .iter()
+                .copied()
+                .find(|process_id| !belongs(process_id));
+            let availability = match (own_listener, foreign_listener) {
+                (Some(_), Some(process_id)) => PortAvailability::Occupied {
+                    owner: Some(PortOwner {
+                        process_id,
+                        process_name: process_name(process_id),
+                    }),
+                },
+                (Some(process_id), None) => PortAvailability::Occupied {
                     owner: Some(PortOwner {
                         process_id,
                         process_name: None,
                     }),
                 },
-                None => inspect_tcp_port(port),
+                (None, _) => inspect_tcp_port(port),
             };
             let port_is_listening = match port_listener(
                 availability,
