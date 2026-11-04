@@ -3256,9 +3256,11 @@ version = "0.1.0"
             commands[0].port_override,
             Some(PortOverride::ArgumentValue { argument_index: 2 })
         );
+        // Fixed paths: with a random folder name, two sites could land on the same port
+        // (one chance in 4000) and fail the test by luck.
         assert_ne!(
-            static_site_port(&path),
-            static_site_port(&path.with_file_name("another-static-site"))
+            static_site_port(Path::new("/projetos/loja")),
+            static_site_port(Path::new("/projetos/blog"))
         );
         fs::remove_dir_all(path).unwrap();
     }
