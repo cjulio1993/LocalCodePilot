@@ -1,0 +1,65 @@
+name: Validate Windows installer
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-windows-installer.yml"
+      - ".github/workflows/release-windows.yml"
+      - "packaging/windows/**"
+      - "scripts/package-windows.ps1"
+      - "scripts/test-windows-installer.ps1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: Build and test the Windows installer
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object name -eq "localcodepilot-desktop" | Select-Object -ExpandProperty version
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --yes --no-progress
+          }
+
+      - name: Build release, portable package and installer
+        shell: pwsh
+        run: .\scripts\package-windows.ps1 -Version "${{ steps.version.outputs.value }}" -Installer
+
+      - name: Install and uninstall silently
+        shell: pwsh
+        run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe"
+
+      - name: Upload installer for manual testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe
+            dist/SHA256SUMS.txt

@@ -96,9 +96,41 @@ jobs:
           "### Assinatura digital" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "O executável foi criado sem Authenticode porque o Artifact Signing ainda não foi configurado." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Package portable application
+      - name: Install Inno Setup
         shell: pwsh
-        run: .\scripts\package-windows.ps1 -Version "${{ steps.version.outputs.value }}" -SkipBuild
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --yes --no-progress
+          }
+
+      - name: Package portable application and installer
+        shell: pwsh
+        run: .\scripts\package-windows.ps1 -Version "${{ steps.version.outputs.value }}" -SkipBuild -Installer
+
+      - name: Sign installer with Microsoft Artifact Signing
+        if: env.ARTIFACT_SIGNING_ENDPOINT != '' && env.ARTIFACT_SIGNING_ACCOUNT != '' && env.ARTIFACT_SIGNING_PROFILE != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CLIENT_ID != '' && env.AZURE_CLIENT_SECRET != ''
+        uses: Azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: LocalCodePilot
+
+      - name: Refresh checksums after signing the installer
+        if: env.ARTIFACT_SIGNING_ENDPOINT != '' && env.ARTIFACT_SIGNING_ACCOUNT != '' && env.ARTIFACT_SIGNING_PROFILE != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CLIENT_ID != '' && env.AZURE_CLIENT_SECRET != ''
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File | Where-Object { $_.Name -like "LocalCodePilot-*-windows-x64*" } | ForEach-Object {
+            "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)  $($_.Name)"
+          } | Set-Content -LiteralPath dist\SHA256SUMS.txt -Encoding ascii
+
+      - name: Install and uninstall silently
+        shell: pwsh
+        run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe"
 
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v4
@@ -107,6 +139,7 @@ jobs:
           path: |
             dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64.zip
             dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64.exe
+            dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe
             dist/SHA256SUMS.txt
 
   macos:
@@ -210,6 +243,7 @@ jobs:
             assets=(
               "dist/windows/LocalCodePilot-$version-windows-x64.zip"
               "dist/windows/LocalCodePilot-$version-windows-x64.exe"
+              "dist/windows/LocalCodePilot-$version-windows-x64-setup.exe"
               "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
               "dist/SHA256SUMS.txt"
             )
