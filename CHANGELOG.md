@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.8] - 2026-11-04
+
 ### Adicionado
 
 - Instalador para Windows (`LocalCodePilot-<versão>-windows-x64-setup.exe`, feito com Inno Setup), publicado ao lado do zip. Ele instala por usuário em `%LOCALAPPDATA%\Programs\LocalCodePilot`, sem pedir administrador, o que mantém a atualização pelo aplicativo funcionando. Também cria o atalho no Menu Iniciar (o da área de trabalho é opcional) e registra o desinstalador. Cada release e cada PR que mexe no empacotamento testam a instalação e a desinstalação silenciosas no CI.
