@@ -78,6 +78,8 @@ jobs:
         run: cargo fmt --check
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run Clippy with the local update test feed
+        run: cargo clippy -p localcodepilot-desktop --all-targets --features update-test-feed -- -D warnings
 
   tests:
     name: Tests (${{ matrix.os }})
@@ -95,4 +97,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace --locked
+      - name: Run desktop tests with the local update test feed
+        run: cargo test -p localcodepilot-desktop --locked --features update-test-feed
 

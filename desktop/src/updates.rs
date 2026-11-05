@@ -16,6 +16,14 @@ use std::{
 };
 
 mod recovery;
+#[cfg(feature = "update-test-feed")]
+mod test_feed;
+
+// The local test feed changes where updates come from: it must never ship.
+#[cfg(all(feature = "update-test-feed", not(debug_assertions)))]
+compile_error!(
+    "the update-test-feed feature is only for end-to-end tests and cannot be used in a release build"
+);
 
 const RELEASES_URL: &str =
     "https://api.github.com/repos/cjulio1993/LocalCodePilot/releases?per_page=20";
@@ -114,8 +122,38 @@ struct UpdatePreparation {
 }
 
 pub fn current_version() -> Version {
+    #[cfg(feature = "update-test-feed")]
+    if let Some(version) = test_feed::version() {
+        return Version::parse(version)
+            .expect("LOCALCODEPILOT_TEST_VERSION must follow semantic versioning");
+    }
     Version::parse(env!("CARGO_PKG_VERSION"))
         .expect("the workspace package version must follow semantic versioning")
+}
+
+fn releases_url() -> String {
+    #[cfg(feature = "update-test-feed")]
+    if let Some(base) = test_feed::base() {
+        return format!("{base}/releases");
+    }
+    RELEASES_URL.to_owned()
+}
+
+fn release_asset_prefix() -> String {
+    #[cfg(feature = "update-test-feed")]
+    if let Some(base) = test_feed::base() {
+        return format!("{base}/download/");
+    }
+    RELEASE_ASSET_PREFIX.to_owned()
+}
+
+/// Startup problems of a "new" test version (test builds only): applied before
+/// the window opens, and only when the updater starts this executable.
+#[cfg(feature = "update-test-feed")]
+pub fn simulate_test_startup() {
+    if env::args_os().nth(1).as_deref() == Some(UPDATED_STARTUP_FLAG.as_ref()) {
+        test_feed::simulate_updated_startup(STARTUP_TIMEOUT);
+    }
 }
 
 pub fn cached_update_is_newer(update: &UpdateInfo) -> bool {
@@ -340,7 +378,7 @@ fn configuration_directory() -> Option<PathBuf> {
 fn fetch_update(current: &Version) -> Result<Option<UpdateInfo>, String> {
     let agent = update_agent(Duration::from_secs(8));
     let mut response = agent
-        .get(RELEASES_URL)
+        .get(releases_url())
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", "LocalCodePilot-Update-Checker")
@@ -1030,7 +1068,7 @@ fn file_starts_with_mz(path: &Path) -> Result<bool, String> {
 }
 
 fn trusted_release_asset_url(url: &str) -> bool {
-    url.starts_with(RELEASE_ASSET_PREFIX) && !url.contains(['?', '#'])
+    url.starts_with(&release_asset_prefix()) && !url.contains(['?', '#'])
 }
 
 fn persistent_update_error_path() -> PathBuf {
@@ -1419,6 +1457,22 @@ mod tests {
         assert!(!trusted_release_asset_url(
             "https://github.com/cjulio1993/LocalCodePilot/releases/download/v0.5.0/file.exe?redirect=example"
         ));
+    }
+
+    /// Normal and release builds have no local feed: whatever the environment
+    /// says, updates come only from the official releases.
+    #[cfg(not(feature = "update-test-feed"))]
+    #[test]
+    fn without_the_test_feed_feature_updates_come_only_from_github() {
+        assert_eq!(releases_url(), RELEASES_URL);
+        assert_eq!(release_asset_prefix(), RELEASE_ASSET_PREFIX);
+        assert!(!trusted_release_asset_url(
+            "http://127.0.0.1:8765/download/v0.5.0/LocalCodePilot-0.5.0-windows-x64.exe"
+        ));
+        assert_eq!(
+            current_version(),
+            Version::parse(env!("CARGO_PKG_VERSION")).unwrap()
+        );
     }
 
     #[test]

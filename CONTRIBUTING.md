@@ -47,6 +47,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Ao mexer na atualização pelo app, rode também `cargo test -p localcodepilot-desktop --features update-test-feed` e, no Windows, o teste entre duas versões, `.\scripts\e2e-update-windows.ps1`. Veja "Testar a atualização entre duas versões" em `docs/DETALHES-TECNICOS.md`. Nunca empacote uma release com a feature `update-test-feed`.
+
+When changing the in-app update, also run `cargo test -p localcodepilot-desktop --features update-test-feed` and, on Windows, the two-version test `.\scripts\e2e-update-windows.ps1`. See "Testing the update between two versions" in `docs/DETALHES-TECNICOS.md`. Never package a release with the `update-test-feed` feature.
+
 ## Commits
 
 Use mensagens objetivas, preferencialmente no formato Conventional Commits:
