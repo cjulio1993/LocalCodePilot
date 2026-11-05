@@ -48,6 +48,9 @@ $uia = [System.Windows.Automation.AutomationElement]
 
 $marcador = '.lcp-e2e-update'
 $Pasta = [IO.Path]::GetFullPath($Pasta)
+if ($Pasta.TrimEnd('\') -eq ([IO.Path]::GetPathRoot($Pasta)).TrimEnd('\')) {
+    throw "A pasta do teste não pode ser a raiz de um disco ($Pasta). Escolha uma subpasta com -Pasta."
+}
 if ((Test-Path -LiteralPath $Pasta) -and (Get-ChildItem -LiteralPath $Pasta -Force | Select-Object -First 1) -and
     -not (Test-Path -LiteralPath (Join-Path $Pasta $marcador))) {
     throw "A pasta $Pasta já existe e não foi criada por este script. Escolha outra com -Pasta."
@@ -56,9 +59,16 @@ New-Item -ItemType Directory -Force $Pasta | Out-Null
 Set-Content -LiteralPath (Join-Path $Pasta $marcador) -Value 'pasta descartável do teste de atualização' -Encoding UTF8
 $binarios = New-Item -ItemType Directory -Force (Join-Path $Pasta 'bin')
 
+# Prefixo com o separador no fim: "C:\teste\e2e\" não casa com "C:\teste\e2e-outro\".
+$prefixoDaPasta = $Pasta.TrimEnd('\') + '\'
+
+function Test-DentroDaPasta([string]$Caminho) {
+    $Caminho -and [IO.Path]::GetFullPath($Caminho).StartsWith($prefixoDaPasta, [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Stop-ProcessosDaPasta {
     Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { try { $_.Path -and $_.Path.StartsWith($Pasta, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } |
+        Where-Object { try { Test-DentroDaPasta $_.Path } catch { $false } } |
         ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
 }
 
