@@ -73,7 +73,8 @@ use std::{
 };
 
 const NOTIFICATION_DURATION: Duration = Duration::from_millis(4_200);
-const NOTIFICATION_FADE_START: Duration = Duration::from_millis(3_200);
+const NOTIFICATION_FADE: Duration = Duration::from_millis(1_000);
+const UPDATE_RESULT_NOTIFICATION_DURATION: Duration = Duration::from_secs(12);
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_START_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESS_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
@@ -250,6 +251,34 @@ struct PortTerminationRequest {
 struct Notification {
     message: String,
     created_at: Instant,
+    duration: Duration,
+    /// While visible, other notifications do not replace it.
+    priority: bool,
+}
+
+impl Notification {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            created_at: Instant::now(),
+            duration: NOTIFICATION_DURATION,
+            priority: false,
+        }
+    }
+
+    /// The outcome of an update, shown when the app opens. It stays longer and
+    /// is not replaced by the "projects updated" notice that follows the scan.
+    fn update_result(message: impl Into<String>) -> Self {
+        Self {
+            duration: UPDATE_RESULT_NOTIFICATION_DURATION,
+            priority: true,
+            ..Self::new(message)
+        }
+    }
+
+    fn blocks_replacement(&self) -> bool {
+        self.priority && self.created_at.elapsed() < self.duration
+    }
 }
 
 enum ProcessAction {
@@ -651,10 +680,9 @@ impl LocalCodePilot {
             username,
             user_initials,
             search: String::new(),
-            notification: Some(Notification {
-                message: startup_notification
-                    .unwrap_or_else(|| "Procurando projetos na máquina...".into()),
-                created_at: Instant::now(),
+            notification: Some(match startup_notification {
+                Some(update_result) => Notification::update_result(update_result),
+                None => Notification::new("Procurando projetos na máquina..."),
             }),
             scan_roots,
             discovery: Some(receiver),
@@ -680,10 +708,14 @@ impl LocalCodePilot {
     }
 
     fn notify(&mut self, message: impl Into<String>) {
-        self.notification = Some(Notification {
-            message: message.into(),
-            created_at: Instant::now(),
-        });
+        if self
+            .notification
+            .as_ref()
+            .is_some_and(Notification::blocks_replacement)
+        {
+            return;
+        }
+        self.notification = Some(Notification::new(message));
     }
 
     fn is_favorite(&self, path: &Path) -> bool {
@@ -1048,17 +1080,17 @@ impl LocalCodePilot {
             return;
         };
         let elapsed = notification.created_at.elapsed();
-        if elapsed >= NOTIFICATION_DURATION {
+        if elapsed >= notification.duration {
             self.notification = None;
             return;
         }
 
-        let opacity = if elapsed < NOTIFICATION_FADE_START {
+        let fade_start = notification.duration.saturating_sub(NOTIFICATION_FADE);
+        let opacity = if elapsed < fade_start {
             1.0
         } else {
-            let fade_elapsed = elapsed - NOTIFICATION_FADE_START;
-            let fade_duration = NOTIFICATION_DURATION - NOTIFICATION_FADE_START;
-            1.0 - fade_elapsed.as_secs_f32() / fade_duration.as_secs_f32()
+            let fade_elapsed = elapsed - fade_start;
+            1.0 - fade_elapsed.as_secs_f32() / NOTIFICATION_FADE.as_secs_f32()
         };
         let message = notification.message.clone();
         root_ui
@@ -7130,6 +7162,7 @@ mod tests {
         resolve_environment_plan_with_tools_directory, run_dependency_installs,
         runtime_requirement_status, scan_roots_text, update_download_status, words,
     };
+    use super::{Notification, UPDATE_RESULT_NOTIFICATION_DURATION};
     use crate::updates::UpdatePhase;
     use localcodepilot_core::{
         environments::{
@@ -7287,6 +7320,22 @@ mod tests {
     #[test]
     fn encodes_checksum_bytes_as_lowercase_hex() {
         assert_eq!(lowercase_hex(&[0x00, 0x09, 0xaf, 0xff]), "0009afff");
+    }
+
+    #[test]
+    fn an_update_result_is_not_replaced_while_it_is_visible() {
+        let result = Notification::update_result("LocalCodePilot atualizado para a versão 0.5.0.");
+        assert!(result.blocks_replacement());
+        assert!(result.duration > super::NOTIFICATION_DURATION);
+        assert!(!Notification::new("Projetos e ambientes atualizados").blocks_replacement());
+
+        let expired = Notification {
+            created_at: std::time::Instant::now()
+                .checked_sub(UPDATE_RESULT_NOTIFICATION_DURATION)
+                .unwrap(),
+            ..Notification::update_result("LocalCodePilot atualizado para a versão 0.5.0.")
+        };
+        assert!(!expired.blocks_replacement());
     }
 
     #[test]

@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+mod recovery;
+
 const RELEASES_URL: &str =
     "https://api.github.com/repos/cjulio1993/LocalCodePilot/releases?per_page=20";
 const RELEASE_ASSET_PREFIX: &str =
@@ -97,6 +99,8 @@ struct HelperArguments {
     expected_sha256: String,
     version: String,
     stage_directory: PathBuf,
+    /// The app that started the helper; nothing is replaced while it runs.
+    parent_pid: u32,
 }
 
 #[derive(Debug)]
@@ -209,6 +213,7 @@ pub fn launch_prepared_update(update: &PreparedUpdate) -> Result<(), String> {
         .arg(&update.expected_sha256)
         .arg(&update.version)
         .arg(&update.stage_directory)
+        .arg(std::process::id().to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -230,9 +235,37 @@ pub fn try_run_update_helper() -> Option<i32> {
     };
     match apply_prepared_update(&arguments) {
         Ok(()) => Some(0),
-        Err(error) => {
-            write_persistent_update_error(&error);
+        Err(failure) => {
+            // The message is saved before the previous version reopens, so
+            // that version is the one that shows it.
+            write_persistent_update_error(&failure.message);
+            if failure.relaunch_previous {
+                relaunch_after_failure(&arguments.target_path);
+            }
             Some(1)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HelperFailure {
+    message: String,
+    /// The previous executable is in place and should be reopened.
+    relaunch_previous: bool,
+}
+
+impl HelperFailure {
+    fn keep_closed(message: String) -> Self {
+        Self {
+            message,
+            relaunch_previous: false,
+        }
+    }
+
+    fn reopen_previous(message: String) -> Self {
+        Self {
+            message,
+            relaunch_previous: true,
         }
     }
 }
@@ -253,10 +286,55 @@ pub fn complete_updated_startup() -> Option<String> {
         {
             let _ = fs::remove_file(persistent_update_error_path());
             spawn_update_cleanup(helper_path, stage_directory);
-            return Some(format!("LocalCodePilot {version} instalado com sucesso"));
+            spawn_confirmed_update_cleanup();
+            return Some(updated_message(&version));
         }
     }
-    read_persistent_update_error()
+    let error = read_persistent_update_error();
+    let recovered = recover_interrupted_update();
+    error.or(recovered)
+}
+
+fn updated_message(version: &str) -> String {
+    format!("LocalCodePilot atualizado para a versão {version}.")
+}
+
+/// The new version confirmed its startup: the previous executable and the
+/// journal are no longer needed. Runs in the background because the helper
+/// may still hold the backup for a moment.
+fn spawn_confirmed_update_cleanup() {
+    let Ok(executable) = env::current_exe() else {
+        return;
+    };
+    let journal = configuration_directory().map(|directory| recovery::journal_path(&directory));
+    thread::spawn(move || {
+        recovery::remove_swap_leftovers(&executable);
+        if let Some(journal) = journal {
+            let _ = fs::remove_file(journal);
+        }
+    });
+}
+
+/// Finishes or undoes an update the helper could not see to the end (slow
+/// confirmation, crash, power loss), based on the journal and on the version
+/// that is actually running.
+fn recover_interrupted_update() -> Option<String> {
+    let journal_path = recovery::journal_path(&configuration_directory()?);
+    let journal = recovery::read_journal(&journal_path)?;
+    let executable = env::current_exe().ok()?;
+    let message = match recovery::decide_recovery(&journal, &executable, &current_version()) {
+        recovery::Recovery::NotThisInstallation => return None,
+        recovery::Recovery::Completed { version } => Some(updated_message(&version)),
+        recovery::Recovery::NotCompleted { from, to } => Some(not_completed_message(&from, &to)),
+        recovery::Recovery::Unknown => None,
+    };
+    recovery::remove_swap_leftovers(&executable);
+    let _ = fs::remove_file(&journal_path);
+    message
+}
+
+fn configuration_directory() -> Option<PathBuf> {
+    crate::config::config_directory()
 }
 
 fn fetch_update(current: &Version) -> Result<Option<UpdateInfo>, String> {
@@ -475,121 +553,177 @@ fn download_executable(
         .map_err(|error| format!("não foi possível finalizar o download: {error}"))
 }
 
-fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), String> {
-    if let Err(error) = validate_helper_arguments(arguments) {
-        if is_packaged_executable_name(&arguments.target_path) {
-            relaunch_after_failure(&arguments.target_path);
-        }
-        return Err(error);
+/// Message after the new version failed to start. `configuration_restored`
+/// is `None` when the executable could not be restored (so the
+/// configuration was not touched either). Each outcome says what is installed
+/// and what the person can safely do next.
+fn rollback_failure(
+    failure: &str,
+    from_version: &str,
+    to_version: &str,
+    configuration_restored: Option<std::io::Result<()>>,
+    config_backup: &Path,
+) -> HelperFailure {
+    match configuration_restored {
+        Some(Ok(())) => HelperFailure::reopen_previous(format!(
+            "{failure}. A versão {from_version} foi restaurada e continua em uso: você pode continuar trabalhando normalmente. Para instalar a versão {to_version}, tente de novo mais tarde ou baixe-a na página oficial"
+        )),
+        Some(Err(error)) => HelperFailure::reopen_previous(format!(
+            "{failure}. A versão {from_version} foi restaurada, mas as configurações não puderam ser recuperadas ({error}). Confira as pastas de busca e os favoritos; a cópia guardada antes da atualização está em {}",
+            config_backup.display()
+        )),
+        None => HelperFailure::keep_closed(format!(
+            "{failure}, e não foi possível restaurar a versão {from_version}. Baixe o LocalCodePilot na página oficial e instale de novo; suas configurações foram guardadas em {}",
+            config_backup.display()
+        )),
     }
-    let candidate_sha256 = match sha256_file(&arguments.candidate_path) {
-        Ok(hash) => hash,
-        Err(error) => {
-            relaunch_after_failure(&arguments.target_path);
-            return Err(error);
-        }
+}
+
+fn not_completed_message(from: &str, to: &str) -> String {
+    format!(
+        "A atualização para a versão {to} não foi concluída. A versão {from} continua instalada e pode ser usada normalmente. Para tentar de novo, use Atualizar agora em Configurações"
+    )
+}
+
+fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailure> {
+    let to_version = &arguments.version;
+    // Nothing is touched while the app that started the helper still runs;
+    // relaunching it here would open a second instance.
+    if !recovery::wait_for_process_exit(arguments.parent_pid, REPLACEMENT_TIMEOUT) {
+        return Err(HelperFailure::keep_closed(format!(
+            "o LocalCodePilot não fechou a tempo, e a atualização para a versão {to_version} não foi aplicada. Nada foi alterado: feche o LocalCodePilot e tente atualizar de novo"
+        )));
+    }
+    let from_version = current_version().to_string();
+    let not_applied = |reason: String| {
+        Err(HelperFailure::reopen_previous(format!(
+            "{reason}. A versão {from_version} continua instalada e pode ser usada normalmente. Tente de novo mais tarde ou baixe a atualização na página oficial"
+        )))
     };
-    if !candidate_sha256.eq_ignore_ascii_case(&arguments.expected_sha256) {
-        relaunch_after_failure(&arguments.target_path);
-        return Err("a atualização preparada falhou na segunda verificação SHA-256".into());
+    if let Err(error) = validate_helper_arguments(arguments) {
+        if !is_packaged_executable_name(&arguments.target_path) {
+            return Err(HelperFailure::keep_closed(error));
+        }
+        return not_applied(error);
     }
-    let marker_path = arguments.stage_directory.join("startup-ok");
+    match sha256_file(&arguments.candidate_path) {
+        Ok(hash) if hash.eq_ignore_ascii_case(&arguments.expected_sha256) => {}
+        Ok(_) => {
+            return not_applied(
+                "a atualização preparada falhou na segunda verificação SHA-256".into(),
+            );
+        }
+        Err(error) => return not_applied(error),
+    }
     let helper_path = match env::current_exe() {
         Ok(path) => path,
         Err(error) => {
-            relaunch_after_failure(&arguments.target_path);
-            return Err(format!(
+            return not_applied(format!(
                 "não foi possível identificar o atualizador: {error}"
             ));
         }
     };
-    let install_directory = match arguments.target_path.parent() {
-        Some(path) => path,
-        None => {
-            relaunch_after_failure(&arguments.target_path);
-            return Err("pasta de instalação inválida".into());
+    let Some(install_directory) = arguments.target_path.parent() else {
+        return not_applied("pasta de instalação inválida".into());
+    };
+    let Some(config_directory) = configuration_directory() else {
+        return not_applied("a pasta de configurações não foi encontrada".into());
+    };
+    let config_backup = match recovery::backup_configuration(&config_directory, to_version) {
+        Ok(path) => path,
+        Err(error) => {
+            return not_applied(format!(
+                "não foi possível guardar uma cópia das configurações: {error}"
+            ));
         }
     };
-    let backup_path = arguments
-        .target_path
-        .with_file_name("LocalCodePilot.update-backup.exe");
-    let _ = fs::remove_file(&backup_path);
-    if let Err(error) = replace_target_with_backup(
+    let journal_path = recovery::journal_path(&config_directory);
+    let mut journal = recovery::UpdateJournal {
+        from_version: from_version.clone(),
+        to_version: to_version.clone(),
+        target: arguments.target_path.clone(),
+        phase: recovery::JournalPhase::Swapping,
+        config_backup: Some(config_backup.clone()),
+    };
+    if let Err(error) = recovery::write_journal(&journal_path, &journal) {
+        return not_applied(format!(
+            "não foi possível registrar o início da atualização: {error}"
+        ));
+    }
+    let swapped = recovery::swap_in_candidate(
         &arguments.target_path,
         &arguments.candidate_path,
-        &backup_path,
         &arguments.expected_sha256,
-    ) {
-        relaunch_after_failure(&arguments.target_path);
-        return Err(error);
+        sha256_file,
+        |from, to| recovery::rename_with_retry(from, to, REPLACEMENT_TIMEOUT),
+    );
+    if let Err(error) = swapped {
+        return match error {
+            recovery::SwapError::NotApplied(reason) | recovery::SwapError::RolledBack(reason) => {
+                let _ = fs::remove_file(&journal_path);
+                not_applied(reason)
+            }
+            // The journal stays: the next startup of whichever copy runs
+            // will clean up what it can.
+            recovery::SwapError::Broken(reason) => Err(HelperFailure::keep_closed(format!(
+                "{reason}. Baixe o LocalCodePilot {from_version} ou {to_version} na página oficial"
+            ))),
+        };
     }
+    journal.phase = recovery::JournalPhase::Starting;
+    let _ = recovery::write_journal(&journal_path, &journal);
+
+    let marker_path = arguments.stage_directory.join("startup-ok");
     let mut command = Command::new(&arguments.target_path);
     command
         .arg(UPDATED_STARTUP_FLAG)
         .arg(&marker_path)
         .arg(&helper_path)
         .arg(&arguments.stage_directory)
-        .arg(&arguments.version)
+        .arg(to_version)
         .current_dir(install_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     configure_background_command(&mut command);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            restore_backup(&arguments.target_path, &backup_path);
-            relaunch_after_failure(&arguments.target_path);
-            return Err(format!("não foi possível reiniciar a nova versão: {error}"));
-        }
-    };
-    let started = std::time::Instant::now();
-    while started.elapsed() < STARTUP_TIMEOUT {
-        if marker_path.is_file() {
-            let _ = fs::remove_file(&backup_path);
-            return Ok(());
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                restore_backup(&arguments.target_path, &backup_path);
-                relaunch_after_failure(&arguments.target_path);
-                return Err(format!(
-                    "a nova versão encerrou durante a inicialização ({status}); a versão anterior foi restaurada"
-                ));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                return Err(format!("não foi possível confirmar a nova versão: {error}"));
+    let failure = match command.spawn() {
+        Err(error) => format!("não foi possível abrir a versão {to_version}: {error}"),
+        Ok(mut child) => {
+            match recovery::wait_for_startup(&mut child, &marker_path, STARTUP_TIMEOUT) {
+                recovery::StartupOutcome::Confirmed => {
+                    recovery::remove_swap_leftovers(&arguments.target_path);
+                    let _ = fs::remove_file(&journal_path);
+                    return Ok(());
+                }
+                // Slow is not failed: the new version confirms and cleans up
+                // by itself when its window opens.
+                recovery::StartupOutcome::StillRunning => {
+                    journal.phase = recovery::JournalPhase::PendingConfirmation;
+                    if journal_path.is_file() {
+                        let _ = recovery::write_journal(&journal_path, &journal);
+                    }
+                    return Ok(());
+                }
+                recovery::StartupOutcome::Exited(status) => {
+                    format!("a versão {to_version} fechou ao iniciar ({status})")
+                }
             }
         }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Err("a nova versão iniciou, mas não confirmou a atualização; o backup foi preservado".into())
-}
-
-fn replace_target_with_backup(
-    target: &Path,
-    candidate: &Path,
-    backup: &Path,
-    expected_sha256: &str,
-) -> Result<(), String> {
-    wait_and_backup_target(target, backup)?;
-    if let Err(error) = fs::copy(candidate, target) {
-        restore_backup(target, backup);
-        return Err(format!("não foi possível instalar a nova versão: {error}"));
-    }
-    let installed_sha256 = match sha256_file(target) {
-        Ok(hash) => hash,
-        Err(error) => {
-            restore_backup(target, backup);
-            return Err(error);
-        }
     };
-    if !installed_sha256.eq_ignore_ascii_case(expected_sha256) {
-        restore_backup(target, backup);
-        return Err("o executável instalado falhou na verificação SHA-256".into());
+    let executable_restored =
+        recovery::restore_previous_executable(&arguments.target_path, REPLACEMENT_TIMEOUT);
+    let configuration_restored = executable_restored
+        .then(|| recovery::restore_configuration(&config_directory, &config_backup));
+    if executable_restored {
+        let _ = fs::remove_file(&journal_path);
     }
-    Ok(())
+    Err(rollback_failure(
+        &failure,
+        &from_version,
+        to_version,
+        configuration_restored,
+        &config_backup,
+    ))
 }
 
 fn parse_helper_arguments() -> Result<Option<HelperArguments>, String> {
@@ -598,9 +732,13 @@ fn parse_helper_arguments() -> Result<Option<HelperArguments>, String> {
         return Ok(None);
     }
     let values: Vec<OsString> = arguments.collect();
-    if values.len() != 5 {
+    if values.len() != 6 {
         return Err("os argumentos internos do atualizador são inválidos".into());
     }
+    let parent_pid = values[5]
+        .to_str()
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(|| "o processo informado ao atualizador é inválido".to_owned())?;
     let expected_sha256 = values[2]
         .clone()
         .into_string()
@@ -615,6 +753,7 @@ fn parse_helper_arguments() -> Result<Option<HelperArguments>, String> {
         expected_sha256,
         version,
         stage_directory: PathBuf::from(&values[4]),
+        parent_pid,
     }))
 }
 
@@ -655,32 +794,6 @@ fn validate_helper_arguments(arguments: &HelperArguments) -> Result<(), String> 
         return Err("os arquivos do atualizador não pertencem à mesma preparação".into());
     }
     Ok(())
-}
-
-fn wait_and_backup_target(target: &Path, backup: &Path) -> Result<(), String> {
-    let started = std::time::Instant::now();
-    loop {
-        match fs::rename(target, backup) {
-            Ok(()) => return Ok(()),
-            Err(error) if started.elapsed() < REPLACEMENT_TIMEOUT => {
-                thread::sleep(Duration::from_millis(100));
-                if !target.exists() {
-                    return Err("o executável instalado desapareceu durante a atualização".into());
-                }
-                let _ = error;
-            }
-            Err(error) => {
-                return Err(format!(
-                    "não foi possível substituir o executável; confira a permissão da pasta: {error}"
-                ));
-            }
-        }
-    }
-}
-
-fn restore_backup(target: &Path, backup: &Path) {
-    let _ = fs::remove_file(target);
-    let _ = fs::rename(backup, target);
 }
 
 fn relaunch_after_failure(target: &Path) {
@@ -1351,48 +1464,6 @@ mod tests {
         assert_eq!(update.checksum_url, None);
     }
 
-    #[test]
-    fn replaces_the_target_and_keeps_a_backup_until_startup_confirmation() {
-        let directory = temporary_test_directory("replace");
-        fs::create_dir_all(&directory).unwrap();
-        let target = directory.join("LocalCodePilot.exe");
-        let candidate = directory.join("candidate.exe");
-        let backup = directory.join("backup.exe");
-        fs::write(&target, b"MZ old version").unwrap();
-        fs::write(&candidate, b"MZ new version").unwrap();
-        let expected = sha256_file(&candidate).unwrap();
-
-        replace_target_with_backup(&target, &candidate, &backup, &expected).unwrap();
-
-        assert_eq!(fs::read(&target).unwrap(), b"MZ new version");
-        assert_eq!(fs::read(&backup).unwrap(), b"MZ old version");
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn restores_the_previous_target_when_post_copy_verification_fails() {
-        let directory = temporary_test_directory("rollback");
-        fs::create_dir_all(&directory).unwrap();
-        let target = directory.join("LocalCodePilot.exe");
-        let candidate = directory.join("candidate.exe");
-        let backup = directory.join("backup.exe");
-        fs::write(&target, b"MZ old version").unwrap();
-        fs::write(&candidate, b"MZ corrupted version").unwrap();
-
-        let error = replace_target_with_backup(
-            &target,
-            &candidate,
-            &backup,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .unwrap_err();
-
-        assert!(error.contains("SHA-256"));
-        assert_eq!(fs::read(&target).unwrap(), b"MZ old version");
-        assert!(!backup.exists());
-        fs::remove_dir_all(directory).unwrap();
-    }
-
     enum Reply {
         Complete(Vec<u8>),
         /// Announces `announced` bytes, sends only `body` and keeps the
@@ -1697,5 +1768,69 @@ mod tests {
         assert!(outside.join("keep").is_file());
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn rollback_messages_tell_what_is_installed_and_what_to_do_next() {
+        let backup = Path::new("C:\\config\\backups\\antes-de-0.4.0-alpha.9");
+        let failure = "a versão 0.4.0-alpha.9 fechou ao iniciar (exit code: 1)";
+
+        let restored = rollback_failure(
+            failure,
+            "0.4.0-alpha.8",
+            "0.4.0-alpha.9",
+            Some(Ok(())),
+            backup,
+        );
+        assert!(restored.relaunch_previous);
+        assert!(
+            restored
+                .message
+                .contains("A versão 0.4.0-alpha.8 foi restaurada e continua em uso")
+        );
+        assert!(
+            restored
+                .message
+                .contains("tente de novo mais tarde ou baixe-a na página oficial")
+        );
+
+        let configuration_lost = rollback_failure(
+            failure,
+            "0.4.0-alpha.8",
+            "0.4.0-alpha.9",
+            Some(Err(std::io::Error::other("acesso negado"))),
+            backup,
+        );
+        assert!(configuration_lost.relaunch_previous);
+        assert!(
+            configuration_lost
+                .message
+                .contains("as configurações não puderam ser recuperadas (acesso negado)")
+        );
+        assert!(
+            configuration_lost
+                .message
+                .contains("antes-de-0.4.0-alpha.9")
+        );
+        assert!(!configuration_lost.message.contains("continua em uso"));
+
+        let not_restored =
+            rollback_failure(failure, "0.4.0-alpha.8", "0.4.0-alpha.9", None, backup);
+        assert!(!not_restored.relaunch_previous);
+        assert!(
+            not_restored
+                .message
+                .contains("não foi possível restaurar a versão 0.4.0-alpha.8")
+        );
+        assert!(
+            not_restored
+                .message
+                .contains("Baixe o LocalCodePilot na página oficial")
+        );
+        assert!(!not_restored.message.contains("foi restaurada"));
+
+        let interrupted = not_completed_message("0.4.0-alpha.8", "0.4.0-alpha.9");
+        assert!(interrupted.contains("A versão 0.4.0-alpha.8 continua instalada"));
+        assert!(interrupted.contains("use Atualizar agora em Configurações"));
     }
 }

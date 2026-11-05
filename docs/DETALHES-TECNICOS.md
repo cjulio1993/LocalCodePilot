@@ -140,7 +140,17 @@ O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. Quando um 
 
 A alpha `0.4.0-alpha.5.1` corrige os avisos de atualização: cada sistema recebe somente releases com pacote compatível. Notificações incompatíveis em cache são descartadas. Quem usa alpha 5 deve instalar este pacote manualmente se o aviso de uma release exclusiva do macOS impedir a atualização integrada.
 
-Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
+Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização.
+
+Como a troca é protegida:
+
+- O auxiliar espera o LocalCodePilot que o abriu terminar de fechar. Se o app não fechar em 90 segundos, nada é trocado.
+- Antes da troca, os arquivos de configuração são copiados para `backups\antes-de-<versão>`, na pasta de configurações. Só a cópia mais recente fica guardada.
+- O novo executável é copiado e verificado na pasta do app antes de dois renomes. Assim, a pasta nunca fica sem `LocalCodePilot.exe` durante a cópia. O executável anterior fica como `LocalCodePilot.update-backup.exe` até a nova versão confirmar que abriu.
+- Um registro (`update-state.json`, na pasta de configurações) acompanha a atualização. Se ela for interrompida (por exemplo, o computador desligou), a próxima abertura conclui ou desfaz o que faltou e diz qual versão está em uso.
+- Se a nova versão fechar ao iniciar, o executável e as configurações anteriores voltam, e o app reabre com a mensagem. A mensagem só diz que a versão anterior foi restaurada quando isso realmente aconteceu.
+- Uma nova versão que demora a abrir (por exemplo, enquanto o antivírus a analisa) não é tratada como falha: ela própria conclui a atualização quando a janela abre.
+- O resultado ("LocalCodePilot atualizado para a versão…" ou o motivo da falha) aparece ao abrir o app e fica visível por 12 segundos, sem ser substituído pelo aviso da busca de projetos.
 
 O app escolhe somente o arquivo de nome exato `LocalCodePilot-<versão>-windows-x64.exe` e ignora o instalador. A partir da próxima release, o instalador se chama `LocalCodePilotSetup-<versão>-windows-x64.exe`. Até a alpha 8, ele se chamava `LocalCodePilot-<versão>-windows-x64-setup.exe`, e a regra antiga, que aceitava qualquer `.exe` com esse prefixo, escolhia o instalador e recusava a atualização (#97). Com o nome novo, as versões alpha 7 e alpha 8 já instaladas também passam a escolher o arquivo certo.
 
@@ -465,7 +475,17 @@ LocalCodePilot does not install Docker/Podman or start the engine VM. When an en
 
 Alpha `0.4.0-alpha.5.1` fixes update notifications: each operating system only receives releases with a compatible package. Incompatible cached notifications are discarded. Alpha 5 users should install this package manually if a macOS-only release notification prevents the in-app update.
 
-When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
+When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed.
+
+How the swap is protected:
+
+- The helper waits for the LocalCodePilot that started it to finish closing. If the app does not close within 90 seconds, nothing is replaced.
+- Before the swap, the configuration files are copied to `backups\antes-de-<version>` in the configuration folder. Only the latest copy is kept.
+- The new executable is copied and verified in the app folder before two renames, so the folder is never left without `LocalCodePilot.exe` during the copy. The previous executable stays as `LocalCodePilot.update-backup.exe` until the new version confirms it opened.
+- A journal (`update-state.json`, in the configuration folder) follows the update. If it is interrupted (for example, the computer shut down), the next startup finishes or undoes what was left and says which version is in use.
+- If the new version closes during startup, the previous executable and configuration come back, and the app reopens with the message. The message only says the previous version was restored when that really happened.
+- A new version that is slow to open (for example, while an antivirus scans it) is not treated as a failure: it finishes the update itself when its window opens.
+- The outcome ("LocalCodePilot atualizado para a versão…" or the reason for the failure) appears when the app opens and stays visible for 12 seconds, without being replaced by the project scan notice.
 
 The app only picks the file named exactly `LocalCodePilot-<version>-windows-x64.exe` and ignores the installer. Starting with the next release, the installer is named `LocalCodePilotSetup-<version>-windows-x64.exe`. Up to alpha 8 it was named `LocalCodePilot-<version>-windows-x64-setup.exe`, and the old rule, which accepted any `.exe` with that prefix, picked the installer and refused the update (#97). With the new name, alpha 7 and alpha 8 installs also pick the right file.
 

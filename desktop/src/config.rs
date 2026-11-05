@@ -284,7 +284,7 @@ fn project_cache_file_path() -> Option<PathBuf> {
     config_directory().map(|path| path.join(PROJECT_CACHE_FILE))
 }
 
-fn config_directory() -> Option<PathBuf> {
+pub(crate) fn config_directory() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
         return env::var_os("APPDATA")
             .map(PathBuf::from)
