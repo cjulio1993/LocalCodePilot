@@ -643,4 +643,17 @@ mod tests {
         fs::remove_dir_all(config).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }
+
+    #[test]
+    fn a_configuration_file_that_cannot_be_written_back_is_reported() {
+        let config = temporary_directory("config-fail");
+        fs::write(config.join("workspace-state.json"), "before").unwrap();
+        let backup = backup_configuration(&config, "0.4.0-alpha.9").unwrap();
+        // A folder where the file should go makes the copy back fail.
+        fs::remove_file(config.join("workspace-state.json")).unwrap();
+        fs::create_dir(config.join("workspace-state.json")).unwrap();
+
+        assert!(restore_configuration(&config, &backup).is_err());
+        fs::remove_dir_all(config).unwrap();
+    }
 }

@@ -325,9 +325,7 @@ fn recover_interrupted_update() -> Option<String> {
     let message = match recovery::decide_recovery(&journal, &executable, &current_version()) {
         recovery::Recovery::NotThisInstallation => return None,
         recovery::Recovery::Completed { version } => Some(updated_message(&version)),
-        recovery::Recovery::NotCompleted { from, to } => Some(format!(
-            "A atualização para a versão {to} não foi concluída. Você está usando a versão {from}."
-        )),
+        recovery::Recovery::NotCompleted { from, to } => Some(not_completed_message(&from, &to)),
         recovery::Recovery::Unknown => None,
     };
     recovery::remove_swap_leftovers(&executable);
@@ -555,19 +553,51 @@ fn download_executable(
         .map_err(|error| format!("não foi possível finalizar o download: {error}"))
 }
 
+/// Message after the new version failed to start. `configuration_restored`
+/// is `None` when the executable could not be restored (so the
+/// configuration was not touched either). Each outcome says what is installed
+/// and what the person can safely do next.
+fn rollback_failure(
+    failure: &str,
+    from_version: &str,
+    to_version: &str,
+    configuration_restored: Option<std::io::Result<()>>,
+    config_backup: &Path,
+) -> HelperFailure {
+    match configuration_restored {
+        Some(Ok(())) => HelperFailure::reopen_previous(format!(
+            "{failure}. A versão {from_version} foi restaurada e continua em uso: você pode continuar trabalhando normalmente. Para instalar a versão {to_version}, tente de novo mais tarde ou baixe-a na página oficial"
+        )),
+        Some(Err(error)) => HelperFailure::reopen_previous(format!(
+            "{failure}. A versão {from_version} foi restaurada, mas as configurações não puderam ser recuperadas ({error}). Confira as pastas de busca e os favoritos; a cópia guardada antes da atualização está em {}",
+            config_backup.display()
+        )),
+        None => HelperFailure::keep_closed(format!(
+            "{failure}, e não foi possível restaurar a versão {from_version}. Baixe o LocalCodePilot na página oficial e instale de novo; suas configurações foram guardadas em {}",
+            config_backup.display()
+        )),
+    }
+}
+
+fn not_completed_message(from: &str, to: &str) -> String {
+    format!(
+        "A atualização para a versão {to} não foi concluída. A versão {from} continua instalada e pode ser usada normalmente. Para tentar de novo, use Atualizar agora em Configurações"
+    )
+}
+
 fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailure> {
     let to_version = &arguments.version;
     // Nothing is touched while the app that started the helper still runs;
     // relaunching it here would open a second instance.
     if !recovery::wait_for_process_exit(arguments.parent_pid, REPLACEMENT_TIMEOUT) {
         return Err(HelperFailure::keep_closed(format!(
-            "o LocalCodePilot não fechou a tempo, e a atualização para a versão {to_version} não foi aplicada"
+            "o LocalCodePilot não fechou a tempo, e a atualização para a versão {to_version} não foi aplicada. Nada foi alterado: feche o LocalCodePilot e tente atualizar de novo"
         )));
     }
     let from_version = current_version().to_string();
     let not_applied = |reason: String| {
         Err(HelperFailure::reopen_previous(format!(
-            "{reason}. A versão {from_version} continua instalada"
+            "{reason}. A versão {from_version} continua instalada e pode ser usada normalmente. Tente de novo mais tarde ou baixe a atualização na página oficial"
         )))
     };
     if let Err(error) = validate_helper_arguments(arguments) {
@@ -680,17 +710,20 @@ fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailur
             }
         }
     };
-    if recovery::restore_previous_executable(&arguments.target_path, REPLACEMENT_TIMEOUT) {
-        let _ = recovery::restore_configuration(&config_directory, &config_backup);
+    let executable_restored =
+        recovery::restore_previous_executable(&arguments.target_path, REPLACEMENT_TIMEOUT);
+    let configuration_restored = executable_restored
+        .then(|| recovery::restore_configuration(&config_directory, &config_backup));
+    if executable_restored {
         let _ = fs::remove_file(&journal_path);
-        Err(HelperFailure::reopen_previous(format!(
-            "{failure}. A versão {from_version} foi restaurada e continua em uso"
-        )))
-    } else {
-        Err(HelperFailure::keep_closed(format!(
-            "{failure}, e não foi possível restaurar a versão {from_version}. Baixe o LocalCodePilot na página oficial"
-        )))
     }
+    Err(rollback_failure(
+        &failure,
+        &from_version,
+        to_version,
+        configuration_restored,
+        &config_backup,
+    ))
 }
 
 fn parse_helper_arguments() -> Result<Option<HelperArguments>, String> {
@@ -1735,5 +1768,69 @@ mod tests {
         assert!(outside.join("keep").is_file());
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn rollback_messages_tell_what_is_installed_and_what_to_do_next() {
+        let backup = Path::new("C:\\config\\backups\\antes-de-0.4.0-alpha.9");
+        let failure = "a versão 0.4.0-alpha.9 fechou ao iniciar (exit code: 1)";
+
+        let restored = rollback_failure(
+            failure,
+            "0.4.0-alpha.8",
+            "0.4.0-alpha.9",
+            Some(Ok(())),
+            backup,
+        );
+        assert!(restored.relaunch_previous);
+        assert!(
+            restored
+                .message
+                .contains("A versão 0.4.0-alpha.8 foi restaurada e continua em uso")
+        );
+        assert!(
+            restored
+                .message
+                .contains("tente de novo mais tarde ou baixe-a na página oficial")
+        );
+
+        let configuration_lost = rollback_failure(
+            failure,
+            "0.4.0-alpha.8",
+            "0.4.0-alpha.9",
+            Some(Err(std::io::Error::other("acesso negado"))),
+            backup,
+        );
+        assert!(configuration_lost.relaunch_previous);
+        assert!(
+            configuration_lost
+                .message
+                .contains("as configurações não puderam ser recuperadas (acesso negado)")
+        );
+        assert!(
+            configuration_lost
+                .message
+                .contains("antes-de-0.4.0-alpha.9")
+        );
+        assert!(!configuration_lost.message.contains("continua em uso"));
+
+        let not_restored =
+            rollback_failure(failure, "0.4.0-alpha.8", "0.4.0-alpha.9", None, backup);
+        assert!(!not_restored.relaunch_previous);
+        assert!(
+            not_restored
+                .message
+                .contains("não foi possível restaurar a versão 0.4.0-alpha.8")
+        );
+        assert!(
+            not_restored
+                .message
+                .contains("Baixe o LocalCodePilot na página oficial")
+        );
+        assert!(!not_restored.message.contains("foi restaurada"));
+
+        let interrupted = not_completed_message("0.4.0-alpha.8", "0.4.0-alpha.9");
+        assert!(interrupted.contains("A versão 0.4.0-alpha.8 continua instalada"));
+        assert!(interrupted.contains("use Atualizar agora em Configurações"));
     }
 }
