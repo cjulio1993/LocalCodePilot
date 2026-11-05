@@ -144,6 +144,8 @@ Quando uma release mais recente oferece o executável de atualização e `SHA256
 
 O app escolhe somente o arquivo de nome exato `LocalCodePilot-<versão>-windows-x64.exe` e ignora o instalador. A partir da próxima release, o instalador se chama `LocalCodePilotSetup-<versão>-windows-x64.exe`. Até a alpha 8, ele se chamava `LocalCodePilot-<versão>-windows-x64-setup.exe`, e a regra antiga, que aceitava qualquer `.exe` com esse prefixo, escolhia o instalador e recusava a atualização (#97). Com o nome novo, as versões alpha 7 e alpha 8 já instaladas também passam a escolher o arquivo certo.
 
+O download não tem limite de tempo total: uma conexão lenta que continua recebendo dados termina. Ele só falha como interrompido se passar 30 segundos sem receber nada ou se a conexão fechar antes do tamanho anunciado. Depois que o arquivo chega, o app mostra **Verificando a atualização...**. Pastas de preparação com mais de 24 horas, deixadas por tentativas interrompidas em `%TEMP%\LocalCodePilot\updates`, são removidas quando o app abre; pastas recentes e links não são tocados.
+
 Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. No macOS, **Baixar atualização** abre o DMG universal correspondente; a troca do aplicativo permanece manual. Builds de desenvolvimento, Linux e pastas protegidas abrem a página oficial da release como alternativa. Quem usa a alpha 4 ou uma versão anterior no Windows precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
 
 ### Preparação assistida do ambiente (experimental)
@@ -466,6 +468,8 @@ Alpha `0.4.0-alpha.5.1` fixes update notifications: each operating system only r
 When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
 
 The app only picks the file named exactly `LocalCodePilot-<version>-windows-x64.exe` and ignores the installer. Starting with the next release, the installer is named `LocalCodePilotSetup-<version>-windows-x64.exe`. Up to alpha 8 it was named `LocalCodePilot-<version>-windows-x64-setup.exe`, and the old rule, which accepted any `.exe` with that prefix, picked the installer and refused the update (#97). With the new name, alpha 7 and alpha 8 installs also pick the right file.
+
+The download has no total time limit, so a slow connection that keeps receiving data finishes. It fails as interrupted only if no data arrives for 30 seconds, or if the connection closes before the announced size. While it runs, the app shows **Verifying the update...** once the file has been received. Preparation folders older than 24 hours left by interrupted attempts in `%TEMP%\LocalCodePilot\updates` are removed when the app opens; recent folders and links are left untouched.
 
 This flow works for the official `LocalCodePilot.exe` when its directory is writable. On macOS, **Download update** opens the matching universal DMG and application replacement remains manual. Development builds, Linux, and protected directories open the official release page as a fallback. Windows users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
 

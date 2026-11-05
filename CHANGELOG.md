@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- A atualização pelo app falhava em conexões lentas: o download do executável (cerca de 15 MB) tinha um limite total de 90 segundos. Agora não há limite total; o download só falha se ficar 30 segundos sem receber dados ou se a conexão fechar antes do fim, e o arquivo parcial é apagado. Depois do download, o app mostra "Verificando a atualização...". Pastas temporárias de tentativas interrompidas, com mais de 24 horas, são removidas ao abrir o app.
 - A atualização pelo app escolhia o instalador (`...-windows-x64-setup.exe`) em vez do executável de atualização e parava com "o nome do executável da release não corresponde à versão selecionada" (#97). O app agora escolhe só o arquivo de nome exato `LocalCodePilot-<versão>-windows-x64.exe`, e o instalador passa a se chamar `LocalCodePilotSetup-<versão>-windows-x64.exe`, um nome que as versões alpha 7 e alpha 8 já instaladas também ignoram. O recálculo do `SHA256SUMS.txt` depois da assinatura inclui o instalador com o nome novo.
 
 ## [0.4.0-alpha.8] - 2026-11-04

@@ -13,6 +13,7 @@ fn main() -> eframe::Result {
     if let Some(exit_code) = updates::try_run_update_helper() {
         std::process::exit(exit_code);
     }
+    updates::spawn_stale_stage_cleanup();
     let icon =
         eframe::icon_data::from_png_bytes(include_bytes!("../../assets/branding/icon-512.png"))
             .expect("the embedded LocalCodePilot icon must be a valid PNG");
