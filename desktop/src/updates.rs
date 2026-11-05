@@ -159,7 +159,7 @@ pub fn spawn_update_download(
         .clone()
         .filter(|url| trusted_release_asset_url(url))
         .ok_or_else(|| "a release não oferece o arquivo oficial de checksums".to_owned())?;
-    let asset_name = format!("LocalCodePilot-{}-windows-x64.exe", update.version);
+    let asset_name = windows_update_asset_name(&update.version);
     if !executable_url.ends_with(&format!("/{asset_name}")) {
         return Err("o nome do executável da release não corresponde à versão selecionada".into());
     }
@@ -293,10 +293,17 @@ fn select_update_for_os(
                         .find(|asset| compatible_update_asset(&asset.name, operating_system))
                 })
                 .map(|asset| asset.browser_download_url.clone())?;
+            // Only the exact update executable qualifies: the installer shares the
+            // `LocalCodePilot-<version>-windows-x64` prefix in older releases and
+            // is listed before it by the GitHub API (#97).
+            let update_asset_name = windows_update_asset_name(&version);
             let executable_url = release
                 .assets
                 .iter()
-                .find(|asset| operating_system == "windows" && windows_update_asset(&asset.name))
+                .find(|asset| {
+                    operating_system == "windows"
+                        && asset.name.eq_ignore_ascii_case(&update_asset_name)
+                })
                 .map(|asset| asset.browser_download_url.clone());
             let checksum_url = release
                 .assets
@@ -873,6 +880,11 @@ fn windows_update_asset(name: &str) -> bool {
         && name.starts_with("localcodepilot-")
         && name.contains("windows")
         && (name.contains("x64") || name.contains("amd64"))
+        && !name.contains("setup")
+}
+
+fn windows_update_asset_name(version: impl std::fmt::Display) -> String {
+    format!("LocalCodePilot-{version}-windows-x64.exe")
 }
 
 #[cfg(test)]
@@ -941,6 +953,92 @@ mod tests {
             update.checksum_url.as_deref(),
             Some("https://example.com/SHA256SUMS.txt")
         );
+    }
+
+    fn release_with_assets(version: &str, assets: &[&str]) -> Vec<GithubRelease> {
+        let assets = assets
+            .iter()
+            .map(|name| {
+                format!(
+                    r#"{{"name":"{name}","browser_download_url":"https://github.com/cjulio1993/LocalCodePilot/releases/download/v{version}/{name}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        releases(&format!(
+            r#"[{{"tag_name":"v{version}","html_url":"https://example.com/release","prerelease":true,"assets":[{assets}]}}]"#
+        ))
+    }
+
+    #[test]
+    fn picks_the_update_executable_from_the_real_alpha_8_asset_list() {
+        // Asset order as returned by the GitHub API for v0.4.0-alpha.8 (#97):
+        // the installer comes before the update executable.
+        let update = select_update_for_os(
+            release_with_assets(
+                "0.4.0-alpha.8",
+                &[
+                    "LocalCodePilot-0.4.0-alpha.8-macos-universal.dmg",
+                    "LocalCodePilot-0.4.0-alpha.8-windows-x64-setup.exe",
+                    "LocalCodePilot-0.4.0-alpha.8-windows-x64.exe",
+                    "LocalCodePilot-0.4.0-alpha.8-windows-x64.zip",
+                    "SHA256SUMS.txt",
+                ],
+            ),
+            &Version::parse("0.4.0-alpha.7").unwrap(),
+            "windows",
+        )
+        .unwrap();
+
+        let executable_url = update.executable_url.as_deref().unwrap();
+        assert!(executable_url.ends_with("/LocalCodePilot-0.4.0-alpha.8-windows-x64.exe"));
+        assert!(trusted_release_asset_url(executable_url));
+        assert!(update.download_url.ends_with("-windows-x64.zip"));
+    }
+
+    #[test]
+    fn ignores_installers_and_releases_without_the_exact_update_executable() {
+        let renamed = select_update_for_os(
+            release_with_assets(
+                "0.4.0-alpha.9",
+                &[
+                    "LocalCodePilotSetup-0.4.0-alpha.9-windows-x64.exe",
+                    "LocalCodePilot-0.4.0-alpha.9-windows-x64.exe",
+                    "LocalCodePilot-0.4.0-alpha.9-windows-x64.zip",
+                    "SHA256SUMS.txt",
+                ],
+            ),
+            &Version::parse("0.4.0-alpha.8").unwrap(),
+            "windows",
+        )
+        .unwrap();
+        assert!(
+            renamed
+                .executable_url
+                .as_deref()
+                .unwrap()
+                .ends_with("/LocalCodePilot-0.4.0-alpha.9-windows-x64.exe")
+        );
+
+        let installer_only = select_update_for_os(
+            release_with_assets(
+                "0.4.0-alpha.9",
+                &[
+                    "LocalCodePilot-0.4.0-alpha.9-windows-x64-setup.exe",
+                    "LocalCodePilot-0.4.0-alpha.9-windows-x64.zip",
+                ],
+            ),
+            &Version::parse("0.4.0-alpha.8").unwrap(),
+            "windows",
+        )
+        .unwrap();
+        assert!(installer_only.executable_url.is_none());
+        assert!(!windows_update_asset(
+            "LocalCodePilot-0.4.0-alpha.9-windows-x64-setup.exe"
+        ));
+        assert!(!windows_update_asset(
+            "LocalCodePilotSetup-0.4.0-alpha.9-windows-x64.exe"
+        ));
     }
 
     #[test]

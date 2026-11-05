@@ -1,7 +1,7 @@
 LocalCodePilot alpha para Windows x64
 ====================================
 
-Instalador (recomendado): execute LocalCodePilot-<versão>-windows-x64-setup.exe.
+Instalador (recomendado): execute LocalCodePilotSetup-<versão>-windows-x64.exe.
 Ele instala o app em %LOCALAPPDATA%\Programs\LocalCodePilot, sem pedir administrador,
 cria o atalho no Menu Iniciar e aparece em "Aplicativos instalados" para desinstalar.
 

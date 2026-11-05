@@ -114,7 +114,7 @@ jobs:
           endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\dist\LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe
+          files: ${{ github.workspace }}\dist\LocalCodePilotSetup-${{ steps.version.outputs.value }}-windows-x64.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -124,13 +124,13 @@ jobs:
         if: env.ARTIFACT_SIGNING_ENDPOINT != '' && env.ARTIFACT_SIGNING_ACCOUNT != '' && env.ARTIFACT_SIGNING_PROFILE != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CLIENT_ID != '' && env.AZURE_CLIENT_SECRET != ''
         shell: pwsh
         run: |
-          Get-ChildItem dist -File | Where-Object { $_.Name -like "LocalCodePilot-*-windows-x64*" } | ForEach-Object {
+          Get-ChildItem dist -File | Where-Object { $_.Name -like "LocalCodePilot-*-windows-x64*" -or $_.Name -like "LocalCodePilotSetup-*-windows-x64.exe" } | ForEach-Object {
             "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)  $($_.Name)"
           } | Set-Content -LiteralPath dist\SHA256SUMS.txt -Encoding ascii
 
       - name: Install and uninstall silently
         shell: pwsh
-        run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe"
+        run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilotSetup-${{ steps.version.outputs.value }}-windows-x64.exe"
 
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v4
@@ -139,7 +139,7 @@ jobs:
           path: |
             dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64.zip
             dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64.exe
-            dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe
+            dist/LocalCodePilotSetup-${{ steps.version.outputs.value }}-windows-x64.exe
             dist/SHA256SUMS.txt
 
   macos:
@@ -243,7 +243,7 @@ jobs:
             assets=(
               "dist/windows/LocalCodePilot-$version-windows-x64.zip"
               "dist/windows/LocalCodePilot-$version-windows-x64.exe"
-              "dist/windows/LocalCodePilot-$version-windows-x64-setup.exe"
+              "dist/windows/LocalCodePilotSetup-$version-windows-x64.exe"
               "dist/macos/LocalCodePilot-$version-macos-universal.dmg"
               "dist/SHA256SUMS.txt"
             )
