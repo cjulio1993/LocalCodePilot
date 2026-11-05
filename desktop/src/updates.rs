@@ -26,7 +26,6 @@ const MAX_CHECKSUM_BYTES: u64 = 1024 * 1024;
 const REPLACEMENT_TIMEOUT: Duration = Duration::from_secs(90);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
-const DOWNLOAD_BODY_CAP: Duration = Duration::from_secs(30 * 60);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const STALE_STAGE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub const CHECK_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
@@ -804,7 +803,7 @@ fn update_agent(timeout: Duration) -> ureq::Agent {
 
 /// A slow but steady download must finish: there is no total limit, only short
 /// limits to connect and to get the response, plus a limit per read that
-/// restarts whenever data arrives. `timeout_recv_body` is only a safety cap.
+/// restarts whenever data arrives. Neither the call nor the body has a cap.
 fn download_agent() -> ureq::Agent {
     download_agent_with_stall_timeout(DOWNLOAD_STALL_TIMEOUT)
 }
@@ -816,7 +815,8 @@ fn download_agent_with_stall_timeout(stall_timeout: Duration) -> ureq::Agent {
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         .timeout_per_read(Some(stall_timeout))
-        .timeout_recv_body(Some(DOWNLOAD_BODY_CAP))
+        .timeout_per_call(None)
+        .timeout_recv_body(None)
         .build()
         .into()
 }
@@ -1402,6 +1402,13 @@ mod tests {
             body: Vec<u8>,
             hold: Duration,
         },
+        /// Sends the whole body in `chunk`-sized pieces, pausing `pause`
+        /// between them.
+        Slow {
+            body: Vec<u8>,
+            chunk: usize,
+            pause: Duration,
+        },
     }
 
     /// Minimal HTTP/1.1 server on localhost: one connection per reply.
@@ -1430,6 +1437,14 @@ mod tests {
                     Some((_, Reply::Complete(body))) => {
                         let _ = stream.write_all(header(body.len() as u64).as_bytes());
                         let _ = stream.write_all(body);
+                    }
+                    Some((_, Reply::Slow { body, chunk, pause })) => {
+                        let _ = stream.write_all(header(body.len() as u64).as_bytes());
+                        for piece in body.chunks(*chunk) {
+                            let _ = stream.write_all(piece);
+                            let _ = stream.flush();
+                            thread::sleep(*pause);
+                        }
                     }
                     Some((
                         _,
@@ -1468,7 +1483,8 @@ mod tests {
         let config = agent.config();
         assert_eq!(config.timeouts().global, None);
         assert_eq!(config.timeout_per_read(), Some(DOWNLOAD_STALL_TIMEOUT));
-        assert_eq!(config.timeouts().recv_body, Some(DOWNLOAD_BODY_CAP));
+        assert_eq!(config.timeouts().per_call, None);
+        assert_eq!(config.timeouts().recv_body, None);
     }
 
     #[test]
@@ -1544,6 +1560,42 @@ mod tests {
         );
         assert_eq!(fs::read(&prepared.candidate_path).unwrap(), executable);
         assert_eq!(prepared.expected_sha256, sha256_hex(&executable));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_slow_steady_download_outlasting_the_stall_limit_completes() {
+        let mut executable = b"MZ".to_vec();
+        executable.resize(20 * 1024, 3);
+        let server = serve(vec![(
+            "/exe",
+            Reply::Slow {
+                body: executable.clone(),
+                chunk: 2 * 1024,
+                pause: Duration::from_millis(300),
+            },
+        )]);
+        let directory = temporary_test_directory("slow");
+        fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("LocalCodePilot.exe");
+        let (sender, _receiver) = mpsc::channel();
+        let stall_limit = Duration::from_secs(1);
+
+        let started = Instant::now();
+        download_executable(
+            &download_agent_with_stall_timeout(stall_limit),
+            &format!("{server}/exe"),
+            &destination,
+            &sha256_hex(&executable),
+            &sender,
+            &egui::Context::default(),
+        )
+        .unwrap();
+
+        // Ten pieces 300 ms apart: the whole download takes about three times
+        // the stall limit and still finishes, because data keeps arriving.
+        assert!(started.elapsed() > stall_limit * 2);
+        assert_eq!(fs::read(&destination).unwrap(), executable);
         fs::remove_dir_all(directory).unwrap();
     }
 
