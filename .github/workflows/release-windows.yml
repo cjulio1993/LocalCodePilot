@@ -63,6 +63,15 @@ jobs:
       - name: Build release executable
         run: cargo build --release --locked -p localcodepilot-desktop
 
+      - name: Verify the local update test feed is not in the executable
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("target\release\localcodepilot-desktop.exe")
+          $text = [System.Text.Encoding]::Latin1.GetString($bytes)
+          if ($text.Contains("LOCALCODEPILOT_TEST_FEED")) {
+            throw "O executável de release contém o feed de teste de atualização (feature update-test-feed)."
+          }
+
       - name: Sign executable with Microsoft Artifact Signing
         if: env.ARTIFACT_SIGNING_ENDPOINT != '' && env.ARTIFACT_SIGNING_ACCOUNT != '' && env.ARTIFACT_SIGNING_PROFILE != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CLIENT_ID != '' && env.AZURE_CLIENT_SECRET != ''
         uses: Azure/artifact-signing-action@v1
@@ -183,6 +192,13 @@ jobs:
             target/aarch64-apple-darwin/release/localcodepilot-desktop \
             -output target/macos-universal/localcodepilot-desktop
           lipo target/macos-universal/localcodepilot-desktop -verify_arch x86_64 arm64
+
+      - name: Verify the local update test feed is not in the binary
+        run: |
+          if grep -q "LOCALCODEPILOT_TEST_FEED" target/macos-universal/localcodepilot-desktop; then
+            echo "O binário de release contém o feed de teste de atualização (feature update-test-feed)." >&2
+            exit 1
+          fi
 
       - name: Package and verify DMG
         run: bash scripts/package-macos.sh "${{ steps.version.outputs.value }}" target/macos-universal/localcodepilot-desktop

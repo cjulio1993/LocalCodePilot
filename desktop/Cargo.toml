@@ -8,6 +8,13 @@ license.workspace = true
 name = "localcodepilot-desktop"
 path = "src/main.rs"
 
+[features]
+default = []
+# Local update feed for end-to-end tests between two builds (see
+# scripts/e2e-update-windows.ps1). Refused in release builds; never enable it
+# when packaging.
+update-test-feed = []
+
 [dependencies]
 eframe.workspace = true
 egui-phosphor.workspace = true

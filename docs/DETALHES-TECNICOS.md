@@ -319,6 +319,30 @@ Para verificar alterações automaticamente sem reiniciar a janela desktop:
 cargo watch -x "check -p localcodepilot-desktop"
 ```
 
+#### Testar a atualização entre duas versões (Windows)
+
+```powershell
+.\scripts\e2e-update-windows.ps1                      # todos os cenários
+.\scripts\e2e-update-windows.ps1 -Cenario sucesso,rollback -Recompilar
+```
+
+O script compila o mesmo commit como `0.4.0-alpha.90` e `0.4.0-alpha.91`, com a feature `update-test-feed`, e serve uma release falsa por um servidor local (`desktop/examples/update_test_feed.rs`, só em `127.0.0.1`). Depois, ele clica em **Atualizar agora** pela UI Automation e confere sozinho o executável final, as sobras, o registro e o texto na tela. Os cenários são:
+
+- `sucesso`;
+- `sha-errado`;
+- `queda-no-meio` (o servidor cai durante o download);
+- `rollback` (a nova versão fecha ao iniciar);
+- `confirmacao-lenta` (a nova versão demora mais que a espera do auxiliar);
+- `sem-conexao`.
+
+Tudo roda numa pasta descartável (`-Pasta`, por padrão `%TEMP%\lcp-e2e-update`), com `APPDATA`, `LOCALAPPDATA`, `TEMP` e instalação próprios. O script só encerra processos que rodam dessa pasta.
+
+A feature `update-test-feed` vem desligada. Com ela, a variável `LOCALCODEPILOT_TEST_FEED` aceita só `http://127.0.0.1:<porta>` ou `http://localhost:<porta>`. Ela **nunca vai para uma release**, por três motivos:
+
+- um build `--release` com a feature não compila;
+- o workflow de release confere que os executáveis publicados não contêm o feed;
+- sem a feature, a variável é ignorada.
+
 ### Build de produção
 
 ```powershell
@@ -653,6 +677,30 @@ To check changes automatically without restarting the desktop window:
 ```powershell
 cargo watch -x "check -p localcodepilot-desktop"
 ```
+
+#### Testing the update between two versions (Windows)
+
+```powershell
+.\scripts\e2e-update-windows.ps1                      # every scenario
+.\scripts\e2e-update-windows.ps1 -Cenario sucesso,rollback -Recompilar
+```
+
+The script builds the same commit as `0.4.0-alpha.90` and `0.4.0-alpha.91` with the `update-test-feed` feature, and serves a fake release from a local server (`desktop/examples/update_test_feed.rs`, on `127.0.0.1` only). It then clicks **Atualizar agora** through UI Automation and checks the final executable, leftovers, the journal and the on-screen text by itself. The scenarios are:
+
+- `sucesso` (success);
+- `sha-errado` (wrong SHA-256);
+- `queda-no-meio` (the server goes down during the download);
+- `rollback` (the new version closes at startup);
+- `confirmacao-lenta` (the new version takes longer than the helper waits);
+- `sem-conexao` (no connection).
+
+Everything runs in a disposable folder (`-Pasta`, by default `%TEMP%\lcp-e2e-update`) with its own `APPDATA`, `LOCALAPPDATA`, `TEMP` and install folder. The script only stops processes running from that folder.
+
+The `update-test-feed` feature is off by default. With it, the `LOCALCODEPILOT_TEST_FEED` variable accepts only `http://127.0.0.1:<port>` or `http://localhost:<port>`. It **never reaches a release**, for three reasons:
+
+- a `--release` build with the feature does not compile;
+- the release workflow checks that the published executables do not contain the feed;
+- without the feature, the variable is ignored.
 
 ### Production build
 
