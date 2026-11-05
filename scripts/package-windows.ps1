@@ -15,7 +15,10 @@ $packageName = "LocalCodePilot-$Version-windows-x64"
 $stagingDirectory = Join-Path $distributionRoot $packageName
 $archivePath = Join-Path $distributionRoot "$packageName.zip"
 $standalonePath = Join-Path $distributionRoot "$packageName.exe"
-$installerPath = Join-Path $distributionRoot "$packageName-setup.exe"
+# The installer must not start with "LocalCodePilot-": clients up to 0.4.0-alpha.8
+# pick any "LocalCodePilot-...windows-x64...exe" asset as the update executable (#97).
+$installerBaseName = "LocalCodePilotSetup-$Version-windows-x64"
+$installerPath = Join-Path $distributionRoot "$installerBaseName.exe"
 $resolvedTargetDirectory = if ([System.IO.Path]::IsPathRooted($TargetDirectory)) {
     [System.IO.Path]::GetFullPath($TargetDirectory)
 } else {
@@ -96,7 +99,7 @@ if ($Installer) {
         "/DSourceDir=$stagingDirectory" `
         "/DRepositoryRoot=$repositoryRoot" `
         "/DOutputDir=$distributionRoot" `
-        "/DOutputBaseFilename=$packageName-setup" `
+        "/DOutputBaseFilename=$installerBaseName" `
         (Join-Path $repositoryRoot "packaging\windows\LocalCodePilot.iss")
     if ($LASTEXITCODE -ne 0) {
         throw "O Inno Setup falhou com código $LASTEXITCODE."

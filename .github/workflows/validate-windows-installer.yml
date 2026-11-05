@@ -54,12 +54,12 @@ jobs:
 
       - name: Install and uninstall silently
         shell: pwsh
-        run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe"
+        run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilotSetup-${{ steps.version.outputs.value }}-windows-x64.exe"
 
       - name: Upload installer for manual testing
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
           path: |
-            dist/LocalCodePilot-${{ steps.version.outputs.value }}-windows-x64-setup.exe
+            dist/LocalCodePilotSetup-${{ steps.version.outputs.value }}-windows-x64.exe
             dist/SHA256SUMS.txt

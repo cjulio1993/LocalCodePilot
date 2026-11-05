@@ -142,6 +142,8 @@ A alpha `0.4.0-alpha.5.1` corrige os avisos de atualização: cada sistema receb
 
 Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização. Se a nova versão não iniciar, o backup anterior é restaurado.
 
+O app escolhe somente o arquivo de nome exato `LocalCodePilot-<versão>-windows-x64.exe` e ignora o instalador. A partir da próxima release, o instalador se chama `LocalCodePilotSetup-<versão>-windows-x64.exe`. Até a alpha 8, ele se chamava `LocalCodePilot-<versão>-windows-x64-setup.exe`, e a regra antiga, que aceitava qualquer `.exe` com esse prefixo, escolhia o instalador e recusava a atualização (#97). Com o nome novo, as versões alpha 7 e alpha 8 já instaladas também passam a escolher o arquivo certo.
+
 Esse fluxo funciona no `LocalCodePilot.exe` oficial quando a pasta permite escrita. No macOS, **Baixar atualização** abre o DMG universal correspondente; a troca do aplicativo permanece manual. Builds de desenvolvimento, Linux e pastas protegidas abrem a página oficial da release como alternativa. Quem usa a alpha 4 ou uma versão anterior no Windows precisa instalar a alpha 5 manualmente; a partir dela, as próximas versões poderão ser aplicadas pelo aplicativo.
 
 ### Preparação assistida do ambiente (experimental)
@@ -462,6 +464,8 @@ LocalCodePilot does not install Docker/Podman or start the engine VM. When an en
 Alpha `0.4.0-alpha.5.1` fixes update notifications: each operating system only receives releases with a compatible package. Incompatible cached notifications are discarded. Alpha 5 users should install this package manually if a macOS-only release notification prevents the in-app update.
 
 When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed. If the new version does not start, the previous backup is restored.
+
+The app only picks the file named exactly `LocalCodePilot-<version>-windows-x64.exe` and ignores the installer. Starting with the next release, the installer is named `LocalCodePilotSetup-<version>-windows-x64.exe`. Up to alpha 8 it was named `LocalCodePilot-<version>-windows-x64-setup.exe`, and the old rule, which accepted any `.exe` with that prefix, picked the installer and refused the update (#97). With the new name, alpha 7 and alpha 8 installs also pick the right file.
 
 This flow works for the official `LocalCodePilot.exe` when its directory is writable. On macOS, **Download update** opens the matching universal DMG and application replacement remains manual. Development builds, Linux, and protected directories open the official release page as a fallback. Windows users on alpha 4 or older must install alpha 5 manually; later versions can be applied from the app.
 
