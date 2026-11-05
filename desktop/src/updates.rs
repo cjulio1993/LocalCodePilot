@@ -12,7 +12,7 @@ use std::{
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 const RELEASES_URL: &str =
@@ -25,6 +25,9 @@ const MAX_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CHECKSUM_BYTES: u64 = 1024 * 1024;
 const REPLACEMENT_TIMEOUT: Duration = Duration::from_secs(90);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+const STALE_STAGE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub const CHECK_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,8 +61,17 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
+/// Stage of the background preparation, sent before the matching work starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePhase {
+    Checksums,
+    Downloading,
+    Verifying,
+}
+
 #[derive(Debug)]
 pub enum UpdateInstallEvent {
+    Phase(UpdatePhase),
     Progress {
         downloaded_bytes: u64,
         total_bytes: Option<u64>,
@@ -337,11 +349,13 @@ fn prepare_update(
 ) -> Result<PreparedUpdate, String> {
     fs::create_dir_all(&preparation.stage_directory)
         .map_err(|error| format!("não foi possível criar a pasta temporária: {error}"))?;
-    let agent = update_agent(Duration::from_secs(90));
+    let agent = download_agent();
+    send_phase(sender, repaint, UpdatePhase::Checksums);
     let checksums = download_checksums(&agent, &preparation.checksum_url)?;
     let expected_sha256 = checksum_for_asset(&checksums, &preparation.asset_name)
         .ok_or_else(|| format!("o checksum de {} não foi publicado", preparation.asset_name))?;
     let candidate_path = preparation.stage_directory.join("LocalCodePilot.exe");
+    send_phase(sender, repaint, UpdatePhase::Downloading);
     download_executable(
         &agent,
         &preparation.executable_url,
@@ -405,10 +419,17 @@ fn download_executable(
     let mut hasher = Sha256::new();
     let mut downloaded_bytes = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
+    let mut last_progress: Option<Instant> = None;
     loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("o download da atualização foi interrompido: {error}"))?;
+        let read = match reader.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                let _ = fs::remove_file(&partial_path);
+                return Err(format!(
+                    "o download da atualização foi interrompido: {error}"
+                ));
+            }
+        };
         if read == 0 {
             break;
         }
@@ -421,16 +442,22 @@ fn download_executable(
             .write_all(&buffer[..read])
             .map_err(|error| format!("não foi possível salvar a atualização: {error}"))?;
         hasher.update(&buffer[..read]);
-        let _ = sender.send(UpdateInstallEvent::Progress {
-            downloaded_bytes,
-            total_bytes,
-        });
-        repaint.request_repaint();
+        if last_progress.is_none_or(|sent| sent.elapsed() >= PROGRESS_INTERVAL) {
+            last_progress = Some(Instant::now());
+            send_progress(sender, repaint, downloaded_bytes, total_bytes);
+        }
     }
+    // The last chunk is always reported, even when it arrived inside the interval.
+    send_progress(sender, repaint, downloaded_bytes, total_bytes);
     output
         .sync_all()
         .map_err(|error| format!("não foi possível concluir o download: {error}"))?;
     drop(output);
+    if total_bytes.is_some_and(|total| total != downloaded_bytes) {
+        let _ = fs::remove_file(&partial_path);
+        return Err("o download da atualização foi interrompido antes do fim".into());
+    }
+    send_phase(sender, repaint, UpdatePhase::Verifying);
     let actual_sha256 = hasher
         .finalize()
         .iter()
@@ -772,6 +799,77 @@ fn update_agent(timeout: Duration) -> ureq::Agent {
         .timeout_global(Some(timeout))
         .build()
         .into()
+}
+
+/// A slow but steady download must finish: there is no total limit, only short
+/// limits to connect and to get the response, plus a limit per read that
+/// restarts whenever data arrives. Neither the call nor the body has a cap.
+fn download_agent() -> ureq::Agent {
+    download_agent_with_stall_timeout(DOWNLOAD_STALL_TIMEOUT)
+}
+
+fn download_agent_with_stall_timeout(stall_timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(None)
+        .timeout_resolve(Some(Duration::from_secs(15)))
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_per_read(Some(stall_timeout))
+        .timeout_per_call(None)
+        .timeout_recv_body(None)
+        .build()
+        .into()
+}
+
+fn send_phase(sender: &Sender<UpdateInstallEvent>, repaint: &egui::Context, phase: UpdatePhase) {
+    let _ = sender.send(UpdateInstallEvent::Phase(phase));
+    repaint.request_repaint();
+}
+
+fn send_progress(
+    sender: &Sender<UpdateInstallEvent>,
+    repaint: &egui::Context,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let _ = sender.send(UpdateInstallEvent::Progress {
+        downloaded_bytes,
+        total_bytes,
+    });
+    repaint.request_repaint();
+}
+
+/// Removes preparation folders left by interrupted or failed attempts. Only
+/// real directories directly under the update root and older than
+/// `STALE_STAGE_AGE` are removed: a recent one may belong to an update in
+/// progress, and links are never followed.
+pub fn spawn_stale_stage_cleanup() {
+    thread::spawn(|| remove_stale_stages(&updates_root_directory(), STALE_STAGE_AGE));
+}
+
+fn remove_stale_stages(root: &Path, max_age: Duration) -> usize {
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= max_age);
+        if stale && fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn checksum_for_asset(contents: &str, asset_name: &str) -> Option<String> {
@@ -1293,5 +1391,311 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"MZ old version");
         assert!(!backup.exists());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    enum Reply {
+        Complete(Vec<u8>),
+        /// Announces `announced` bytes, sends only `body` and keeps the
+        /// connection open for `hold` before closing it.
+        Partial {
+            announced: u64,
+            body: Vec<u8>,
+            hold: Duration,
+        },
+        /// Sends the whole body in `chunk`-sized pieces, pausing `pause`
+        /// between them.
+        Slow {
+            body: Vec<u8>,
+            chunk: usize,
+            pause: Duration,
+        },
+    }
+
+    /// Minimal HTTP/1.1 server on localhost: one connection per reply.
+    fn serve(replies: Vec<(&'static str, Reply)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            for stream in listener.incoming().take(replies.len()) {
+                let mut stream = stream.unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    request.push(byte[0]);
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let path = request.split_whitespace().nth(1).unwrap_or_default();
+                let header = |length: u64| {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+                    )
+                };
+                match replies.iter().find(|(served, _)| *served == path) {
+                    Some((_, Reply::Complete(body))) => {
+                        let _ = stream.write_all(header(body.len() as u64).as_bytes());
+                        let _ = stream.write_all(body);
+                    }
+                    Some((_, Reply::Slow { body, chunk, pause })) => {
+                        let _ = stream.write_all(header(body.len() as u64).as_bytes());
+                        for piece in body.chunks(*chunk) {
+                            let _ = stream.write_all(piece);
+                            let _ = stream.flush();
+                            thread::sleep(*pause);
+                        }
+                    }
+                    Some((
+                        _,
+                        Reply::Partial {
+                            announced,
+                            body,
+                            hold,
+                        },
+                    )) => {
+                        let _ = stream.write_all(header(*announced).as_bytes());
+                        let _ = stream.write_all(body);
+                        let _ = stream.flush();
+                        thread::sleep(*hold);
+                    }
+                    None => {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                }
+            }
+        });
+        address
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn the_download_has_no_total_time_limit_only_stall_limits() {
+        let agent = download_agent();
+        let config = agent.config();
+        assert_eq!(config.timeouts().global, None);
+        assert_eq!(config.timeout_per_read(), Some(DOWNLOAD_STALL_TIMEOUT));
+        assert_eq!(config.timeouts().per_call, None);
+        assert_eq!(config.timeouts().recv_body, None);
+    }
+
+    #[test]
+    fn prepares_an_update_reporting_phases_in_order_and_throttled_progress() {
+        let mut executable = b"MZ".to_vec();
+        executable.resize(2 * 1024 * 1024, 7);
+        let size = executable.len() as u64;
+        let asset = "LocalCodePilot-9.9.9-windows-x64.exe";
+        let checksums = format!("{}  {asset}\n", sha256_hex(&executable));
+        let server = serve(vec![
+            ("/SHA256SUMS.txt", Reply::Complete(checksums.into_bytes())),
+            ("/exe", Reply::Complete(executable.clone())),
+        ]);
+        let directory = temporary_test_directory("prepare");
+        fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("LocalCodePilot.exe");
+        fs::write(&target, b"MZ current version").unwrap();
+        let preparation = UpdatePreparation {
+            executable_url: format!("{server}/exe"),
+            checksum_url: format!("{server}/SHA256SUMS.txt"),
+            asset_name: asset.into(),
+            version: "9.9.9".into(),
+            target_path: target,
+            stage_directory: directory.join("stage"),
+        };
+        let (sender, receiver) = mpsc::channel();
+
+        let started = Instant::now();
+        let prepared = prepare_update(&preparation, &sender, &egui::Context::default()).unwrap();
+        let elapsed = started.elapsed();
+        drop(sender);
+        let events: Vec<_> = receiver.iter().collect();
+
+        let phases: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                UpdateInstallEvent::Phase(phase) => Some(*phase),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                UpdatePhase::Checksums,
+                UpdatePhase::Downloading,
+                UpdatePhase::Verifying
+            ]
+        );
+        let progress: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match event {
+                UpdateInstallEvent::Progress {
+                    downloaded_bytes,
+                    total_bytes,
+                } => Some((index, *downloaded_bytes, *total_bytes)),
+                _ => None,
+            })
+            .collect();
+        let (last_index, last_bytes, last_total) = *progress.last().unwrap();
+        assert_eq!((last_bytes, last_total), (size, Some(size)));
+        let verifying_index = events
+            .iter()
+            .position(|event| matches!(event, UpdateInstallEvent::Phase(UpdatePhase::Verifying)))
+            .unwrap();
+        assert!(last_index < verifying_index);
+        // At most one event per interval, plus the first and the final one.
+        let allowed = 2 + (elapsed.as_millis() / PROGRESS_INTERVAL.as_millis()) as usize;
+        assert!(
+            progress.len() <= allowed,
+            "{} progress events in {elapsed:?}",
+            progress.len()
+        );
+        assert_eq!(fs::read(&prepared.candidate_path).unwrap(), executable);
+        assert_eq!(prepared.expected_sha256, sha256_hex(&executable));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_slow_steady_download_outlasting_the_stall_limit_completes() {
+        let mut executable = b"MZ".to_vec();
+        executable.resize(20 * 1024, 3);
+        let server = serve(vec![(
+            "/exe",
+            Reply::Slow {
+                body: executable.clone(),
+                chunk: 2 * 1024,
+                pause: Duration::from_millis(300),
+            },
+        )]);
+        let directory = temporary_test_directory("slow");
+        fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("LocalCodePilot.exe");
+        let (sender, _receiver) = mpsc::channel();
+        let stall_limit = Duration::from_secs(1);
+
+        let started = Instant::now();
+        download_executable(
+            &download_agent_with_stall_timeout(stall_limit),
+            &format!("{server}/exe"),
+            &destination,
+            &sha256_hex(&executable),
+            &sender,
+            &egui::Context::default(),
+        )
+        .unwrap();
+
+        // Ten pieces 300 ms apart: the whole download takes about three times
+        // the stall limit and still finishes, because data keeps arriving.
+        assert!(started.elapsed() > stall_limit * 2);
+        assert_eq!(fs::read(&destination).unwrap(), executable);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_stalled_download_fails_as_interrupted_without_waiting_for_a_total_limit() {
+        let server = serve(vec![(
+            "/exe",
+            Reply::Partial {
+                announced: 1_000_000,
+                body: b"MZ".repeat(1000),
+                hold: Duration::from_secs(6),
+            },
+        )]);
+        let directory = temporary_test_directory("stalled");
+        fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("LocalCodePilot.exe");
+        let (sender, _receiver) = mpsc::channel();
+
+        let started = Instant::now();
+        let error = download_executable(
+            &download_agent_with_stall_timeout(Duration::from_secs(1)),
+            &format!("{server}/exe"),
+            &destination,
+            &"a".repeat(64),
+            &sender,
+            &egui::Context::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("interrompido"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!destination.exists());
+        assert!(!destination.with_extension("exe.part").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_download_closed_before_the_announced_size_is_rejected() {
+        let server = serve(vec![(
+            "/exe",
+            Reply::Partial {
+                announced: 500_000,
+                body: b"MZ".repeat(1000),
+                hold: Duration::ZERO,
+            },
+        )]);
+        let directory = temporary_test_directory("truncated");
+        fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("LocalCodePilot.exe");
+        let (sender, _receiver) = mpsc::channel();
+
+        let error = download_executable(
+            &download_agent(),
+            &format!("{server}/exe"),
+            &destination,
+            &"a".repeat(64),
+            &sender,
+            &egui::Context::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("interrompido"), "{error}");
+        assert!(!destination.exists());
+        assert!(!destination.with_extension("exe.part").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn removes_only_old_preparation_folders() {
+        let root = temporary_test_directory("stale");
+        fs::create_dir_all(root.join("0.4.0-old").join("nested")).unwrap();
+        fs::write(root.join("0.4.0-old").join("nested").join("file"), b"x").unwrap();
+        fs::write(root.join("loose-file.txt"), b"x").unwrap();
+
+        assert_eq!(remove_stale_stages(&root, Duration::from_secs(3600)), 0);
+        assert!(root.join("0.4.0-old").is_dir());
+
+        assert_eq!(remove_stale_stages(&root, Duration::ZERO), 1);
+        assert!(!root.join("0.4.0-old").exists());
+        assert!(root.join("loose-file.txt").is_file());
+        assert_eq!(
+            remove_stale_stages(&root.join("missing"), Duration::ZERO),
+            0
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_cleanup_never_follows_links_out_of_the_update_root() {
+        let root = temporary_test_directory("stale-link");
+        let outside = temporary_test_directory("stale-outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep"), b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+
+        assert_eq!(remove_stale_stages(&root, Duration::ZERO), 0);
+        assert!(outside.join("keep").is_file());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 }

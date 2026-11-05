@@ -13,7 +13,7 @@ mod project_ui;
 
 use crate::{
     config, theme,
-    updates::{self, UpdateInfo, UpdateInstallEvent},
+    updates::{self, UpdateInfo, UpdateInstallEvent, UpdatePhase},
 };
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
@@ -570,6 +570,7 @@ pub struct LocalCodePilot {
     update_install: Option<Receiver<UpdateInstallEvent>>,
     update_install_version: Option<String>,
     update_install_progress: Option<(u64, Option<u64>)>,
+    update_install_phase: Option<UpdatePhase>,
     update_install_error: Option<String>,
     container_state: container_ui::ContainerState,
     project_ui: project_ui::ProjectUiState,
@@ -668,6 +669,7 @@ impl LocalCodePilot {
             update_install: None,
             update_install_version: None,
             update_install_progress: None,
+            update_install_phase: None,
             update_install_error: None,
             container_state: container_ui::ContainerState::default(),
             project_ui: project_ui::ProjectUiState::default(),
@@ -860,6 +862,7 @@ impl LocalCodePilot {
         }
         self.update_install_error = None;
         self.update_install_progress = Some((0, None));
+        self.update_install_phase = None;
         self.update_install_version = Some(update.version.clone());
         match updates::spawn_update_download(update, ctx) {
             Ok(receiver) => {
@@ -890,6 +893,9 @@ impl LocalCodePilot {
         }
         for event in events {
             match event {
+                UpdateInstallEvent::Phase(phase) => {
+                    self.update_install_phase = Some(phase);
+                }
                 UpdateInstallEvent::Progress {
                     downloaded_bytes,
                     total_bytes,
@@ -1006,6 +1012,7 @@ impl LocalCodePilot {
                         ui.label(update_download_status(
                             self.update_install_version.as_deref(),
                             self.update_install_progress,
+                            self.update_install_phase,
                         ));
                     });
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
@@ -4224,6 +4231,7 @@ impl LocalCodePilot {
                         ui.label(update_download_status(
                             self.update_install_version.as_deref(),
                             self.update_install_progress,
+                            self.update_install_phase,
                         ));
                     });
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
@@ -6176,7 +6184,14 @@ fn relative_time(timestamp: u64) -> String {
     }
 }
 
-fn update_download_status(version: Option<&str>, progress: Option<(u64, Option<u64>)>) -> String {
+fn update_download_status(
+    version: Option<&str>,
+    progress: Option<(u64, Option<u64>)>,
+    phase: Option<UpdatePhase>,
+) -> String {
+    if phase == Some(UpdatePhase::Verifying) {
+        return "Verificando a atualização...".into();
+    }
     let version = version.unwrap_or("nova versão");
     let Some((downloaded, total)) = progress else {
         return format!("Preparando LocalCodePilot {version}...");
@@ -7113,8 +7128,9 @@ mod tests {
         process_exposes_application_url, process_matches_search, project_count_text,
         project_process_ids, resolve_environment_plan,
         resolve_environment_plan_with_tools_directory, run_dependency_installs,
-        runtime_requirement_status, scan_roots_text, words,
+        runtime_requirement_status, scan_roots_text, update_download_status, words,
     };
+    use crate::updates::UpdatePhase;
     use localcodepilot_core::{
         environments::{
             InstallationStepKind, RequirementSource, RequirementStatus, RuntimeRequirement,
@@ -7271,6 +7287,31 @@ mod tests {
     #[test]
     fn encodes_checksum_bytes_as_lowercase_hex() {
         assert_eq!(lowercase_hex(&[0x00, 0x09, 0xaf, 0xff]), "0009afff");
+    }
+
+    #[test]
+    fn update_status_follows_the_download_phase_without_inventing_a_percentage() {
+        let mib = 1024 * 1024;
+        assert_eq!(
+            update_download_status(Some("0.5.0"), Some((5 * mib, Some(10 * mib))), None),
+            "Baixando 0.5.0: 5.0/10.0 MB (50%)"
+        );
+        assert_eq!(
+            update_download_status(
+                Some("0.5.0"),
+                Some((3 * mib, None)),
+                Some(UpdatePhase::Downloading)
+            ),
+            "Baixando 0.5.0: 3.0 MB"
+        );
+        assert_eq!(
+            update_download_status(
+                Some("0.5.0"),
+                Some((10 * mib, Some(10 * mib))),
+                Some(UpdatePhase::Verifying)
+            ),
+            "Verificando a atualização..."
+        );
     }
 
     #[test]
