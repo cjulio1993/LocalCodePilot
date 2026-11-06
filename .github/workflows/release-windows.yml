@@ -63,6 +63,10 @@ jobs:
       - name: Build release executable
         run: cargo build --release --locked -p localcodepilot-desktop
 
+      - name: Verify the version of the executable
+        shell: pwsh
+        run: .\scripts\check-exe-version.ps1 -Exe target\release\localcodepilot-desktop.exe -Expected "${{ steps.version.outputs.value }}"
+
       - name: Verify the local update test feed is not in the executable
         shell: pwsh
         run: |

@@ -99,4 +99,15 @@ jobs:
         run: cargo test --workspace --locked
       - name: Run desktop tests with the local update test feed
         run: cargo test -p localcodepilot-desktop --locked --features update-test-feed
+      - name: Check the version of the Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build -p localcodepilot-desktop --locked
+          .\scripts\check-exe-version.ps1 -Exe target\debug\localcodepilot-desktop.exe
+          # The check must fail on a mismatch: a wrong expected version is refused.
+          & .\scripts\check-exe-version.ps1 -Exe target\debug\localcodepilot-desktop.exe -Expected 0.0.1-alpha.1
+          if ($LASTEXITCODE -eq 0) { throw "check-exe-version.ps1 accepted a wrong version." }
+          Write-Host "Mismatch detected as expected."
+          $global:LASTEXITCODE = 0
 

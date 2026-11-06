@@ -1,6 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
+#[cfg(test)]
+#[path = "../build_support.rs"]
+mod build_support;
 mod config;
 mod pages;
 mod theme;
