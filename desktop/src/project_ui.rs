@@ -383,6 +383,16 @@ pub(super) struct ProjectUiState {
 type Summaries = Vec<(Project, ProjectSummary)>;
 
 impl LocalCodePilot {
+    /// For each project whose name another one also has, the part of its folder that tells
+    /// them apart (#100). Projects with a name of their own are not in the map.
+    pub(super) fn distinguishing_folders(&self) -> HashMap<PathBuf, String> {
+        distinguishing_folders(
+            self.projects
+                .iter()
+                .map(|project| (project.name.as_str(), project.path.as_path())),
+        )
+    }
+
     pub(super) fn project_summary(&self, project: &Project) -> ProjectSummary {
         let fallback = ProjectEnvironment::default();
         let environment = self
@@ -564,6 +574,8 @@ impl LocalCodePilot {
         );
         ui.add_space(16.0);
         let summaries = self.summaries();
+        let folders = self.distinguishing_folders();
+        let folder = |project: &Project| folders.get(&project.path).map(String::as_str);
         let count = |filter: ProjectFilter| {
             summaries
                 .iter()
@@ -609,6 +621,7 @@ impl LocalCodePilot {
                     && !is_localcodepilot_qa_project(&project.path)
             }) {
                 ui.label(RichText::new(format!("Você pode iniciar {}.", project.name)).size(13.0));
+                folder_line(ui, &project.path, folder(project));
                 ui.add_space(4.0);
                 if primary_button(ui, &summary.primary, 180.0) {
                     action = Some(primary_to_card_action(project, summary));
@@ -616,7 +629,7 @@ impl LocalCodePilot {
             }
         }
         for (project, summary) in &running {
-            if let Some(selected) = project_row(ui, project, summary) {
+            if let Some(selected) = project_row(ui, project, summary, folder(project)) {
                 action = Some(selected);
             }
         }
@@ -631,7 +644,7 @@ impl LocalCodePilot {
             empty_hint(ui, "Nenhum problema encontrado.");
         }
         for (project, summary) in &problems {
-            if let Some(selected) = project_row(ui, project, summary) {
+            if let Some(selected) = project_row(ui, project, summary, folder(project)) {
                 action = Some(selected);
             }
         }
@@ -647,7 +660,7 @@ impl LocalCodePilot {
             .collect::<Vec<_>>();
         section_title(ui, "Parados recentes", recent_stopped.len());
         for (project, summary) in &recent_stopped {
-            if let Some(selected) = project_row(ui, project, summary) {
+            if let Some(selected) = project_row(ui, project, summary, folder(project)) {
                 action = Some(selected);
             }
         }
@@ -717,6 +730,8 @@ impl LocalCodePilot {
     /// Filter bar, cards or list, on the Projects page.
     pub(super) fn project_catalog(&mut self, ui: &mut egui::Ui) {
         let summaries = self.summaries();
+        let folders = self.distinguishing_folders();
+        let folder = |project: &Project| folders.get(&project.path).map(String::as_str);
         let mut filter = ProjectFilter::from_key(&self.workspace_state.project_filter);
         let mut list = self.workspace_state.project_view == "list";
         let (old_filter, old_list) = (filter, list);
@@ -789,7 +804,7 @@ impl LocalCodePilot {
         let mut action = None;
         if list {
             for (project, summary) in &visible {
-                if let Some(selected) = project_row(ui, project, summary) {
+                if let Some(selected) = project_row(ui, project, summary, folder(project)) {
                     action = Some(selected);
                 }
             }
@@ -812,6 +827,7 @@ impl LocalCodePilot {
                         let card = ProjectCard {
                             project,
                             summary,
+                            folder: folder(project),
                             languages: self.language_lines(project),
                             custom_commands: self.custom_commands_of(&project.path),
                             environment: self.project_environments.get(&project.path),
@@ -1011,6 +1027,7 @@ fn project_row(
     ui: &mut egui::Ui,
     project: &Project,
     summary: &ProjectSummary,
+    folder: Option<&str>,
 ) -> Option<ProjectCardAction> {
     let mut action = None;
     Frame::new()
@@ -1052,6 +1069,7 @@ fn project_row(
                     ui.label(RichText::new(reason).color(theme::MUTED).size(13.0));
                 }
             });
+            folder_line(ui, &project.path, folder);
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 if primary_button(ui, &summary.primary, 120.0) {
@@ -1074,9 +1092,26 @@ fn project_row(
     action
 }
 
+/// "Pasta: acme\web" under the name, only when another project has the same name (#100).
+pub(super) fn folder_line(ui: &mut egui::Ui, path: &Path, folder: Option<&str>) {
+    if let Some(folder) = folder {
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("Pasta: {folder}"))
+                    .color(theme::MUTED)
+                    .size(12.0),
+            )
+            .wrap(),
+        )
+        .on_hover_text(display_path(path));
+    }
+}
+
 struct ProjectCard<'a> {
     project: &'a Project,
     summary: &'a ProjectSummary,
+    /// The part of the folder that tells it apart from a project with the same name.
+    folder: Option<&'a str>,
     /// Start commands the person defined for this project.
     custom_commands: Vec<CustomCommand>,
     /// Each language, where it was found and whether this computer has it.
@@ -1138,6 +1173,7 @@ impl ProjectCard<'_> {
                         }
                     });
                 });
+                folder_line(ui, &project.path, self.folder);
                 ui.horizontal_wrapped(|ui| {
                     for technology in project.shown_technologies() {
                         runtime_badge(ui, &technology.to_string(), technology_color(technology));

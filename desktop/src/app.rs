@@ -27,7 +27,7 @@ use localcodepilot_core::{
         InstallationPlan, InstallationStep, InstallationStepKind, RequirementStatus,
         RuntimeRequirement,
     },
-    paths::{display_path, plain_path},
+    paths::{display_path, distinguishing_folders, plain_path},
     ports::{LocalServerUrl, Port, extract_local_urls, port_in_use, strip_terminal_sequences},
     processes::{ProcessState, ProjectProcess},
     projects::Project,
@@ -3648,6 +3648,7 @@ impl LocalCodePilot {
             return;
         }
 
+        let folders = self.distinguishing_folders();
         let mut projects = self.projects.clone();
         projects.sort_by_key(|project| {
             if self.focused_project.as_ref() == Some(&project.path) {
@@ -3736,6 +3737,11 @@ impl LocalCodePilot {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&project.name).strong().size(15.0));
+                            project_ui::folder_line(
+                                ui,
+                                &project.path,
+                                folders.get(&project.path).map(String::as_str),
+                            );
                             let (status, status_color) = if resolving_plan {
                                 ("Preparando plano", theme::PRIMARY)
                             } else if installing_dependencies {
