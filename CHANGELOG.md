@@ -8,6 +8,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Aberto pelo instalador, o app examinava a pasta acima da sua instalação (`%LOCALAPPDATA%Programs`) e mostrava partes de programas instalados, como o VS Code, o Docker Desktop e o Python, como projetos, com o botão **Iniciar** (#98). As pastas padrão agora vêm só do perfil do usuário, sem depender da pasta de onde o app foi aberto, e a busca não entra em pastas de programas instalados (`Program Files`, `ProgramData`, `%LOCALAPPDATA%Programs`, a pasta do Windows e a do próprio app). Uma pasta dessas que a pessoa adicionar com **Adicionar pasta** continua sendo examinada. Quem usou **Adicionar pasta** ou removeu uma pasta na Alpha 8 ficou com essa pasta de programas salva na lista; ao abrir, o app a remove e mostra em **Projetos** o aviso "Removemos uma pasta de programas da busca de projetos.", com **Ver pastas examinadas** e **Fechar**. As outras pastas salvas continuam como estavam.
+
 - O atualizador ficou mais seguro:
   - espera o app fechar de verdade antes de trocar o executável;
   - copia e verifica a nova versão na pasta do app antes da troca, sem deixar a pasta sem `LocalCodePilot.exe` durante a cópia;

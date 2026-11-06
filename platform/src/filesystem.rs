@@ -2,7 +2,7 @@ use localcodepilot_core::{discovery::ProjectSource, languages, runtimes::Runtime
 use std::{
     collections::{HashSet, VecDeque},
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 /// Markers besides the language manifests of `languages::LANGUAGES`.
@@ -39,6 +39,9 @@ const IGNORED_DIRECTORIES: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct FilesystemProjectSource {
     roots: Vec<PathBuf>,
+    /// Folders of installed programs: the search never goes down into them, though a person
+    /// may still add one as a folder of their own.
+    excluded: Vec<PathBuf>,
     max_depth: usize,
 }
 
@@ -46,42 +49,127 @@ impl FilesystemProjectSource {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self {
             roots: unique_existing(roots),
+            excluded: comparable_all(installation_directories()),
             max_depth: 8,
         }
     }
 
+    /// The common folders of the person's profile. They never depend on the folder the app
+    /// was started from: opened from the installer, that is the installation folder, and the
+    /// one above it holds every other installed program (#98).
     pub fn common_locations() -> Self {
-        let mut roots = Vec::new();
-        if let Some(home) = home_directory() {
-            for relative in [
-                "Projects",
-                "Projetos",
-                "repos",
-                "dev",
-                "code",
-                "workspace",
-                "Desktop",
-                "Documents",
-                "Documentos",
-            ] {
-                roots.push(home.join(relative));
-            }
-            let one_drive = home.join("OneDrive");
-            for relative in ["Área de Trabalho", "Desktop", "Documents", "Documentos"] {
-                roots.push(one_drive.join(relative));
-            }
-        }
-        if let Ok(current) = std::env::current_dir()
-            && let Some(parent) = current.parent()
-        {
-            roots.push(parent.to_path_buf());
-        }
-        Self::new(roots)
+        Self::new(default_roots(home_directory().as_deref()))
     }
 
     pub fn roots(&self) -> &[PathBuf] {
         &self.roots
     }
+
+    /// `canonical` is already canonical, so this runs once per folder without touching disk.
+    fn is_excluded(&self, canonical: &Path) -> bool {
+        let key = comparison_key(canonical);
+        self.excluded.contains(&key)
+    }
+}
+
+fn default_roots(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = home {
+        for relative in [
+            "Projects",
+            "Projetos",
+            "repos",
+            "dev",
+            "code",
+            "workspace",
+            "Desktop",
+            "Documents",
+            "Documentos",
+        ] {
+            roots.push(home.join(relative));
+        }
+        let one_drive = home.join("OneDrive");
+        for relative in ["Área de Trabalho", "Desktop", "Documents", "Documentos"] {
+            roots.push(one_drive.join(relative));
+        }
+    }
+    roots
+}
+
+/// Where programs are installed on this system, plus the folder of this executable.
+fn installation_directories() -> Vec<PathBuf> {
+    let variable = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let mut folders = Vec::new();
+    if cfg!(windows) {
+        for name in [
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "ProgramData",
+            "WINDIR",
+        ] {
+            folders.extend(variable(name));
+        }
+        folders.extend(variable("LOCALAPPDATA").map(|local| local.join("Programs")));
+    } else if cfg!(target_os = "macos") {
+        folders.extend(["/Applications", "/System", "/Library"].map(PathBuf::from));
+        folders.extend(home_directory().map(|home| home.join("Applications")));
+    } else {
+        folders.extend(["/usr", "/opt", "/snap"].map(PathBuf::from));
+    }
+    folders.extend(executable_directory());
+    folders
+}
+
+fn executable_directory() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(Path::to_path_buf)
+}
+
+/// The folder the Alpha 8 search added by mistake when opened from the installer: the one
+/// above this app's installation folder, when it is a folder of installed programs. Older
+/// versions saved it with the person's folders whenever they added or removed one (#98).
+pub fn legacy_installation_root() -> Option<PathBuf> {
+    let parent = executable_directory()?.parent()?.to_path_buf();
+    comparable_all(installation_directories())
+        .contains(&comparable(&parent))
+        .then_some(parent)
+}
+
+/// Removes `legacy` from the saved folders. Returns the remaining folders and the entry
+/// removed, or `None` when it was not there.
+pub fn without_legacy_root(roots: &[PathBuf], legacy: &Path) -> Option<(Vec<PathBuf>, PathBuf)> {
+    let legacy = comparable(legacy);
+    let removed = roots
+        .iter()
+        .find(|root| comparable(root) == legacy)?
+        .clone();
+    let remaining = roots
+        .iter()
+        .filter(|root| comparable(root) != legacy)
+        .cloned()
+        .collect();
+    Some((remaining, removed))
+}
+
+/// A form of the path for comparing: canonical when it exists and, on Windows, without
+/// differences of case.
+fn comparable(path: &Path) -> PathBuf {
+    comparison_key(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+}
+
+fn comparison_key(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn comparable_all(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths.iter().map(|path| comparable(path)).collect()
 }
 
 impl ProjectSource for FilesystemProjectSource {
@@ -94,6 +182,11 @@ impl ProjectSource for FilesystemProjectSource {
 
         while let Some((path, depth)) = queue.pop_front() {
             let canonical = path.canonicalize().unwrap_or(path.clone());
+            // A folder the person added is searched even when it is an installation folder;
+            // the search only refuses to go down into one.
+            if depth > 0 && self.is_excluded(&canonical) {
+                continue;
+            }
             if !visited.insert(canonical) || !path.is_dir() {
                 continue;
             }
@@ -201,6 +294,81 @@ fn home_directory() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "lcp-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn common_folders_come_only_from_the_profile() {
+        let home = PathBuf::from("perfil");
+        let roots = default_roots(Some(&home));
+        assert!(!roots.is_empty());
+        assert!(roots.iter().all(|root| root.starts_with(&home)));
+        assert!(default_roots(None).is_empty());
+    }
+
+    #[test]
+    fn search_skips_installed_programs_below_a_folder_but_not_a_folder_added_itself() {
+        let root = scratch("install-exclusion");
+        let programs = root.join("Programs");
+        fs::create_dir_all(programs.join("Editor").join("resources").join("app")).unwrap();
+        fs::write(
+            programs
+                .join("Editor")
+                .join("resources")
+                .join("app")
+                .join("package.json"),
+            "{}",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("site")).unwrap();
+        fs::write(root.join("site").join("package.json"), "{}").unwrap();
+
+        let search = |roots: Vec<PathBuf>| {
+            let mut source = FilesystemProjectSource::new(roots);
+            source.excluded = comparable_all(vec![programs.clone()]);
+            let mut found = source.candidate_paths().unwrap();
+            found.sort();
+            found
+        };
+        let below = search(vec![root.clone()]);
+        assert_eq!(below.len(), 1, "{below:?}");
+        assert!(below[0].ends_with("site"));
+        let added = search(vec![programs.clone()]);
+        assert_eq!(added.len(), 1, "{added:?}");
+        assert!(added[0].ends_with("app"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removes_only_the_folder_saved_by_mistake() {
+        let root = scratch("legacy-root");
+        let programs = root.join("Programs");
+        let projects = root.join("Projetos");
+        fs::create_dir_all(&programs).unwrap();
+        fs::create_dir_all(&projects).unwrap();
+        let saved = vec![projects.clone(), programs.canonicalize().unwrap()];
+        let legacy = if cfg!(windows) {
+            PathBuf::from(programs.to_string_lossy().to_uppercase())
+        } else {
+            programs.clone()
+        };
+        let (remaining, removed) = without_legacy_root(&saved, &legacy).unwrap();
+        assert_eq!(remaining, vec![projects.clone()]);
+        assert_eq!(removed, saved[1]);
+        assert!(without_legacy_root(&remaining, &legacy).is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn discovers_container_only_projects_without_native_manifests() {
         let root =
