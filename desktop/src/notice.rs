@@ -9,7 +9,15 @@ pub(super) struct Notice<'a> {
     id: egui::Id,
     sentence: &'a str,
     action: Option<(&'a str, bool)>,
+    dismiss: Option<&'a str>,
     resolve_label: &'a str,
+}
+
+/// What was clicked in a notice.
+#[derive(Default)]
+pub(super) struct NoticeResponse {
+    pub action: bool,
+    pub dismiss: bool,
 }
 
 /// Content of the expandable parts. `None` hides the toggle.
@@ -24,6 +32,7 @@ impl<'a> Notice<'a> {
             id,
             sentence,
             action: None,
+            dismiss: None,
             resolve_label: "Como resolver",
         }
     }
@@ -34,6 +43,12 @@ impl<'a> Notice<'a> {
         self
     }
 
+    /// A secondary control that closes the notice, such as "Fechar".
+    pub(super) fn dismiss(mut self, label: &'a str) -> Self {
+        self.dismiss = Some(label);
+        self
+    }
+
     pub(super) fn resolve_label(mut self, label: &'a str) -> Self {
         self.resolve_label = label;
         self
@@ -41,7 +56,16 @@ impl<'a> Notice<'a> {
 
     /// Returns whether the action was clicked.
     pub(super) fn show(self, ui: &mut egui::Ui, parts: NoticeParts<'_, '_>) -> bool {
-        let mut clicked = false;
+        self.show_response(ui, parts).action
+    }
+
+    /// Like `show`, also telling whether the dismiss control was clicked.
+    pub(super) fn show_response(
+        self,
+        ui: &mut egui::Ui,
+        parts: NoticeParts<'_, '_>,
+    ) -> NoticeResponse {
+        let mut response = NoticeResponse::default();
         let frame = Frame::new()
             .fill(theme::WARNING.gamma_multiply(0.08))
             .stroke(Stroke::new(1.0, theme::WARNING.gamma_multiply(0.6)))
@@ -62,7 +86,11 @@ impl<'a> Notice<'a> {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     if let Some((label, enabled)) = self.action {
-                        clicked = ui.add_enabled(enabled, egui::Button::new(label)).clicked();
+                        response.action =
+                            ui.add_enabled(enabled, egui::Button::new(label)).clicked();
+                    }
+                    if let Some(label) = self.dismiss {
+                        response.dismiss = ui.button(label).clicked();
                     }
                     if parts.resolve.is_some() {
                         toggle(ui, resolve_key, self.resolve_label, &mut resolve_open);
@@ -91,7 +119,7 @@ impl<'a> Notice<'a> {
         {
             frame.response.scroll_to_me(Some(Align::TOP));
         }
-        clicked
+        response
     }
 }
 

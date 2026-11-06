@@ -35,7 +35,7 @@ use localcodepilot_core::{
     technologies::TechnologyKind,
 };
 use localcodepilot_platform::{
-    filesystem::FilesystemProjectSource,
+    filesystem::{FilesystemProjectSource, legacy_installation_root, without_legacy_root},
     installations::{
         ProgramInventory, WindowsWingetProvider, configure_background_command, find_executable,
         inspect_program, managed_bin_directory, refreshed_environment_path,
@@ -246,6 +246,37 @@ impl ProcessFailure {
 struct PortTerminationRequest {
     process_id: String,
     conflict: PortConflict,
+}
+
+/// A folder of installed programs that an older version saved with the scanned folders,
+/// removed when the app opened (#98). Shown on Projects until the person closes the notice.
+struct ScanRootMigration {
+    removed: PathBuf,
+    /// Whether the cleaned list was saved; if not, the removal happens again next time.
+    saved: bool,
+}
+
+/// Removes the folder of installed programs an older version saved by mistake (#98).
+fn migrate_scan_roots(
+    saved: Option<Vec<PathBuf>>,
+    default_roots: &[PathBuf],
+) -> (Option<Vec<PathBuf>>, Option<ScanRootMigration>) {
+    let Some(roots) = saved else {
+        return (None, None);
+    };
+    let Some((remaining, removed)) =
+        legacy_installation_root().and_then(|legacy| without_legacy_root(&roots, &legacy))
+    else {
+        return (Some(roots), None);
+    };
+    // Nothing of the person's own is left: start again from the common folders.
+    let remaining = if remaining.is_empty() {
+        default_roots.to_vec()
+    } else {
+        remaining
+    };
+    let saved = config::save_scan_roots(&remaining).is_ok();
+    (Some(remaining), Some(ScanRootMigration { removed, saved }))
 }
 
 struct Notification {
@@ -587,6 +618,7 @@ pub struct LocalCodePilot {
     search: String,
     notification: Option<Notification>,
     scan_roots: Vec<PathBuf>,
+    scan_root_migration: Option<ScanRootMigration>,
     discovery: Option<Receiver<DiscoveryEvent>>,
     workspace_state: config::WorkspaceState,
     workspace_dirty: bool,
@@ -622,8 +654,9 @@ impl LocalCodePilot {
         }
         cc.egui_ctx.set_fonts(fonts);
         let default_source = FilesystemProjectSource::common_locations();
-        let configured_roots =
-            config::load_scan_roots().unwrap_or_else(|| default_source.roots().to_vec());
+        let (saved_roots, scan_root_migration) =
+            migrate_scan_roots(config::load_scan_roots(), default_source.roots());
+        let configured_roots = saved_roots.unwrap_or_else(|| default_source.roots().to_vec());
         let source = FilesystemProjectSource::new(configured_roots);
         let scan_roots = source.roots().to_vec();
         let cached_projects = config::load_project_cache();
@@ -685,6 +718,7 @@ impl LocalCodePilot {
                 None => Notification::new("Procurando projetos na máquina..."),
             }),
             scan_roots,
+            scan_root_migration,
             discovery: Some(receiver),
             workspace_state,
             workspace_dirty: recovered_preparation,
@@ -1503,6 +1537,42 @@ impl LocalCodePilot {
                 .color(theme::WARNING)
                 .size(12.0),
             );
+        }
+        if let Some(migration) = &self.scan_root_migration {
+            ui.add_space(6.0);
+            let removed = format!(
+                "Pasta removida da busca: {}",
+                display_path(&migration.removed)
+            );
+            let saved = migration.saved;
+            let mut details = |ui: &mut egui::Ui| {
+                notice::detail_line(ui, &removed);
+                if !saved {
+                    notice::detail_line(
+                        ui,
+                        "Não foi possível salvar a alteração. O LocalCodePilot tentará novamente na próxima abertura.",
+                    );
+                }
+            };
+            let response = notice::Notice::new(
+                egui::Id::unique("scan-root-migration"),
+                "Removemos uma pasta de programas da busca de projetos.",
+            )
+            .action("Ver pastas examinadas", true)
+            .dismiss("Fechar")
+            .show_response(
+                ui,
+                notice::NoticeParts {
+                    resolve: None,
+                    details: Some(&mut details),
+                },
+            );
+            if response.action {
+                self.project_ui.show_roots = true;
+            }
+            if response.dismiss {
+                self.scan_root_migration = None;
+            }
         }
         if toggle_roots {
             self.project_ui.show_roots = !self.project_ui.show_roots;

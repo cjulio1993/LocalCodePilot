@@ -40,7 +40,7 @@ Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows
 
 ### Primeiros passos
 
-1. **Abra o app.** Em **Projetos**, ele mostra o que encontrou nas pastas comuns do computador. Use **Adicionar pasta** se seus projetos estiverem em outro lugar.
+1. **Abra o app.** Em **Projetos**, ele mostra o que encontrou nas pastas comuns do computador. Use **Adicionar pasta** se seus projetos estiverem em outro lugar. A busca não entra em pastas de programas instalados (como `Program Files` e `%LOCALAPPDATA%Programs`), a não ser que você adicione uma delas.
 2. **Escolha um projeto.** O cartão mostra o que ele precisa e qual é o próximo passo:
    - **Preparar ambiente**, quando falta a linguagem;
    - **Instalar dependências**, quando faltam as bibliotecas do projeto;
@@ -132,7 +132,7 @@ The files in this version are not digitally signed yet, so Windows may show "Win
 
 ### Getting started
 
-1. **Open the app.** **Projects** lists what it found in the usual folders. Use **Add folder** if your projects live elsewhere.
+1. **Open the app.** **Projects** lists what it found in the usual folders. Use **Add folder** if your projects live elsewhere. The search does not go into folders of installed programs (such as `Program Files` and `%LOCALAPPDATA%Programs`) unless you add one yourself.
 2. **Pick a project.** Its card shows what it needs and the next step:
    - **Prepare environment** when the language is missing;
    - **Install dependencies** when the project's libraries are missing;
