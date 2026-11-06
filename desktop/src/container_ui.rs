@@ -185,6 +185,20 @@ fn engine_of(command: &ContainerCommand) -> ContainerEngine {
     }
 }
 
+/// "Pasta: <full path>" and "Motor: Docker|Podman" of a confirmation, read from the command
+/// that will run, never from the screen around it.
+fn confirmation_location(command: &ContainerCommand) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !command.working_directory.as_os_str().is_empty() {
+        lines.push(format!(
+            "Pasta: {}",
+            display_path(&command.working_directory)
+        ));
+    }
+    lines.push(format!("Motor: {}", engine_of(command)));
+    lines
+}
+
 enum BlockedPanelAction {
     Copy(String),
     ConfirmVolumes,
@@ -1363,18 +1377,26 @@ impl LocalCodePilot {
     pub(super) fn containers_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("Containers");
         if let Some(project_path) = self.focused_project.clone() {
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Projeto: {}",
+            let name = self
+                .projects
+                .iter()
+                .find(|project| project.path == project_path)
+                .map(|project| project.name.clone())
+                .unwrap_or_else(|| {
                     project_path
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
-                ));
+                        .into_owned()
+                });
+            let folder = self.distinguishing_folders().remove(&project_path);
+            ui.horizontal(|ui| {
+                ui.label(format!("Projeto: {name}"));
                 if ui.button("Ver todos os projetos").clicked() {
                     self.focused_project = None;
                 }
             });
+            project_ui::folder_line(ui, &project_path, folder.as_deref());
         }
         ui.label(
             RichText::new(
@@ -1940,6 +1962,13 @@ impl LocalCodePilot {
                         open
                     })
                     .inner;
+                project_ui::folder_line(
+                    ui,
+                    group.root,
+                    self.distinguishing_folders()
+                        .get(group.root)
+                        .map(String::as_str),
+                );
                 if !open {
                     return;
                 }
@@ -1979,6 +2008,11 @@ impl LocalCodePilot {
                 format!("{} {folder}", group.name)
             }
             _ => group.name.to_owned(),
+        };
+        // Two projects named "web" are heard as "Iniciar web (acme\web)" (#100).
+        let context = match self.distinguishing_folders().remove(group.root) {
+            Some(folder) => format!("{context} ({folder})"),
+            None => context,
         };
         // The group stays open after an action, even if its new state would close it.
         let mut request = |ui: &egui::Ui, command: ContainerCommand| {
@@ -2449,6 +2483,11 @@ impl LocalCodePilot {
                 if let Some(target) = &target {
                     ui.label(RichText::new(target).strong());
                 }
+                // Where it runs and with which engine, from the prepared command itself, so
+                // two projects with the same name cannot be confused (#100).
+                for line in confirmation_location(&command) {
+                    ui.add(egui::Label::new(RichText::new(line).strong()).wrap());
+                }
                 ui.label(command.action.description());
                 if command.action.changes_environment() {
                     ui.label(
@@ -2559,6 +2598,30 @@ impl LocalCodePilot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmation_shows_the_folder_and_engine_of_the_command_that_will_run() {
+        let directory = std::env::temp_dir()
+            .join("clientes")
+            .join("acme")
+            .join("web");
+        for (program, engine) in [("docker", "Docker"), ("podman", "Podman")] {
+            let command = ContainerCommand {
+                action: ContainerAction::Stop,
+                label: "Parar",
+                program,
+                args: vec!["compose".into(), "stop".into()],
+                working_directory: directory.clone(),
+            };
+            assert_eq!(
+                confirmation_location(&command),
+                [
+                    format!("Pasta: {}", display_path(&directory)),
+                    format!("Motor: {engine}")
+                ]
+            );
+        }
+    }
 
     #[test]
     fn project_cards_keep_container_state_current_with_a_light_refresh() {

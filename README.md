@@ -40,12 +40,14 @@ Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows
 
 ### Primeiros passos
 
-1. **Abra o app.** Em **Projetos**, ele mostra o que encontrou nas pastas comuns do computador. Use **Adicionar pasta** se seus projetos estiverem em outro lugar. A busca não entra em pastas de programas instalados (como `Program Files` e `%LOCALAPPDATA%Programs`), a não ser que você adicione uma delas.
+1. **Abra o app.** Em **Projetos**, ele mostra o que encontrou nas pastas comuns do computador. Use **Adicionar pasta** se seus projetos estiverem em outro lugar. A busca não entra em pastas de programas instalados (como `Program Files` e `%LOCALAPPDATA%\Programs`), a não ser que você adicione uma delas.
 2. **Escolha um projeto.** O cartão mostra o que ele precisa e qual é o próximo passo:
    - **Preparar ambiente**, quando falta a linguagem;
    - **Instalar dependências**, quando faltam as bibliotecas do projeto;
    - **Iniciar**, quando está tudo pronto.
-3. **Clique no botão.** O app mostra o que vai fazer e só executa depois da sua confirmação.
+
+   Se dois projetos têm o mesmo nome, o cartão mostra também o trecho da pasta que os diferencia.
+3. **Clique no botão.** O app mostra o que vai fazer e só executa depois da sua confirmação. Nas ações de containers, a confirmação mostra a pasta e o motor (Docker ou Podman).
 4. **Use o projeto.** Quando o site responde, o cartão mostra o endereço e **Abrir site**. **Ver logs** mostra a saída do programa, e **Parar** encerra tudo o que o projeto abriu.
 
 A página **Ajuda**, dentro do app, explica cada estado e o que fazer em cada caso.
@@ -132,12 +134,14 @@ The files in this version are not digitally signed yet, so Windows may show "Win
 
 ### Getting started
 
-1. **Open the app.** **Projects** lists what it found in the usual folders. Use **Add folder** if your projects live elsewhere. The search does not go into folders of installed programs (such as `Program Files` and `%LOCALAPPDATA%Programs`) unless you add one yourself.
+1. **Open the app.** **Projects** lists what it found in the usual folders. Use **Add folder** if your projects live elsewhere. The search does not go into folders of installed programs (such as `Program Files` and `%LOCALAPPDATA%\Programs`) unless you add one yourself.
 2. **Pick a project.** Its card shows what it needs and the next step:
    - **Prepare environment** when the language is missing;
    - **Install dependencies** when the project's libraries are missing;
    - **Start** when everything is ready.
-3. **Click the button.** The app shows what it will do and runs only after you confirm.
+
+   When two projects share a name, the card also shows the part of the folder that tells them apart.
+3. **Click the button.** The app shows what it will do and runs only after you confirm. For container actions, the confirmation shows the folder and the engine (Docker or Podman).
 4. **Use the project.** When the site answers, the card shows its address and **Open site**. **View logs** shows the program's output, and **Stop** ends everything the project opened.
 
 The **Help** page inside the app explains each state and what to do.
