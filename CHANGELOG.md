@@ -6,6 +6,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Alterado
+
+- A atualização pelo app mostra o andamento em etapas, no aviso e em **Configurações > Atualizações**: **Baixar › Verificar › Reiniciar**, com a etapa atual marcada por um símbolo e em negrito, sem depender só da cor. O download tem uma barra e "Baixando a atualização · 42% · 6,3 de 15,0 MB"; se o servidor não informa o tamanho, aparece só "Baixando a atualização · 6,3 MB baixados", sem barra nem percentual inventado. Depois vêm "Verificando a atualização..." e "Reiniciando o LocalCodePilot...", que fica na tela por pouco mais de um segundo antes de o app fechar. O aviso passa a dizer "Nova versão do LocalCodePilot disponível" e "Versão atual: … · Nova versão: …", e Configurações mostra as duas versões e, quando a atualização automática não está disponível, o botão **Baixar atualização**. Os leitores de tela ouvem a etapa ("Etapa 1 de 3: Baixar") e o andamento do download.
+
 ### Corrigido
 
 - O executável do Windows mostrava a versão `0.4.0-alpha.5` nas Propriedades do arquivo, mesmo na alpha 8 (#99). Os campos de versão do arquivo e do produto agora vêm da versão do pacote no `Cargo.toml` a cada build (`0.4.0-alpha.8` e `0.4.0.8`). O CI do Windows e o workflow de release conferem a versão do executável gerado e falham se ela não corresponder.

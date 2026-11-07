@@ -10,6 +10,8 @@ mod language_ui;
 mod notice;
 #[path = "project_ui.rs"]
 mod project_ui;
+#[path = "update_progress_ui.rs"]
+mod update_progress_ui;
 
 use crate::{
     config, theme,
@@ -633,6 +635,8 @@ pub struct LocalCodePilot {
     update_install_progress: Option<(u64, Option<u64>)>,
     update_install_phase: Option<UpdatePhase>,
     update_install_error: Option<String>,
+    /// The updater was launched; the app shows "Reiniciando" until it closes.
+    update_restart_at: Option<Instant>,
     container_state: container_ui::ContainerState,
     project_ui: project_ui::ProjectUiState,
     help: help_ui::HelpState,
@@ -733,6 +737,7 @@ impl LocalCodePilot {
             update_install_progress: None,
             update_install_phase: None,
             update_install_error: None,
+            update_restart_at: None,
             container_state: container_ui::ContainerState::default(),
             project_ui: project_ui::ProjectUiState::default(),
             help: help_ui::HelpState::default(),
@@ -922,8 +927,20 @@ impl LocalCodePilot {
         }
     }
 
+    fn update_in_progress(&self) -> bool {
+        self.update_install.is_some() || self.update_restart_at.is_some()
+    }
+
+    fn update_progress(&self) -> update_progress_ui::UpdateProgress {
+        update_progress_ui::UpdateProgress::new(
+            self.update_install_phase,
+            self.update_install_progress,
+            self.update_restart_at.is_some(),
+        )
+    }
+
     fn start_update_install(&mut self, update: &UpdateInfo, ctx: egui::Context) {
-        if self.update_install.is_some() {
+        if self.update_in_progress() {
             return;
         }
         self.update_install_error = None;
@@ -943,6 +960,14 @@ impl LocalCodePilot {
     }
 
     fn poll_update_install(&mut self, ctx: &egui::Context) {
+        if let Some(restart_at) = self.update_restart_at {
+            let now = Instant::now();
+            if now >= restart_at {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(restart_at - now);
+            }
+        }
         let mut events = Vec::new();
         let mut disconnected = false;
         if let Some(receiver) = &self.update_install {
@@ -975,8 +1000,11 @@ impl LocalCodePilot {
                     self.persist_workspace_state(true);
                     match updates::launch_prepared_update(&prepared) {
                         Ok(()) => {
-                            self.notify("Atualização validada. Reiniciando o LocalCodePilot...");
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            // The updater waits for this process to exit; a short pause
+                            // lets the person read "Reiniciando" before the window closes.
+                            self.update_restart_at =
+                                Some(Instant::now() + Duration::from_millis(1200));
+                            ctx.request_repaint();
                         }
                         Err(error) => {
                             self.update_install_version = None;
@@ -1006,7 +1034,8 @@ impl LocalCodePilot {
             return;
         };
         let automatic_update = updates::automatic_update_available(&update);
-        let installing = self.update_install.is_some();
+        let installing = self.update_in_progress();
+        let progress = self.update_progress();
         let mut remind_later = false;
         let mut start_install = false;
         Frame::new()
@@ -1019,23 +1048,24 @@ impl LocalCodePilot {
                 ui.horizontal_wrapped(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new(format!("Nova versão disponível: {}", update.version))
+                            RichText::new("Nova versão do LocalCodePilot disponível")
                                 .strong()
                                 .color(Color32::WHITE),
                         );
                         ui.label(
-                            RichText::new(format!(
-                                "Você está usando a versão {}. {}",
-                                updates::current_version(),
-                                if automatic_update {
-                                    "O app pode baixar, validar e instalar a nova versão."
-                                } else {
-                                    "Use o pacote oficial para concluir esta atualização."
-                                }
-                            ))
-                            .color(theme::MUTED)
-                            .size(10.0),
+                            RichText::new(update_versions_line(&update.version))
+                                .color(theme::MUTED)
+                                .size(10.0),
                         );
+                        if !automatic_update {
+                            ui.label(
+                                RichText::new(
+                                    "Use o pacote oficial para concluir esta atualização.",
+                                )
+                                .color(theme::MUTED)
+                                .size(10.0),
+                            );
+                        }
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
@@ -1073,15 +1103,7 @@ impl LocalCodePilot {
                 });
                 if installing {
                     ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(update_download_status(
-                            self.update_install_version.as_deref(),
-                            self.update_install_progress,
-                            self.update_install_phase,
-                        ));
-                    });
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                    update_progress_ui::show(ui, &progress);
                 }
                 if let Some(error) = &self.update_install_error {
                     ui.add_space(8.0);
@@ -4292,6 +4314,8 @@ impl LocalCodePilot {
             .as_ref()
             .is_some_and(updates::automatic_update_available);
         let mut start_install = false;
+        let updating = self.update_in_progress();
+        let progress = self.update_progress();
         ui.heading("Atualizações");
         ui.add_space(12.0);
         Frame::new()
@@ -4303,7 +4327,7 @@ impl LocalCodePilot {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!("LocalCodePilot {}", updates::current_version())).strong());
-                    if ui.add_enabled(self.update_check.is_none() && self.update_install.is_none(), egui::Button::new("Verificar se há atualizações")).clicked() {
+                    if ui.add_enabled(self.update_check.is_none() && !updating, egui::Button::new("Verificar se há atualizações")).clicked() {
                         self.manual_update_check = true;
                         self.workspace_state.update_remind_after = 0;
                         self.workspace_dirty = true;
@@ -4313,7 +4337,7 @@ impl LocalCodePilot {
                     if automatic_update
                         && ui
                             .add_enabled(
-                                self.update_install.is_none(),
+                                !updating,
                                 egui::Button::new("Atualizar agora")
                                     .fill(theme::PRIMARY.gamma_multiply(0.72)),
                             )
@@ -4321,7 +4345,27 @@ impl LocalCodePilot {
                     {
                         start_install = true;
                     }
+                    if let Some(update) = &available_update
+                        && !automatic_update
+                        && ui
+                            .add(
+                                egui::Button::new("Baixar atualização")
+                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                            )
+                            .clicked()
+                    {
+                        ui.ctx()
+                            .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                    }
                 });
+                if let Some(update) = &available_update {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(update_versions_line(&update.version))
+                            .color(theme::MUTED)
+                            .size(11.0),
+                    );
+                }
                 ui.add_space(6.0);
                 if self.update_check.is_some() {
                     ui.horizontal(|ui| { ui.spinner(); ui.label("Verificando atualizações..."); });
@@ -4333,16 +4377,8 @@ impl LocalCodePilot {
                     };
                     ui.label(RichText::new(message).color(color).size(11.0));
                 }
-                if self.update_install.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(update_download_status(
-                            self.update_install_version.as_deref(),
-                            self.update_install_progress,
-                            self.update_install_phase,
-                        ));
-                    });
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                if updating {
+                    update_progress_ui::show(ui, &progress);
                 } else if let Some(error) = &self.update_install_error {
                     ui.label(
                         RichText::new(format!("Atualização automática: {error}"))
@@ -6292,28 +6328,11 @@ fn relative_time(timestamp: u64) -> String {
     }
 }
 
-fn update_download_status(
-    version: Option<&str>,
-    progress: Option<(u64, Option<u64>)>,
-    phase: Option<UpdatePhase>,
-) -> String {
-    if phase == Some(UpdatePhase::Verifying) {
-        return "Verificando a atualização...".into();
-    }
-    let version = version.unwrap_or("nova versão");
-    let Some((downloaded, total)) = progress else {
-        return format!("Preparando LocalCodePilot {version}...");
-    };
-    let downloaded_megabytes = downloaded as f64 / (1024.0 * 1024.0);
-    if let Some(total) = total.filter(|total| *total > 0) {
-        let total_megabytes = total as f64 / (1024.0 * 1024.0);
-        let percentage = ((downloaded as f64 / total as f64) * 100.0).clamp(0.0, 100.0);
-        format!(
-            "Baixando {version}: {downloaded_megabytes:.1}/{total_megabytes:.1} MB ({percentage:.0}%)"
-        )
-    } else {
-        format!("Baixando {version}: {downloaded_megabytes:.1} MB")
-    }
+fn update_versions_line(new_version: &str) -> String {
+    format!(
+        "Versão atual: {} · Nova versão: {new_version}",
+        updates::current_version()
+    )
 }
 
 fn process_state_key(state: ProcessState) -> &'static str {
@@ -7236,10 +7255,9 @@ mod tests {
         process_exposes_application_url, process_matches_search, project_count_text,
         project_process_ids, resolve_environment_plan,
         resolve_environment_plan_with_tools_directory, run_dependency_installs,
-        runtime_requirement_status, scan_roots_text, update_download_status, words,
+        runtime_requirement_status, scan_roots_text, update_versions_line, words,
     };
     use super::{Notification, UPDATE_RESULT_NOTIFICATION_DURATION};
-    use crate::updates::UpdatePhase;
     use localcodepilot_core::{
         environments::{
             InstallationStepKind, RequirementSource, RequirementStatus, RuntimeRequirement,
@@ -7415,27 +7433,13 @@ mod tests {
     }
 
     #[test]
-    fn update_status_follows_the_download_phase_without_inventing_a_percentage() {
-        let mib = 1024 * 1024;
+    fn the_update_notice_shows_the_current_and_the_new_version() {
         assert_eq!(
-            update_download_status(Some("0.5.0"), Some((5 * mib, Some(10 * mib))), None),
-            "Baixando 0.5.0: 5.0/10.0 MB (50%)"
-        );
-        assert_eq!(
-            update_download_status(
-                Some("0.5.0"),
-                Some((3 * mib, None)),
-                Some(UpdatePhase::Downloading)
-            ),
-            "Baixando 0.5.0: 3.0 MB"
-        );
-        assert_eq!(
-            update_download_status(
-                Some("0.5.0"),
-                Some((10 * mib, Some(10 * mib))),
-                Some(UpdatePhase::Verifying)
-            ),
-            "Verificando a atualização..."
+            update_versions_line("9.9.9"),
+            format!(
+                "Versão atual: {} · Nova versão: 9.9.9",
+                env!("CARGO_PKG_VERSION")
+            )
         );
     }
 
