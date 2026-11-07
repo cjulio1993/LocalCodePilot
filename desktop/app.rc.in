@@ -1,8 +1,10 @@
-1 ICON "../assets/branding/localcodepilot.ico"
+// Template for the Windows resource. build.rs fills the @...@ markers from the
+// package version (Cargo.toml) and compiles the result; never write a version here.
+1 ICON "@ICON@"
 
 1 VERSIONINFO
-FILEVERSION 0,4,0,5
-PRODUCTVERSION 0,4,0,5
+FILEVERSION @VERSION_NUMBERS@
+PRODUCTVERSION @VERSION_NUMBERS@
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -15,12 +17,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "LocalCodePilot\0"
             VALUE "FileDescription", "LocalCodePilot Desktop\0"
-            VALUE "FileVersion", "0.4.0-alpha.5\0"
+            VALUE "FileVersion", "@VERSION@\0"
             VALUE "InternalName", "LocalCodePilot.exe\0"
             VALUE "LegalCopyright", "Copyright (c) 2026 LocalCodePilot contributors\0"
             VALUE "OriginalFilename", "LocalCodePilot.exe\0"
             VALUE "ProductName", "LocalCodePilot\0"
-            VALUE "ProductVersion", "0.4.0-alpha.5\0"
+            VALUE "ProductVersion", "@VERSION@\0"
         END
     END
     BLOCK "VarFileInfo"
