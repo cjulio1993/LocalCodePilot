@@ -78,7 +78,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Busque pelo nome ou filtre por Rodando, Com problema e Parados. No projeto escolhido, siga a ação exibida.",
             ),
             Block::Text(
-                "Antes de confirmar uma instalação ou uma ação do Compose, confira a pasta. Nas ações de containers, confira também o motor e quais serviços serão afetados. O comando está em Detalhes técnicos.",
+                "Antes de executar um comando deste projeto pela primeira vez, confira a pasta e o comando na confirmação. A confirmação volta se o comando efetivo mudar. Os arquivos do projeto podem mudar depois disso. Antes de confirmar uma ação do Compose, confira também o motor e os serviços afetados.",
             ),
         ],
         link: Some((Page::Projects, "Abrir Projetos")),

@@ -1,3 +1,5 @@
+#[path = "command_trust.rs"]
+mod command_trust;
 #[path = "command_ui.rs"]
 mod command_ui;
 #[path = "container_ui.rs"]
@@ -612,6 +614,8 @@ pub struct LocalCodePilot {
     dependency_terminal: Option<PathBuf>,
     environment_plan_request: Option<(PathBuf, Receiver<Result<InstallationPlan, String>>)>,
     environment_plan_confirmation: Option<InstallationPlan>,
+    /// Project commands waiting for their first-run confirmation (LCP-SEC-001).
+    command_confirmation: Option<command_trust::CommandConfirmation>,
     environment_path: Option<OsString>,
     laravel_migration: Option<LaravelMigration>,
     logo_texture: egui::TextureHandle,
@@ -711,6 +715,7 @@ impl LocalCodePilot {
             dependency_terminal: None,
             environment_plan_request: None,
             environment_plan_confirmation: None,
+            command_confirmation: None,
             environment_path,
             laravel_migration: None,
             logo_texture,
@@ -1698,6 +1703,81 @@ impl LocalCodePilot {
         })
     }
 
+    /// The project commands among `ids` not yet confirmed with their current identity.
+    /// Commands the person wrote are theirs and never ask.
+    fn unconfirmed_commands(&self, ids: &[String]) -> Vec<command_trust::PendingCommand> {
+        ids.iter()
+            .filter_map(|id| self.processes.iter().find(|process| process.id == *id))
+            .filter(|process| !custom_commands::is_custom(process))
+            .map(command_trust::pending_command)
+            .filter(|command| {
+                !self
+                    .workspace_state
+                    .confirmed_commands
+                    .contains(&command.identity)
+            })
+            .collect()
+    }
+
+    /// Opens the confirmation for `commands`; true when the start has to wait for it.
+    fn ask_before_running(
+        &mut self,
+        project_path: &Path,
+        commands: Vec<command_trust::PendingCommand>,
+        then: command_trust::AfterConfirm,
+    ) -> bool {
+        if commands.is_empty() {
+            return false;
+        }
+        let project_name = self
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+            .map_or_else(
+                || display_path(project_path),
+                |project| project.name.clone(),
+            );
+        self.command_confirmation = Some(command_trust::CommandConfirmation {
+            project_name,
+            project_path: project_path.to_path_buf(),
+            git_remote: command_trust::git_remote(project_path),
+            commands,
+            then,
+            details_open: false,
+            focused: false,
+        });
+        true
+    }
+
+    fn show_command_confirmation(&mut self, root_ui: &mut egui::Ui) {
+        let Some(mut confirmation) = self.command_confirmation.take() else {
+            return;
+        };
+        match command_trust::show(root_ui, &mut confirmation) {
+            None => self.command_confirmation = Some(confirmation),
+            // Nothing runs and nothing is recorded.
+            Some(command_trust::Decision::Cancel) => {}
+            Some(command_trust::Decision::Confirm) => {
+                for command in &confirmation.commands {
+                    if !self
+                        .workspace_state
+                        .confirmed_commands
+                        .contains(&command.identity)
+                    {
+                        self.workspace_state
+                            .confirmed_commands
+                            .push(command.identity.clone());
+                    }
+                }
+                self.workspace_dirty = true;
+                match confirmation.then {
+                    command_trust::AfterConfirm::StartProject(path) => self.start_project(&path),
+                    command_trust::AfterConfirm::StartProcess(id) => self.start_process(&id),
+                }
+            }
+        }
+    }
+
     fn start_process(&mut self, id: &str) {
         let Some(index) = self.processes.iter().position(|process| process.id == id) else {
             self.notify("O comando selecionado não está mais disponível");
@@ -1716,6 +1796,15 @@ impl LocalCodePilot {
                 "{} já está em execução",
                 self.processes[index].name
             ));
+            return;
+        }
+        let project_path = self.processes[index].project_path.clone();
+        let pending = self.unconfirmed_commands(&[id.to_owned()]);
+        if self.ask_before_running(
+            &project_path,
+            pending,
+            command_trust::AfterConfirm::StartProcess(id.to_owned()),
+        ) {
             return;
         }
         let process = self.processes[index].clone();
@@ -1940,6 +2029,17 @@ impl LocalCodePilot {
                     .problem_details()
                     .unwrap_or_else(|| "Nenhum serviço executável foi detectado".into()),
             );
+            return;
+        }
+        // Every new command of the project in one confirmation, before anything happens
+        // (not even the SQLite file is created).
+        let pending =
+            self.unconfirmed_commands(&project_process_ids(&self.processes, project_path, false));
+        if self.ask_before_running(
+            project_path,
+            pending,
+            command_trust::AfterConfirm::StartProject(project_path.to_path_buf()),
+        ) {
             return;
         }
         for database in detect_database_requirements(project_path) {
@@ -2722,6 +2822,14 @@ impl LocalCodePilot {
                                 .monospace()
                                 .size(10.0),
                         );
+                        // This window is the confirmation of these commands (LCP-SEC-001);
+                        // it does not vouch for what the project's files do later.
+                        ui.add(
+                            egui::Label::new(
+                                "Os arquivos do projeto podem mudar depois desta confirmação.",
+                            )
+                            .wrap(),
+                        );
                         ui.add_space(10.0);
                         if !plan.requirements.is_empty() {
                             ui.label(RichText::new("Requisitos").strong().size(12.0));
@@ -2798,10 +2906,11 @@ impl LocalCodePilot {
                 });
             });
 
+        let escape = root_ui.input(|input| input.key_pressed(egui::Key::Escape));
         if confirm {
             self.environment_plan_confirmation = None;
             self.start_environment_plan(plan, root_ui.ctx().clone());
-        } else if cancel || !open {
+        } else if cancel || !open || escape {
             self.environment_plan_confirmation = None;
             self.notify("Preparação cancelada antes da execução");
         }
@@ -4527,6 +4636,7 @@ impl eframe::App for LocalCodePilot {
         self.content(ui);
         self.show_terminal(ui);
         self.show_environment_plan_confirmation(ui);
+        self.show_command_confirmation(ui);
         self.show_dependency_terminal(ui);
         self.show_laravel_migration(ui);
         self.show_port_termination_confirmation(ui);
@@ -5329,20 +5439,21 @@ fn resolve_environment_plan_with_tools_directory(
 /// Source of the plan steps that install the project's own dependencies.
 const PROJECT_MANIFEST_SOURCE: &str = "Manifesto do projeto";
 
-/// The confirmation says what will happen (#101): "Instalar dependências" when every step
-/// installs the project's dependencies, "Preparar ambiente" when the machine changes too.
+/// The confirmation says what will happen (#101, LCP-SEC-001): installing the project's
+/// dependencies when every step comes from its manifest, preparing it when the machine
+/// changes too.
 fn plan_window_title(plan: &InstallationPlan) -> &'static str {
     if installs_only_dependencies(plan) {
-        "Instalar dependências"
+        "Instalar dependências deste projeto?"
     } else {
-        "Preparar ambiente"
+        "Preparar este projeto?"
     }
 }
 
 /// The confirm button uses the same verb as the title and the card.
 fn plan_confirm_label(plan: &InstallationPlan) -> &'static str {
     if installs_only_dependencies(plan) {
-        "Instalar"
+        "Instalar dependências"
     } else {
         "Preparar"
     }
@@ -7487,13 +7598,16 @@ mod tests {
             requirements: Vec::new(),
             steps: vec![step(Some(PROJECT_MANIFEST_SOURCE))],
         };
-        assert_eq!(plan_window_title(&plan), "Instalar dependências");
-        assert_eq!(plan_confirm_label(&plan), "Instalar");
+        assert_eq!(
+            plan_window_title(&plan),
+            "Instalar dependências deste projeto?"
+        );
+        assert_eq!(plan_confirm_label(&plan), "Instalar dependências");
         plan.steps.insert(0, step(Some("winget")));
-        assert_eq!(plan_window_title(&plan), "Preparar ambiente");
+        assert_eq!(plan_window_title(&plan), "Preparar este projeto?");
         assert_eq!(plan_confirm_label(&plan), "Preparar");
         plan.steps = vec![step(None), step(Some(PROJECT_MANIFEST_SOURCE))];
-        assert_eq!(plan_window_title(&plan), "Preparar ambiente");
+        assert_eq!(plan_window_title(&plan), "Preparar este projeto?");
     }
 
     #[test]
