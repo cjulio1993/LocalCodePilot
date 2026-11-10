@@ -110,4 +110,23 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "check-exe-version.ps1 accepted a wrong version." }
           Write-Host "Mismatch detected as expected."
           $global:LASTEXITCODE = 0
+      - name: Check the signing of the release checksums
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # A throwaway key: the release key exists only as a release secret.
+          work="$(mktemp -d)"
+          openssl genpkey -algorithm ed25519 -out "$work/key.pem"
+          openssl pkey -in "$work/key.pem" -pubout -out "$work/key.pub.pem"
+          printf 'abc  LocalCodePilot-9.9.9-windows-x64.exe\n' > "$work/SHA256SUMS.txt"
+          UPDATE_SIGNING_KEY="$(cat "$work/key.pem")" bash scripts/sign-checksums.sh "$work/SHA256SUMS.txt" "$work/key.pub.pem"
+          test "$(stat -c %s "$work/SHA256SUMS.txt.sig")" -eq 64
+          # Without the secret, or with a key that is not the repository's, signing fails.
+          if UPDATE_SIGNING_KEY="" bash scripts/sign-checksums.sh "$work/SHA256SUMS.txt" "$work/key.pub.pem"; then
+            echo "::error::signed without UPDATE_SIGNING_KEY"; exit 1
+          fi
+          if UPDATE_SIGNING_KEY="$(cat "$work/key.pem")" bash scripts/sign-checksums.sh "$work/SHA256SUMS.txt" packaging/update-signing.pub.pem; then
+            echo "::error::accepted a key that is not the repository's"; exit 1
+          fi
+          echo "Signing checks passed."
 

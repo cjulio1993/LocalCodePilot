@@ -1929,6 +1929,7 @@ dependencies = [
  "localcodepilot-platform",
  "localcodepilot-runtime",
  "rfd",
+ "ring",
  "semver",
  "serde",
  "serde_json",

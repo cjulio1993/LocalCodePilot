@@ -63,7 +63,7 @@ Diretórios como `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`, `.
 4. Em **Containers**, cada projeto aparece com seus serviços e o estado de cada um. **Iniciar**, **Parar** e **Ver logs** ficam no projeto; **Outras ações** valida o Compose, consulta o estado e controla cada container; **Detalhes técnicos** mostra imagem, portas, ID e o comando exato. **Buscar projeto ou serviço** filtra a lista, e containers que não são de um projeto da lista ficam em **Outros containers**. A página abre filtrada quando acessada por um projeto.
 5. **Abrir aplicação** aparece quando existe uma URL local candidata. **Aplicação respondendo** requer uma resposta HTTP saudável; **serviços ativos** ou **containers ativos** não garantem que o site esteja funcionando.
 
-O aplicativo salva localmente pastas de busca, favoritos, recentes, histórico dos serviços e logs recentes. Ele não reinicia processos automaticamente ao abrir novamente. Atualizações do aplicativo são verificadas periodicamente; no Windows, um pacote compatível pode ser baixado e aplicado após validação de SHA-256.
+O aplicativo salva localmente pastas de busca, favoritos, recentes, histórico dos serviços e logs recentes. Ele não reinicia processos automaticamente ao abrir novamente. Atualizações do aplicativo são verificadas periodicamente; no Windows, um pacote compatível pode ser baixado e aplicado após validar a assinatura dos checksums e o SHA-256.
 
 ### Matriz de suporte atual
 
@@ -140,7 +140,7 @@ O LocalCodePilot não instala Docker/Podman nem inicia a VM do motor. Quando um 
 
 A alpha `0.4.0-alpha.5.1` corrige os avisos de atualização: cada sistema recebe somente releases com pacote compatível. Notificações incompatíveis em cache são descartadas. Quem usa alpha 5 deve instalar este pacote manualmente se o aviso de uma release exclusiva do macOS impedir a atualização integrada.
 
-Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização.
+Quando uma release mais recente oferece o executável de atualização e `SHA256SUMS.txt`, o botão **Atualizar agora** confere primeiro a assinatura Ed25519 do `SHA256SUMS.txt` (`SHA256SUMS.txt.sig`) com a chave pública embutida no app, baixa o arquivo em segundo plano, confere o SHA-256, fecha o LocalCodePilot, substitui somente o executável e abre a nova versão. Um auxiliar temporário criado a partir do próprio app permite trocar o arquivo em uso; ele e os arquivos baixados são removidos depois da confirmação de inicialização.
 
 Como a troca é protegida:
 
@@ -333,7 +333,8 @@ O script compila o mesmo commit como `0.4.0-alpha.90` e `0.4.0-alpha.91`, com a 
 - `queda-no-meio` (o servidor cai durante o download);
 - `rollback` (a nova versão fecha ao iniciar);
 - `confirmacao-lenta` (a nova versão demora mais que a espera do auxiliar);
-- `sem-conexao`.
+- `sem-conexao`;
+- `assinatura-invalida` (checksums assinados com outra chave).
 
 Tudo roda numa pasta descartável (`-Pasta`, por padrão `%TEMP%\lcp-e2e-update`), com `APPDATA`, `LOCALAPPDATA`, `TEMP` e instalação próprios. O script só encerra processos que rodam dessa pasta.
 
@@ -422,7 +423,7 @@ Directories such as `.git`, `node_modules`, `target`, `vendor`, `dist`, `build`,
 4. In **Containers**, each project shows its services and the state of each one. **Start**, **Stop**, and **View logs** sit on the project; **Other actions** validates Compose, queries status, and controls each container; **Technical details** shows image, ports, ID, and the exact command. **Search project or service** filters the list, and containers that do not belong to a listed project appear under **Other containers**. Opening the page from a project filters its list.
 5. **Open application** appears when a candidate local URL exists. **Application responding** requires a healthy HTTP result; **services active** or **containers active** does not mean the site works.
 
-The app locally stores scan folders, favorites, recent projects, service history, and recent logs. It does not automatically restart processes on launch. It checks for updates periodically; on Windows, a compatible package can be downloaded and applied after SHA-256 verification.
+The app locally stores scan folders, favorites, recent projects, service history, and recent logs. It does not automatically restart processes on launch. It checks for updates periodically; on Windows, a compatible package can be downloaded and applied after the checksums signature and the SHA-256 are verified.
 
 ### Current support matrix
 
@@ -499,7 +500,7 @@ LocalCodePilot does not install Docker/Podman or start the engine VM. When an en
 
 Alpha `0.4.0-alpha.5.1` fixes update notifications: each operating system only receives releases with a compatible package. Incompatible cached notifications are discarded. Alpha 5 users should install this package manually if a macOS-only release notification prevents the in-app update.
 
-When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed.
+When a newer release provides the update executable and `SHA256SUMS.txt`, **Update now** first checks the Ed25519 signature of `SHA256SUMS.txt` (`SHA256SUMS.txt.sig`) against the public key embedded in the app, then downloads the file in the background, verifies its SHA-256, closes LocalCodePilot, replaces only the executable, and opens the new version. A temporary helper copied from the app replaces the file that was in use; the helper and downloaded files are removed after startup is confirmed.
 
 How the swap is protected:
 
@@ -692,7 +693,8 @@ The script builds the same commit as `0.4.0-alpha.90` and `0.4.0-alpha.91` with 
 - `queda-no-meio` (the server goes down during the download);
 - `rollback` (the new version closes at startup);
 - `confirmacao-lenta` (the new version takes longer than the helper waits);
-- `sem-conexao` (no connection).
+- `sem-conexao` (no connection);
+- `assinatura-invalida` (checksums signed with another key).
 
 Everything runs in a disposable folder (`-Pasta`, by default `%TEMP%\lcp-e2e-update`) with its own `APPDATA`, `LOCALAPPDATA`, `TEMP` and install folder. The script only stops processes running from that folder.
 

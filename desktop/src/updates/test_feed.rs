@@ -46,6 +46,26 @@ pub(super) fn version() -> Option<&'static str> {
     option_env!("LOCALCODEPILOT_TEST_VERSION")
 }
 
+/// The Ed25519 public key (64 hex digits) that signs the local feed's checksums,
+/// set when the test build is compiled: the E2E script signs with a throwaway key,
+/// never with the release key.
+pub(super) fn signing_key() -> Option<[u8; 32]> {
+    option_env!("LOCALCODEPILOT_TEST_SIGNING_KEY")
+        .map(|hex| parse_key(hex).expect("LOCALCODEPILOT_TEST_SIGNING_KEY must be 64 hex digits"))
+}
+
+fn parse_key(hex: &str) -> Option<[u8; 32]> {
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    for (index, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(key)
+}
+
 /// Simulated startup problems of a "new" test version, set when it is
 /// compiled and applied only when the updater starts it:
 /// `fail` closes it at once, `slow` delays it past the updater's wait.
@@ -89,5 +109,13 @@ mod tests {
         ] {
             assert_eq!(loopback_base(refused), None, "{refused}");
         }
+    }
+
+    #[test]
+    fn the_test_signing_key_is_exactly_64_hex_digits() {
+        let key = parse_key(&"0a".repeat(32)).unwrap();
+        assert_eq!(key, [0x0a; 32]);
+        assert_eq!(parse_key(&"0a".repeat(31)), None);
+        assert_eq!(parse_key(&"zz".repeat(32)), None);
     }
 }

@@ -19,14 +19,19 @@
       queda-no-meio      o servidor cai durante o download: nada é trocado;
       rollback           a versão nova fecha ao iniciar: a anterior volta;
       confirmacao-lenta  a versão nova demora mais que a espera do atualizador;
-      sem-conexao        o feed não responde: nenhum aviso de atualização.
+      sem-conexao        o feed não responde: nenhum aviso de atualização;
+      assinatura-invalida  os checksums foram assinados com outra chave: nada é baixado nem trocado.
+
+    As versões de teste confiam numa chave Ed25519 descartável, gerada na
+    pasta do teste com o OpenSSL (o do Git for Windows serve), nunca na chave
+    das releases.
 
 .EXAMPLE
     .\scripts\e2e-update-windows.ps1
     .\scripts\e2e-update-windows.ps1 -Cenario sucesso,rollback -Recompilar
 #>
 param(
-    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao')]
+    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida')]
     [string[]]$Cenario = @('todos'),
     [string]$Pasta = (Join-Path ([IO.Path]::GetTempPath()) 'lcp-e2e-update'),
     [switch]$Recompilar
@@ -38,7 +43,7 @@ $ErrorActionPreference = 'Stop'
 $repositorio = Split-Path -Parent $PSScriptRoot
 $versaoAntiga = '0.4.0-alpha.90'
 $versaoNova = '0.4.0-alpha.91'
-$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao')
+$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida')
 if ($Cenario -contains 'todos') { $Cenario = $todos }
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -88,6 +93,35 @@ function Invoke-Cargo([string[]]$Argumentos) {
     }
 }
 
+# --- Chaves de assinatura descartáveis ----------------------------------------
+
+$comandoOpenssl = Get-Command openssl -ErrorAction SilentlyContinue
+$openssl = if ($comandoOpenssl) { $comandoOpenssl.Source } else { Join-Path $env:ProgramFiles 'Git\usr\bin\openssl.exe' }
+if (-not (Test-Path -LiteralPath $openssl)) { throw 'O OpenSSL não foi encontrado (instale o Git for Windows).' }
+$chaves = New-Item -ItemType Directory -Force (Join-Path $Pasta 'chaves-de-teste')
+
+function Get-Chave([string]$Nome) {
+    $privada = Join-Path $chaves.FullName "$Nome.pem"
+    if (-not (Test-Path -LiteralPath $privada)) {
+        & $openssl genpkey -algorithm ed25519 -out $privada
+        if ($LASTEXITCODE -ne 0) { throw "Não foi possível gerar a chave de teste $Nome." }
+        # As versões já compiladas confiam na chave anterior.
+        Get-ChildItem -LiteralPath $binarios -Filter '*.exe' | Where-Object Name -ne 'update_test_feed.exe' | Remove-Item -Force
+    }
+    $der = Join-Path $chaves.FullName "$Nome.pub.der"
+    & $openssl pkey -in $privada -pubout -outform DER -out $der
+    $bytes = [IO.File]::ReadAllBytes($der)
+    [pscustomobject]@{ Privada = $privada; Publica = (($bytes[12..43] | ForEach-Object { $_.ToString('x2') }) -join '') }
+}
+
+function Set-Assinatura([string]$Checksums, [string]$Privada) {
+    & $openssl pkeyutl -sign -inkey $Privada -rawin -in $Checksums -out "$Checksums.sig"
+    if ($LASTEXITCODE -ne 0) { throw 'Não foi possível assinar os checksums de teste.' }
+}
+
+$chaveDoTeste = Get-Chave 'feed'
+$outraChave = Get-Chave 'outra'
+
 $alvoCargo = (& cargo metadata --format-version 1 --no-deps --manifest-path (Join-Path $repositorio 'Cargo.toml') | ConvertFrom-Json).target_directory
 
 # Com -Recompilar, cada binário é compilado uma vez por execução, não por cenário.
@@ -102,12 +136,13 @@ function Get-Variante([string]$Nome, [string]$Versao, [string]$Inicio) {
     if (Test-Pronto $destino) { return $destino }
     Write-Host "Compilando $Nome ($Versao$(if ($Inicio) { ", início: $Inicio" }))..."
     $env:LOCALCODEPILOT_TEST_VERSION = $Versao
+    $env:LOCALCODEPILOT_TEST_SIGNING_KEY = $chaveDoTeste.Publica
     if ($Inicio) { $env:LOCALCODEPILOT_TEST_STARTUP = $Inicio } else { Remove-Item Env:LOCALCODEPILOT_TEST_STARTUP -ErrorAction SilentlyContinue }
     try {
         Invoke-Cargo @('build', '-p', 'localcodepilot-desktop', '--locked', '--features', 'update-test-feed')
     }
     finally {
-        Remove-Item Env:LOCALCODEPILOT_TEST_VERSION, Env:LOCALCODEPILOT_TEST_STARTUP -ErrorAction SilentlyContinue
+        Remove-Item Env:LOCALCODEPILOT_TEST_VERSION, Env:LOCALCODEPILOT_TEST_STARTUP, Env:LOCALCODEPILOT_TEST_SIGNING_KEY -ErrorAction SilentlyContinue
     }
     $compilado = Join-Path $alvoCargo 'debug\localcodepilot-desktop.exe'
     $texto = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($compilado))
@@ -196,7 +231,9 @@ function Invoke-Cenario([string]$Nome) {
     $nomeExe = "LocalCodePilot-$versaoNova-windows-x64.exe"
     Copy-Item -LiteralPath $nova -Destination (Join-Path $assets.FullName $nomeExe)
     $shaPublicado = if ($Nome -eq 'sha-errado') { 'ab' * 32 } else { $shaNova }
-    Set-Content -LiteralPath (Join-Path $assets.FullName 'SHA256SUMS.txt') -Value "$shaPublicado  $nomeExe" -Encoding ascii
+    $checksums = Join-Path $assets.FullName 'SHA256SUMS.txt'
+    Set-Content -LiteralPath $checksums -Value "$shaPublicado  $nomeExe" -Encoding ascii
+    Set-Assinatura $checksums $(if ($Nome -eq 'assinatura-invalida') { $outraChave.Privada } else { $chaveDoTeste.Privada })
     if ($Nome -eq 'sem-conexao') {
         $base = 'http://127.0.0.1:9'
     }
@@ -250,8 +287,9 @@ function Invoke-Cenario([string]$Nome) {
                 'rollback' { "A versão $versaoAntiga foi restaurada e continua em uso" }
                 'sha-errado' { 'o SHA-256 do executável baixado não corresponde ao publicado' }
                 'queda-no-meio' { 'download' }
+                'assinatura-invalida' { 'a assinatura dos checksums não confere com a chave do LocalCodePilot' }
             }
-            $falhaNoDownload = $Nome -in 'sha-errado', 'queda-no-meio'
+            $falhaNoDownload = $Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida'
             $na_tela = Wait-Ate {
                 $processos = if ($falhaNoDownload) { @($app) } else {
                     @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo -and $_.Id -ne $app.Id } catch { $false } })
@@ -298,7 +336,10 @@ function Invoke-Cenario([string]$Nome) {
             $checagens["cópia das configurações em backups\antes-de-$versaoNova"] = $resultado.copia_das_configuracoes -eq "antes-de-$versaoNova"
             $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
         }
-        if ($Nome -in 'sha-errado', 'queda-no-meio') { $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0 }
+        if ($Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida') { $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0 }
+        if ($Nome -eq 'assinatura-invalida') {
+            $checagens['executável nem chegou a ser baixado'] = -not ((Get-Content -LiteralPath (Join-Path $raiz 'servidor.log') -ErrorAction SilentlyContinue) -match [regex]::Escape($nomeExe))
+        }
         $resultado.checagens = $checagens
         $resultado.aprovado = -not ($checagens.Values -contains $false)
         [pscustomobject]$resultado

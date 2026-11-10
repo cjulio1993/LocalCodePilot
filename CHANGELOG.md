@@ -6,6 +6,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Segurança
+
+- A atualização pelo app passa a exigir a assinatura Ed25519 do `SHA256SUMS.txt`. Cada release publica `SHA256SUMS.txt.sig`, assinado no workflow de release com uma chave que só existe como secret do GitHub e num backup offline. O app confere essa assinatura com a chave pública embutida nele (`packaging/update-signing.pub.pem`) antes de baixar o executável. Se a assinatura faltar, for de outra chave ou não corresponder ao conteúdo, a atualização é recusada sem baixar nem trocar nada, e o download oficial continua disponível. Antes, o SHA-256 vinha da mesma release que o executável: quem conseguisse trocar os dois arquivos conseguiria publicar outro executável. O workflow de release falha se o secret faltar ou não corresponder à chave pública. As versões já instaladas até esta continuam atualizando sem conferir a assinatura.
+
 ### Alterado
 
 - A atualização pelo app mostra o andamento em etapas, no aviso e em **Configurações > Atualizações**: **Baixar › Verificar › Reiniciar**, com a etapa atual marcada por um símbolo e em negrito, sem depender só da cor. O download tem uma barra e "Baixando a atualização · 42% · 6,3 de 15,0 MB"; se o servidor não informa o tamanho, aparece só "Baixando a atualização · 6,3 MB baixados", sem barra nem percentual inventado. Depois vêm "Verificando a atualização..." e "Reiniciando o LocalCodePilot...", que fica na tela por pouco mais de um segundo antes de o app fechar. O aviso passa a dizer "Nova versão do LocalCodePilot disponível" e "Versão atual: … · Nova versão: …", e Configurações mostra as duas versões e, quando a atualização automática não está disponível, o botão **Baixar atualização**. Os leitores de tela ouvem a etapa ("Etapa 1 de 3: Baixar") e o andamento do download.
