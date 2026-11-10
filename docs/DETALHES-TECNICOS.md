@@ -10,6 +10,13 @@ This document keeps the technical detail that used to live in the README: how th
 
 ## Português
 
+Este documento descreve a versão publicada `0.4.0-alpha.8` e, quando indicado, mudanças que só chegam na próxima versão.
+
+**Windows:** a `0.4.0-alpha.8` é distribuída para Windows 10/11 x64 como instalador e como ZIP portátil na [página de releases](https://github.com/cjulio1993/LocalCodePilot/releases). Confira o SHA-256 publicado; os arquivos ainda não têm assinatura digital. Quem usa a Alpha 7 deve instalar a Alpha 8 pelo instalador ou pelo ZIP: o **Atualizar agora** da Alpha 7 não conclui essa atualização.
+
+**macOS (experimental):** a Alpha 8 inclui um DMG universal para Intel e Apple Silicon, para testes em Macs reais. O app usa assinatura ad hoc e não é notarizado. Veja [docs/README-MACOS.txt](README-MACOS.txt).
+
+**Ainda não publicado:** depois da Alpha 8, o repositório recebeu correções que só chegam na próxima versão, entre elas a primeira abertura sem pastas de programas (#98), a versão correta nas Propriedades do executável (#99), projetos com o mesmo nome (#100), projetos recém-clonados como **Parado** (#101), as etapas da atualização e a assinatura dos checksums. O [CHANGELOG](../CHANGELOG.md) lista cada uma em **Não publicado**; as seções deste documento sobre esses temas descrevem o comportamento da próxima versão.
 ### O que é o LocalCodePilot?
 
 O LocalCodePilot pretende reunir os projetos, runtimes, processos, portas e serviços de desenvolvimento da máquina em um único lugar. Em vez de exigir que cada projeto seja cadastrado manualmente, a aplicação procura projetos automaticamente e identifica suas tecnologias por meio dos arquivos presentes em cada diretório.
@@ -212,7 +219,7 @@ Serviços com uma URL HTTP local são verificados em segundo plano a cada dez se
 
 ### Em desenvolvimento
 
-A versão `0.4.0-alpha.7` tem suporte principal no Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11 em versões anteriores; os novos fluxos desta alpha precisam de validação manual. O DMG universal do macOS é distribuído como pacote experimental para validação em Macs reais.
+A versão `0.4.0-alpha.8` tem suporte principal no Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11 em versões anteriores; os novos fluxos desta alpha precisam de validação manual. O DMG universal do macOS é distribuído como pacote experimental para validação em Macs reais.
 
 - Detecção de frameworks e metadados mais detalhados.
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
@@ -364,11 +371,13 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-This README describes the features in version `0.4.0-alpha.7`.
+This document describes the published version `0.4.0-alpha.8` and, where noted, changes that only arrive in the next version.
 
-**Windows alpha:** version `0.4.0-alpha.7` is distributed as a portable ZIP for Windows 10/11 x64 on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Extract it and run `LocalCodePilot.exe`. Verify the published SHA-256; digital signing depends on the build configuration.
+**Windows:** `0.4.0-alpha.8` is distributed for Windows 10/11 x64 as an installer and a portable ZIP on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Verify the published SHA-256; the files are not digitally signed yet. Alpha 7 users should install Alpha 8 with the installer or the ZIP: Alpha 7's **Update now** does not complete this update.
 
-**Experimental macOS package:** Alpha 7 includes a universal DMG for Intel and Apple Silicon intended for testing on real Macs. The application uses an ad hoc signature, is not notarized, and may need to be opened from Finder's context menu. See [docs/README-MACOS.txt](README-MACOS.txt).
+**Experimental macOS package:** Alpha 8 includes a universal DMG for Intel and Apple Silicon intended for testing on real Macs. The application uses an ad hoc signature and is not notarized. See [docs/README-MACOS.txt](README-MACOS.txt).
+
+**Not published yet:** after Alpha 8, the repository received fixes that only arrive in the next version, among them a first launch without program folders (#98), the right version in the executable's Properties (#99), projects with the same name (#100), freshly cloned projects shown as **Parado** (#101), update steps, and signed checksums. The [CHANGELOG](../CHANGELOG.md) lists each one under **Não publicado**; the sections of this document about those topics describe the next version's behavior.
 
 ### What is LocalCodePilot?
 
@@ -572,7 +581,7 @@ Services with a local HTTP URL are checked in the background every ten seconds, 
 
 ### Work in progress
 
-Version `0.4.0-alpha.7` has primary support on Windows. HTTP health checks and integrated Docker/Podman execution were validated through the Windows 11 interface in earlier versions; this alpha's new workflows still need manual validation. The universal macOS DMG is distributed as an experimental package for validation on real Macs.
+Version `0.4.0-alpha.8` has primary support on Windows. HTTP health checks and integrated Docker/Podman execution were validated through the Windows 11 interface in earlier versions; this alpha's new workflows still need manual validation. The universal macOS DMG is distributed as an experimental package for validation on real Macs.
 
 - Framework detection and richer project metadata.
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.

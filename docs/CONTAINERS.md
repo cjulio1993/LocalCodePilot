@@ -91,8 +91,8 @@ O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos
 - A orientação não verifica virtualização no firmware nem espaço em disco; esses requisitos aparecem como texto e nos links oficiais.
 - O CI valida os fluxos reais de comandos Docker e Podman (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. No Windows 11, Docker Desktop passou pela interface em `config`, `up`, `ps`, logs, `stop`, build e cancelamento. Podman 6.1.4 passou pela interface em `config`, `up`, `ps`, logs e `stop`; o build passou pela CLI.
 
-## Antes da alpha 6
+## Histórico de validação da Alpha 6
 
-Validar, em projetos descartáveis e com motores reais, os fluxos de configuração, download/build, `up`, `stop`, `ps`, logs, cancelamento, timeout e encerramento do aplicativo. Falhas encontradas nessa matriz devem ser corrigidas antes da publicação.
+Matriz definida para a Alpha 6 e mantida como roteiro antes de cada release: em projetos descartáveis e com motores reais, validar os fluxos de configuração, download/build, `up`, `stop`, `ps`, logs, cancelamento, timeout e encerramento do aplicativo. Falhas encontradas nessa matriz são corrigidas antes da publicação. As proteções de conflito do Compose descritas acima continuam valendo em todos esses fluxos.
 
 Referências: [modelo do Docker Compose](https://docs.docker.com/compose/intro/compose-application-model/), [configuração efetiva](https://docs.docker.com/reference/cli/docker/compose/config/) e [provedores do Podman Compose](https://docs.podman.io/en/latest/markdown/podman-compose.1.html).

@@ -34,6 +34,8 @@ Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e
 - **Instalador (`LocalCodePilotSetup-<versão>-windows-x64.exe`; até a alpha 8, `...-windows-x64-setup.exe`), recomendado.** Instala o app e cria o atalho no Menu Iniciar. O outro `.exe` da release (`LocalCodePilot-<versão>-windows-x64.exe`) é o arquivo que o app usa para se atualizar.
 - **Zip (portátil).** Extraia e execute `LocalCodePilot.exe`, sem instalar.
 
+**Se você usa a Alpha 7:** para instalar a Alpha 8, baixe o instalador ou o zip na [página de releases](https://github.com/cjulio1993/LocalCodePilot/releases). O botão **Atualizar agora** da Alpha 7 não conclui essa atualização.
+
 Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows pode mostrar "O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**. Se quiser conferir o arquivo, compare o SHA-256 publicado na release. A assinatura digital está a caminho.
 
 **macOS (experimental).** Há um pacote universal (Intel e Apple Silicon) para testes; a validação em Mac real ainda está em andamento. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
@@ -127,6 +129,8 @@ Everything runs on your computer. The app does not send your projects anywhere, 
 
 - **Installer (`LocalCodePilotSetup-<version>-windows-x64.exe`; up to alpha 8, `...-windows-x64-setup.exe`), recommended.** Installs the app and adds a Start menu shortcut. The other `.exe` on the release (`LocalCodePilot-<version>-windows-x64.exe`) is the file the app uses to update itself.
 - **Zip (portable).** Extract it and run `LocalCodePilot.exe`, no install needed.
+
+**If you use Alpha 7:** to install Alpha 8, download the installer or zip from the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Alpha 7's **Update now** button does not complete this update.
 
 The files in this version are not digitally signed yet, so Windows may show "Windows protected your PC". Click **More info** and then **Run anyway**. To check the file, compare the SHA-256 published on the release. Digital signing is on its way.
 
