@@ -16,7 +16,7 @@ Atualizações futuras
 
 Quando uma nova versão estiver disponível, use "Atualizar agora" no aviso do
 aplicativo ou em Configurações > Atualizações. O LocalCodePilot baixa o executável,
-confere o SHA-256, reinicia e remove os arquivos temporários. Se a pasta não permitir
+confere a assinatura dos checksums e o SHA-256, reinicia e remove os arquivos temporários. Se a pasta não permitir
 escrita, o aplicativo mantém o download manual do ZIP como alternativa.
 
 Esta é uma versão alpha experimental. Faça backup dos projetos importantes antes de
@@ -32,6 +32,11 @@ Integridade do download
 Compare o SHA-256 do arquivo baixado com o SHA256SUMS.txt publicado na mesma release:
 
   Get-ChildItem .\LocalCodePilot-*-windows-x64* | Get-FileHash -Algorithm SHA256
+
+O SHA256SUMS.txt é assinado com a chave do projeto (SHA256SUMS.txt.sig). Para conferir
+a assinatura, use a chave pública packaging/update-signing.pub.pem do repositório:
+
+  openssl pkeyutl -verify -pubin -inkey update-signing.pub.pem -rawin -in SHA256SUMS.txt -sigfile SHA256SUMS.txt.sig
 
 Enquanto os arquivos não tiverem assinatura digital, o Windows pode exibir
 "O Windows protegeu o computador": clique em "Mais informações" e depois em

@@ -248,6 +248,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
@@ -268,6 +269,9 @@ jobs:
               "dist/SHA256SUMS.txt"
             )
           fi
+          # The app only trusts checksums signed with the key embedded in it.
+          bash scripts/sign-checksums.sh dist/SHA256SUMS.txt packaging/update-signing.pub.pem
+          assets+=("dist/SHA256SUMS.txt.sig")
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --prerelease --title "LocalCodePilot $version" --notes-file "$notes"
             gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber

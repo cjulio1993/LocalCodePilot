@@ -33,6 +33,16 @@ const UPDATE_HELPER_FLAG: &str = "--localcodepilot-apply-update";
 const UPDATED_STARTUP_FLAG: &str = "--localcodepilot-updated-startup";
 const MAX_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CHECKSUM_BYTES: u64 = 1024 * 1024;
+/// `SHA256SUMS.txt.sig`: a raw Ed25519 signature (64 bytes) of `SHA256SUMS.txt`.
+const SIGNATURE_SUFFIX: &str = ".sig";
+const MAX_SIGNATURE_BYTES: u64 = 1024;
+/// Ed25519 public key that signs the checksums of every release. The private key
+/// exists only as the UPDATE_SIGNING_KEY secret of the release workflow and in an
+/// offline backup. Same key as `packaging/update-signing.pub.pem` (checked by a test).
+const UPDATE_SIGNING_PUBLIC_KEY: [u8; 32] = [
+    0x44, 0x23, 0x1e, 0xdf, 0x52, 0x25, 0x4f, 0xba, 0x79, 0x5b, 0x5c, 0x1a, 0xe0, 0xa0, 0x4c, 0x08,
+    0xd0, 0x07, 0xae, 0x24, 0x90, 0x99, 0x53, 0xb5, 0x27, 0x71, 0x64, 0x53, 0x68, 0xad, 0xac, 0x3c,
+];
 const REPLACEMENT_TIMEOUT: Duration = Duration::from_secs(90);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -115,6 +125,8 @@ struct HelperArguments {
 struct UpdatePreparation {
     executable_url: String,
     checksum_url: String,
+    /// The key that must have signed the checksums.
+    signing_key: [u8; 32],
     asset_name: String,
     version: String,
     target_path: PathBuf,
@@ -137,6 +149,14 @@ fn releases_url() -> String {
         return format!("{base}/releases");
     }
     RELEASES_URL.to_owned()
+}
+
+fn signing_public_key() -> [u8; 32] {
+    #[cfg(feature = "update-test-feed")]
+    if let Some(key) = test_feed::signing_key() {
+        return key;
+    }
+    UPDATE_SIGNING_PUBLIC_KEY
 }
 
 fn release_asset_prefix() -> String {
@@ -220,6 +240,7 @@ pub fn spawn_update_download(
     let preparation = UpdatePreparation {
         executable_url,
         checksum_url,
+        signing_key: signing_public_key(),
         asset_name,
         version: update.version.clone(),
         target_path,
@@ -468,6 +489,14 @@ fn prepare_update(
     let agent = download_agent();
     send_phase(sender, repaint, UpdatePhase::Checksums);
     let checksums = download_checksums(&agent, &preparation.checksum_url)?;
+    // The checksums come from the same release as the executable; the signature
+    // proves they were published with the project's key, so replacing both files
+    // in a release is not enough to ship another executable.
+    let signature = download_signature(
+        &agent,
+        &format!("{}{SIGNATURE_SUFFIX}", preparation.checksum_url),
+    )?;
+    verify_checksums_signature(checksums.as_bytes(), &signature, &preparation.signing_key)?;
     let expected_sha256 = checksum_for_asset(&checksums, &preparation.asset_name)
         .ok_or_else(|| format!("o checksum de {} não foi publicado", preparation.asset_name))?;
     let candidate_path = preparation.stage_directory.join("LocalCodePilot.exe");
@@ -507,6 +536,37 @@ fn download_checksums(agent: &ureq::Agent, url: &str) -> Result<String, String> 
         .limit(MAX_CHECKSUM_BYTES)
         .read_to_string()
         .map_err(|error| format!("o arquivo de checksums é inválido: {error}"))
+}
+
+fn download_signature(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, String> {
+    let mut response = agent
+        .get(url)
+        .header("User-Agent", "LocalCodePilot-Updater")
+        .call()
+        .map_err(|error| {
+            format!(
+                "a release não publicou a assinatura dos checksums (SHA256SUMS.txt.sig): {error}"
+            )
+        })?;
+    response
+        .body_mut()
+        .with_config()
+        .limit(MAX_SIGNATURE_BYTES)
+        .read_to_vec()
+        .map_err(|error| format!("não foi possível baixar a assinatura dos checksums: {error}"))
+}
+
+fn verify_checksums_signature(
+    checksums: &[u8],
+    signature: &[u8],
+    public_key: &[u8; 32],
+) -> Result<(), String> {
+    use ring::signature::{ED25519, UnparsedPublicKey};
+    UnparsedPublicKey::new(&ED25519, public_key)
+        .verify(checksums, signature)
+        .map_err(|_| {
+            "a assinatura dos checksums não confere com a chave do LocalCodePilot; a atualização foi recusada".to_owned()
+        })
 }
 
 fn download_executable(
@@ -1602,6 +1662,162 @@ mod tests {
             .collect()
     }
 
+    /// A throwaway signing key for the tests (never the release key).
+    fn test_signer(seed: u8) -> (ring::signature::Ed25519KeyPair, [u8; 32]) {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let pair = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
+        let public = pair.public_key().as_ref().try_into().unwrap();
+        (pair, public)
+    }
+
+    fn sign(pair: &ring::signature::Ed25519KeyPair, contents: &[u8]) -> Vec<u8> {
+        pair.sign(contents).as_ref().to_vec()
+    }
+
+    #[test]
+    fn the_embedded_signing_key_is_the_published_public_key() {
+        // packaging/update-signing.pub.pem is an Ed25519 SubjectPublicKeyInfo:
+        // a fixed 12-byte prefix followed by the 32-byte key.
+        let pem = include_str!("../../packaging/update-signing.pub.pem");
+        let base64: String = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        let der = decode_base64(&base64);
+        assert_eq!(der.len(), 44);
+        assert_eq!(
+            der[..12],
+            [
+                0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00
+            ]
+        );
+        assert_eq!(der[12..], UPDATE_SIGNING_PUBLIC_KEY);
+    }
+
+    fn decode_base64(text: &str) -> Vec<u8> {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bits = 0u32;
+        let mut count = 0;
+        let mut bytes = Vec::new();
+        for character in text.bytes().filter(|byte| *byte != b'=') {
+            let value = ALPHABET.iter().position(|item| *item == character).unwrap() as u32;
+            bits = (bits << 6) | value;
+            count += 6;
+            if count >= 8 {
+                count -= 8;
+                bytes.push((bits >> count) as u8);
+                bits &= (1 << count) - 1;
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn checksums_are_trusted_only_with_a_valid_signature_of_the_expected_key() {
+        let (pair, public) = test_signer(7);
+        let (_, other_public) = test_signer(8);
+        let checksums = b"abc  LocalCodePilot-9.9.9-windows-x64.exe\n";
+        let signature = sign(&pair, checksums);
+
+        assert_eq!(
+            verify_checksums_signature(checksums, &signature, &public),
+            Ok(())
+        );
+        let mut altered = checksums.to_vec();
+        altered[0] = b'f';
+        for (contents, signature, key) in [
+            (altered.as_slice(), signature.clone(), public),
+            (checksums.as_slice(), signature.clone(), other_public),
+            (checksums.as_slice(), signature[..63].to_vec(), public),
+            (checksums.as_slice(), Vec::new(), public),
+        ] {
+            let error = verify_checksums_signature(contents, &signature, &key).unwrap_err();
+            assert!(error.contains("não confere"), "{error}");
+        }
+    }
+
+    fn signed_preparation(
+        server: &str,
+        directory: &Path,
+        signing_key: [u8; 32],
+    ) -> UpdatePreparation {
+        fs::create_dir_all(directory).unwrap();
+        let target = directory.join("LocalCodePilot.exe");
+        fs::write(&target, b"MZ current version").unwrap();
+        UpdatePreparation {
+            executable_url: format!("{server}/exe"),
+            checksum_url: format!("{server}/SHA256SUMS.txt"),
+            signing_key,
+            asset_name: "LocalCodePilot-9.9.9-windows-x64.exe".into(),
+            version: "9.9.9".into(),
+            target_path: target,
+            stage_directory: directory.join("stage"),
+        }
+    }
+
+    #[test]
+    fn an_update_without_a_valid_signature_is_refused_before_the_download() {
+        let executable = b"MZ new version".to_vec();
+        let checksums = format!(
+            "{}  LocalCodePilot-9.9.9-windows-x64.exe\n",
+            sha256_hex(&executable)
+        );
+        let (pair, public) = test_signer(7);
+        let (other_pair, _) = test_signer(8);
+        let cases = [
+            ("ausente", None, "não publicou a assinatura"),
+            (
+                "outra-chave",
+                Some(sign(&other_pair, checksums.as_bytes())),
+                "não confere",
+            ),
+            (
+                "conteudo-trocado",
+                Some(sign(&pair, b"outro conteudo")),
+                "não confere",
+            ),
+        ];
+        for (name, signature, expected) in cases {
+            let mut replies = vec![(
+                "/SHA256SUMS.txt",
+                Reply::Complete(checksums.clone().into_bytes()),
+            )];
+            match signature {
+                Some(signature) => {
+                    replies.push(("/SHA256SUMS.txt.sig", Reply::Complete(signature)))
+                }
+                // The request for the signature gets a 404.
+                None => replies.push(("/nothing", Reply::Complete(Vec::new()))),
+            }
+            replies.push(("/exe", Reply::Complete(executable.clone())));
+            let server = serve(replies);
+            let directory = temporary_test_directory(&format!("signature-{name}"));
+            let preparation = signed_preparation(&server, &directory, public);
+            let (sender, receiver) = mpsc::channel();
+
+            let error =
+                prepare_update(&preparation, &sender, &egui::Context::default()).unwrap_err();
+            drop(sender);
+
+            assert!(error.contains(expected), "{name}: {error}");
+            // Nothing was downloaded: the phase never reached the executable.
+            assert!(
+                !receiver.iter().any(|event| matches!(
+                    event,
+                    UpdateInstallEvent::Phase(UpdatePhase::Downloading)
+                )),
+                "{name}"
+            );
+            assert!(
+                !preparation
+                    .stage_directory
+                    .join("LocalCodePilot.exe")
+                    .exists()
+            );
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
     #[test]
     fn the_download_has_no_total_time_limit_only_stall_limits() {
         let agent = download_agent();
@@ -1619,8 +1835,11 @@ mod tests {
         let size = executable.len() as u64;
         let asset = "LocalCodePilot-9.9.9-windows-x64.exe";
         let checksums = format!("{}  {asset}\n", sha256_hex(&executable));
+        let (pair, public) = test_signer(7);
+        let signature = sign(&pair, checksums.as_bytes());
         let server = serve(vec![
             ("/SHA256SUMS.txt", Reply::Complete(checksums.into_bytes())),
+            ("/SHA256SUMS.txt.sig", Reply::Complete(signature)),
             ("/exe", Reply::Complete(executable.clone())),
         ]);
         let directory = temporary_test_directory("prepare");
@@ -1630,6 +1849,7 @@ mod tests {
         let preparation = UpdatePreparation {
             executable_url: format!("{server}/exe"),
             checksum_url: format!("{server}/SHA256SUMS.txt"),
+            signing_key: public,
             asset_name: asset.into(),
             version: "9.9.9".into(),
             target_path: target,
