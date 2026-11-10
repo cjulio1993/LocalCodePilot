@@ -13,9 +13,11 @@ Instalação
 3. Abra LocalCodePilot pela pasta Aplicativos.
 
 Os artefatos de validação usam assinatura ad hoc. Se o macOS bloquear a primeira
-abertura, clique com o botão direito no aplicativo, escolha Abrir e confirme.
-O DMG da Alpha 6 é um pacote experimental para validação em Macs reais. Ele não
-possui notarização da Apple e ainda não representa suporte estável ao macOS.
+abertura, abra Ajustes do Sistema > Privacidade e Segurança e escolha
+"Abrir mesmo assim" para o LocalCodePilot (macOS 15 ou mais recente). No macOS 14
+ou anterior, clique com o botão direito no aplicativo, escolha Abrir e confirme.
+O DMG da Alpha 8 é experimental, não é notarizado pela Apple e ainda depende de
+validação em Macs reais; ele não representa suporte estável ao macOS.
 
 Atualizações
 ------------
@@ -31,7 +33,8 @@ Roteiro de validação
 ---------------------
 1. Informe o modelo do Mac, processador Intel/Apple Silicon e versão do macOS.
 2. Confira o SHA-256 do DMG, monte o arquivo e arraste o app para Applications.
-3. Registre se a primeira abertura foi direta ou exigiu botão direito > Abrir.
+3. Registre se a primeira abertura foi direta ou exigiu "Abrir mesmo assim"
+   (ou botão direito > Abrir no macOS 14 ou anterior).
 4. Confirme que a janela aparece, permite navegar e encontra os projetos esperados.
 5. Adicione e remova uma pasta de busca descartável.
 6. Feche e abra o app novamente; confirme que projetos e preferências persistem.
