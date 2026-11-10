@@ -41,7 +41,7 @@ Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows
 ### Primeiros passos
 
 1. **Abra o app.** Em **Projetos**, ele mostra o que encontrou nas pastas comuns do computador. Use **Adicionar pasta** se seus projetos estiverem em outro lugar. A busca não entra em pastas de programas instalados (como `Program Files` e `%LOCALAPPDATA%\Programs`), a não ser que você adicione uma delas.
-2. **Escolha um projeto.** O cartão mostra o que ele precisa e qual é o próximo passo:
+2. **Escolha um projeto.** O cartão mostra o estado do projeto, o que falta para prepará-lo e qual é o próximo passo. Dependências ainda não instaladas aparecem como **Parado**; falhas de instalação ou execução aparecem como **Com problema**. O próximo passo é:
    - **Preparar ambiente**, quando falta a linguagem;
    - **Instalar dependências**, quando faltam as bibliotecas do projeto;
    - **Iniciar**, quando está tudo pronto.
@@ -135,7 +135,7 @@ The files in this version are not digitally signed yet, so Windows may show "Win
 ### Getting started
 
 1. **Open the app.** **Projects** lists what it found in the usual folders. Use **Add folder** if your projects live elsewhere. The search does not go into folders of installed programs (such as `Program Files` and `%LOCALAPPDATA%\Programs`) unless you add one yourself.
-2. **Pick a project.** Its card shows what it needs and the next step:
+2. **Pick a project.** Its card shows the project's state, what is missing to prepare it, and the next step. Dependencies not installed yet appear as **Parado** (stopped); failed installs or runs appear as **Com problema** (needs attention). The next step is:
    - **Prepare environment** when the language is missing;
    - **Install dependencies** when the project's libraries are missing;
    - **Start** when everything is ready.
