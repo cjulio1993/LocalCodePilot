@@ -602,6 +602,11 @@ impl LocalCodePilot {
                 self.project_ui.expanded.insert(path);
                 self.search = name;
                 self.workspace_state.project_filter.clear();
+                // Details only open on cards: the list view has no room for them.
+                if !self.workspace_state.project_view.is_empty() {
+                    self.workspace_state.project_view.clear();
+                    self.workspace_dirty = true;
+                }
                 self.page = Page::Projects;
             }
         }
@@ -671,7 +676,9 @@ impl LocalCodePilot {
             }
         }
         for (project, summary) in &running {
-            if let Some(selected) = project_row(ui, project, summary, folder(project)) {
+            if let Some(selected) =
+                project_row(ui, project, summary, folder(project), RowDetails::Hide)
+            {
                 action = Some(selected);
             }
         }
@@ -686,7 +693,9 @@ impl LocalCodePilot {
             empty_hint(ui, "Nenhum problema encontrado.");
         }
         for (project, summary) in &problems {
-            if let Some(selected) = project_row(ui, project, summary, folder(project)) {
+            if let Some(selected) =
+                project_row(ui, project, summary, folder(project), RowDetails::Hide)
+            {
                 action = Some(selected);
             }
         }
@@ -702,7 +711,9 @@ impl LocalCodePilot {
             .collect::<Vec<_>>();
         section_title(ui, "Parados recentes", recent_stopped.len());
         for (project, summary) in &recent_stopped {
-            if let Some(selected) = project_row(ui, project, summary, folder(project)) {
+            if let Some(selected) =
+                project_row(ui, project, summary, folder(project), RowDetails::Hide)
+            {
                 action = Some(selected);
             }
         }
@@ -846,7 +857,9 @@ impl LocalCodePilot {
         let mut action = None;
         if list {
             for (project, summary) in &visible {
-                if let Some(selected) = project_row(ui, project, summary, folder(project)) {
+                if let Some(selected) =
+                    project_row(ui, project, summary, folder(project), RowDetails::Offer)
+                {
                     action = Some(selected);
                 }
             }
@@ -1064,12 +1077,21 @@ fn stop_button(ui: &mut egui::Ui, summary: &ProjectSummary) -> bool {
     .clicked()
 }
 
+/// Whether a row offers "Detalhes técnicos": the Projects list does, so details stay one
+/// keyboard step away (#101, CA-6); the Overview keeps its short rows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowDetails {
+    Offer,
+    Hide,
+}
+
 /// One line per project, used by the Overview and the list view. Wraps on narrow windows.
 fn project_row(
     ui: &mut egui::Ui,
     project: &Project,
     summary: &ProjectSummary,
     folder: Option<&str>,
+    details: RowDetails,
 ) -> Option<ProjectCardAction> {
     let mut action = None;
     Frame::new()
@@ -1115,7 +1137,13 @@ fn project_row(
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 if primary_button(ui, &summary.primary, 120.0) {
-                    action = Some(primary_to_card_action(project, summary));
+                    // A row cannot expand: "Detalhes" opens the project's card instead.
+                    action = Some(match primary_to_card_action(project, summary) {
+                        ProjectCardAction::ToggleDetails(path) => {
+                            ProjectCardAction::ShowInProjects(path, project.name.clone())
+                        }
+                        other => other,
+                    });
                 }
                 if can_retry(summary) && retry_button(ui) {
                     action = Some(ProjectCardAction::Start(project.path.clone()));
@@ -1127,6 +1155,16 @@ fn project_row(
                     if stop_button(ui, summary) {
                         action = Some(stop_action(project, summary));
                     }
+                }
+                // Opens the project's card with its details expanded.
+                if details == RowDetails::Offer
+                    && !matches!(summary.primary, PrimaryAction::Details)
+                    && ui.button("Detalhes técnicos").clicked()
+                {
+                    action = Some(ProjectCardAction::ShowInProjects(
+                        project.path.clone(),
+                        project.name.clone(),
+                    ));
                 }
             });
         });
