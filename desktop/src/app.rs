@@ -2700,7 +2700,7 @@ impl LocalCodePilot {
         let mut confirm = false;
         let mut cancel = false;
         let window_height = (root_ui.max_rect().height() - 64.0).max(120.0);
-        egui::Window::new("Preparar ambiente")
+        egui::Window::new(plan_window_title(&plan))
             .id(egui::Id::unique(("environment-plan", &plan.project_path)))
             .open(&mut open)
             .default_width(620.0)
@@ -2788,7 +2788,7 @@ impl LocalCodePilot {
                     }
                     if ui
                         .add(
-                            egui::Button::new("Preparar")
+                            egui::Button::new(plan_confirm_label(&plan))
                                 .fill(theme::PRIMARY.gamma_multiply(0.72)),
                         )
                         .clicked()
@@ -5305,7 +5305,7 @@ fn resolve_environment_plan_with_tools_directory(
                     step.program,
                     step.args.join(" ")
                 ),
-                source: Some("Manifesto do projeto".into()),
+                source: Some(PROJECT_MANIFEST_SOURCE.into()),
                 requires_elevation: false,
                 kind: InstallationStepKind::Command {
                     program: step.program.clone(),
@@ -5324,6 +5324,34 @@ fn resolve_environment_plan_with_tools_directory(
         requirements: environment.runtime_requirements.clone(),
         steps,
     })
+}
+
+/// Source of the plan steps that install the project's own dependencies.
+const PROJECT_MANIFEST_SOURCE: &str = "Manifesto do projeto";
+
+/// The confirmation says what will happen (#101): "Instalar dependências" when every step
+/// installs the project's dependencies, "Preparar ambiente" when the machine changes too.
+fn plan_window_title(plan: &InstallationPlan) -> &'static str {
+    if installs_only_dependencies(plan) {
+        "Instalar dependências"
+    } else {
+        "Preparar ambiente"
+    }
+}
+
+/// The confirm button uses the same verb as the title and the card.
+fn plan_confirm_label(plan: &InstallationPlan) -> &'static str {
+    if installs_only_dependencies(plan) {
+        "Instalar"
+    } else {
+        "Preparar"
+    }
+}
+
+fn installs_only_dependencies(plan: &InstallationPlan) -> bool {
+    plan.steps
+        .iter()
+        .all(|step| step.source.as_deref() == Some(PROJECT_MANIFEST_SOURCE))
 }
 
 fn command_argument_after(step: &InstallationStep, argument: &str) -> Option<String> {
@@ -7258,10 +7286,11 @@ mod tests {
         runtime_requirement_status, scan_roots_text, update_versions_line, words,
     };
     use super::{Notification, UPDATE_RESULT_NOTIFICATION_DURATION};
+    use super::{PROJECT_MANIFEST_SOURCE, plan_confirm_label, plan_window_title};
     use localcodepilot_core::{
         environments::{
-            InstallationStepKind, RequirementSource, RequirementStatus, RuntimeRequirement,
-            VersionConstraint,
+            InstallationPlan, InstallationStep, InstallationStepKind, RequirementSource,
+            RequirementStatus, RuntimeRequirement, VersionConstraint,
         },
         ports::Port,
         processes::{ProcessState, ProjectProcess},
@@ -7441,6 +7470,30 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             )
         );
+    }
+
+    #[test]
+    fn the_plan_title_says_whether_the_machine_changes_too() {
+        let step = |source: Option<&str>| InstallationStep {
+            label: "Instalar dependências Node.js".into(),
+            detail: String::new(),
+            source: source.map(str::to_owned),
+            requires_elevation: false,
+            kind: InstallationStepKind::RefreshEnvironment,
+        };
+        let mut plan = InstallationPlan {
+            project_path: PathBuf::from("C:/projetos/loja"),
+            title: String::new(),
+            requirements: Vec::new(),
+            steps: vec![step(Some(PROJECT_MANIFEST_SOURCE))],
+        };
+        assert_eq!(plan_window_title(&plan), "Instalar dependências");
+        assert_eq!(plan_confirm_label(&plan), "Instalar");
+        plan.steps.insert(0, step(Some("winget")));
+        assert_eq!(plan_window_title(&plan), "Preparar ambiente");
+        assert_eq!(plan_confirm_label(&plan), "Preparar");
+        plan.steps = vec![step(None), step(Some(PROJECT_MANIFEST_SOURCE))];
+        assert_eq!(plan_window_title(&plan), "Preparar ambiente");
     }
 
     #[test]

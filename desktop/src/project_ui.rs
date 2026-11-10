@@ -328,7 +328,49 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     } else {
         PrimaryAction::Details
     };
+    // A fresh clone without its dependencies, or a machine without the language, is not
+    // a failure (#101): the project is stopped and the card shows what to prepare.
+    if only_needs_preparation(environment) {
+        let reason = if only_dependencies_missing(environment) {
+            format!(
+                "Faltam dependências de {} para preparar este projeto.",
+                environment.missing_dependencies.join(", ")
+            )
+        } else {
+            reason
+        };
+        return summary(ProjectState::Stopped, Some(reason), primary);
+    }
     summary(ProjectState::Problem, Some(reason), primary)
+}
+
+fn language_missing(environment: &ProjectEnvironment) -> bool {
+    !environment.missing_programs.is_empty()
+        || environment
+            .runtime_requirements
+            .iter()
+            .any(|requirement| matches!(requirement.status, RequirementStatus::Missing))
+}
+
+fn only_dependencies_missing(environment: &ProjectEnvironment) -> bool {
+    !environment.missing_dependencies.is_empty() && !language_missing(environment)
+}
+
+/// Only things a first preparation solves are missing: the project's dependencies or a
+/// language that is not installed. An incompatible version, missing PHP extensions or a
+/// database server that does not answer still need attention, so they stay "Com problema".
+fn only_needs_preparation(environment: &ProjectEnvironment) -> bool {
+    let incompatible = environment
+        .runtime_requirements
+        .iter()
+        .any(|requirement| matches!(requirement.status, RequirementStatus::Incompatible { .. }));
+    let database_down = environment.databases.iter().any(|(database, available)| {
+        *available == Some(false) && database.engine != DatabaseEngine::Sqlite
+    });
+    !incompatible
+        && !database_down
+        && environment.missing_php_extensions.is_empty()
+        && (language_missing(environment) || !environment.missing_dependencies.is_empty())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1601,11 +1643,87 @@ mod tests {
         assert_eq!(summary.state, ProjectState::Problem);
         assert_eq!(summary.primary, PrimaryAction::ViewInstallLogs);
 
-        let mut missing = ready();
-        missing.missing_programs = vec!["cargo".into()];
-        let summary = summarize_project(&facts(&missing));
+        // An incompatible version, missing PHP extensions and a database server that does
+        // not answer still need attention.
+        let mut incompatible = ready();
+        incompatible.runtime_requirements = vec![requirement(RequirementStatus::Incompatible {
+            installed_version: "16.20.0".into(),
+            required_version: ">=20".into(),
+            path: PathBuf::from("node"),
+        })];
+        incompatible.missing_dependencies = vec!["Node.js".into()];
+        let summary = summarize_project(&facts(&incompatible));
         assert_eq!(summary.state, ProjectState::Problem);
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some("Node 16.20.0 não atende ao projeto (>=20)")
+        );
+        let mut extensions = ready();
+        extensions.missing_php_extensions = vec!["zip".into()];
+        assert_eq!(
+            summarize_project(&facts(&extensions)).state,
+            ProjectState::Problem
+        );
+    }
+
+    fn requirement(status: RequirementStatus) -> RuntimeRequirement {
+        RuntimeRequirement {
+            runtime: RuntimeKind::Node,
+            command: "node".into(),
+            version: localcodepilot_core::environments::VersionConstraint::declared("20"),
+            source: localcodepilot_core::environments::RequirementSource::Recommended,
+            status,
+        }
+    }
+
+    #[test]
+    fn a_fresh_clone_is_stopped_with_what_to_prepare_not_a_problem() {
+        // Only the project's dependencies are missing (#101): stopped, with the reason and
+        // the install action; never "Iniciar" before the install.
+        let mut fresh = ready();
+        fresh.missing_dependencies = vec!["Node.js".into()];
+        fresh.install_steps = vec![DependencyInstall {
+            label: "dependências Node.js".into(),
+            program: "npm".into(),
+            args: vec!["install".into()],
+            working_directory: PathBuf::from("C:/projetos/loja"),
+        }];
+        let summary = summarize_project(&facts(&fresh));
+        assert_eq!(summary.state, ProjectState::Stopped);
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some("Faltam dependências de Node.js para preparar este projeto.")
+        );
+        assert_eq!(summary.primary, PrimaryAction::InstallDependencies);
+        assert!(!ProjectFilter::Problem.matches(summary.state));
+
+        // A language that is not installed is also something to prepare, not a failure.
+        let mut no_language = ready();
+        no_language.missing_programs = vec!["cargo".into()];
+        let summary = summarize_project(&facts(&no_language));
+        assert_eq!(summary.state, ProjectState::Stopped);
         assert_eq!(summary.reason.as_deref(), Some("Instale: cargo"));
+        let mut no_node = ready();
+        no_node.runtime_requirements = vec![requirement(RequirementStatus::Missing)];
+        no_node.missing_dependencies = vec!["Node.js".into()];
+        let summary = summarize_project(&facts(&no_node));
+        assert_eq!(summary.state, ProjectState::Stopped);
+        assert_eq!(summary.reason.as_deref(), Some("Instale Node 20"));
+
+        // Once the install fails, the same project is "Com problema" with its logs.
+        let failed = DependencyInstallStatus::Failed {
+            error: "exit 1".into(),
+            suggestion: String::new(),
+        };
+        let mut install = facts(&fresh);
+        install.dependency_install = Some(&failed);
+        let summary = summarize_project(&install);
+        assert_eq!(summary.state, ProjectState::Problem);
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some("A instalação das dependências falhou")
+        );
+        assert_eq!(summary.primary, PrimaryAction::ViewInstallLogs);
     }
 
     #[test]
