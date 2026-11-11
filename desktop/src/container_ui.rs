@@ -2368,6 +2368,12 @@ impl LocalCodePilot {
                     ui.label(RichText::new(session.command.label).strong());
                     let (status, color) = match &session.outcome {
                         None => ("Em andamento", Color32::from_rgb(255, 205, 75)),
+                        // Validating shows no output (T009, R1): the result says it all.
+                        Some(ContainerExecutionOutcome::Succeeded)
+                            if session.command.discards_output() =>
+                        {
+                            ("Configuração válida", theme::SUCCESS)
+                        }
                         Some(ContainerExecutionOutcome::Succeeded) => ("Concluído", theme::SUCCESS),
                         Some(ContainerExecutionOutcome::Cancelled) => ("Cancelado", theme::MUTED),
                         Some(ContainerExecutionOutcome::TimedOut) => {

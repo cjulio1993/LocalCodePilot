@@ -583,7 +583,13 @@ fn execute_container_command_with_timeout(
             .args(&command.args)
             .current_dir(plain_path(&command.working_directory))
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            // Validating prints the resolved Compose configuration, secrets included
+            // (T009, R1): its standard output never reaches the session or "Copiar logs".
+            .stdout(if command.discards_output() {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
             .stderr(Stdio::piped());
         if let Some(path) = environment_path {
             process.env("PATH", path);
@@ -1458,5 +1464,169 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// T009, R1: `compose config` prints the resolved configuration, secrets included. A
+    /// fake `podman` prints a fictitious secret on stdout and a marker on stderr; when
+    /// validating, only stderr and the exit code may reach the session.
+    #[test]
+    fn validating_never_forwards_the_printed_configuration() {
+        use localcodepilot_core::containers::ContainerAction;
+        use std::{fs, sync::mpsc::RecvTimeoutError};
+
+        let directory = std::env::temp_dir().join(format!(
+            "localcodepilot-validate-output-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        #[cfg(windows)]
+        let args = |code: i32| -> Vec<String> {
+            fs::copy(
+                std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
+                    .join("System32/cmd.exe"),
+                directory.join("podman.exe"),
+            )
+            .unwrap();
+            vec![
+                "/C".into(),
+                format!(
+                    "echo PASSWORD: valor-ficticio-stdout& echo erro-ficticio-stderr 1>&2& exit /b {code}"
+                ),
+            ]
+        };
+        #[cfg(unix)]
+        let args = |code: i32| -> Vec<String> {
+            use std::os::unix::fs::PermissionsExt;
+            let script = directory.join("podman");
+            fs::write(
+                &script,
+                "#!/bin/sh\necho 'PASSWORD: valor-ficticio-stdout'\necho erro-ficticio-stderr >&2\nexit \"$1\"\n",
+            )
+            .unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            vec![code.to_string()]
+        };
+        let run = |action: ContainerAction, code: i32| {
+            let execution = execute_container_command_with_timeout(
+                ContainerCommand {
+                    action,
+                    label: "Validar configuração",
+                    program: "podman",
+                    args: args(code),
+                    working_directory: directory.clone(),
+                },
+                Some(directory.as_os_str()),
+                Duration::from_secs(20),
+                None,
+            )
+            .unwrap();
+            let mut lines = Vec::new();
+            loop {
+                match execution.events.recv_timeout(Duration::from_secs(20)) {
+                    Ok(ContainerExecutionEvent::Output(line)) => lines.push(line),
+                    Ok(ContainerExecutionEvent::Finished(outcome)) => return (lines, outcome),
+                    Err(RecvTimeoutError::Timeout) => panic!("validation did not finish"),
+                    Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected"),
+                }
+            }
+        };
+        let leaked = |lines: &[String]| lines.iter().any(|line| line.contains("valor-ficticio"));
+        let has_error = |lines: &[String]| lines.iter().any(|line| line.contains("erro-ficticio"));
+
+        let (lines, outcome) = run(ContainerAction::Validate, 0);
+        assert_eq!(outcome, ContainerExecutionOutcome::Succeeded);
+        assert!(!leaked(&lines), "{lines:?}");
+        assert!(has_error(&lines), "stderr is kept for diagnosis: {lines:?}");
+
+        let (lines, outcome) = run(ContainerAction::Validate, 3);
+        assert!(
+            matches!(&outcome, ContainerExecutionOutcome::Failed(reason) if reason.contains('3')),
+            "{outcome:?}"
+        );
+        assert!(!leaked(&lines), "{lines:?}");
+        assert!(has_error(&lines), "{lines:?}");
+
+        // Other actions keep their output: "Consultar estado" shows what the engine prints.
+        let (lines, _) = run(ContainerAction::Status, 0);
+        assert!(leaked(&lines), "{lines:?}");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    /// The same check with a real Compose provider: `docker compose config` without
+    /// `--quiet` (the arguments used for Podman), on a valid and an invalid disposable file.
+    /// `config` starts nothing. Needs the Docker CLI: `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "needs the Docker CLI"]
+    fn validating_a_real_compose_file_keeps_its_secrets_off_the_session() {
+        use localcodepilot_core::containers::ContainerAction;
+        use std::{fs, sync::mpsc::RecvTimeoutError};
+
+        let root = std::env::temp_dir().join(format!(
+            "localcodepilot-validate-real-{}",
+            std::process::id()
+        ));
+        let validate = |name: &str, compose: &str| {
+            let directory = root.join(name);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("compose.yaml"), compose).unwrap();
+            fs::write(
+                directory.join(".env"),
+                "SENHA_FICTICIA=valor-ficticio-do-env\n",
+            )
+            .unwrap();
+            let execution = execute_container_command_with_timeout(
+                ContainerCommand {
+                    action: ContainerAction::Validate,
+                    label: "Validar configuração",
+                    program: "docker",
+                    args: vec!["compose".into(), "config".into()],
+                    working_directory: directory,
+                },
+                std::env::var_os("PATH").as_deref(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+            let mut lines = Vec::new();
+            loop {
+                match execution.events.recv_timeout(Duration::from_secs(60)) {
+                    Ok(ContainerExecutionEvent::Output(line)) => lines.push(line),
+                    Ok(ContainerExecutionEvent::Finished(outcome)) => return (lines, outcome),
+                    Err(RecvTimeoutError::Timeout) => panic!("validation did not finish"),
+                    Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected"),
+                }
+            }
+        };
+
+        let (lines, outcome) = validate(
+            "valido",
+            "name: lcp-validate-real\nservices:\n  web:\n    image: nginx:alpine\n    environment:\n      PASSWORD: ${SENHA_FICTICIA}\n      API_TOKEN: valor-ficticio-no-compose\n",
+        );
+        println!("válido: {outcome:?}, {} linha(s) na sessão", lines.len());
+        assert_eq!(outcome, ContainerExecutionOutcome::Succeeded, "{lines:?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("valor-ficticio")),
+            "{lines:?}"
+        );
+
+        let (lines, outcome) = validate(
+            "invalido",
+            "name: lcp-validate-real\nservices:\n  web:\n    image: nginx:alpine\n    ports: [\"não-é-porta\"]\n    environment:\n      PASSWORD: ${SENHA_FICTICIA}\n",
+        );
+        println!("inválido: {outcome:?}, erro: {lines:?}");
+        assert!(
+            matches!(outcome, ContainerExecutionOutcome::Failed(_)),
+            "{outcome:?}"
+        );
+        assert!(
+            !lines.is_empty(),
+            "the provider's error is kept for diagnosis"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("valor-ficticio")),
+            "{lines:?}"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -359,6 +359,13 @@ impl ContainerAction {
 }
 
 impl ContainerCommand {
+    /// Whether the standard output of this command must never reach the screen or the
+    /// clipboard. `compose config` prints the resolved configuration, with the values of
+    /// `environment` and `.env`; validating only needs the exit code and the errors.
+    pub fn discards_output(&self) -> bool {
+        self.action == ContainerAction::Validate
+    }
+
     pub fn display(&self) -> String {
         std::iter::once(self.program.to_owned())
             .chain(self.args.iter().map(|arg| {
@@ -644,6 +651,14 @@ mod tests {
                 assert_eq!(commands[0].args.last().unwrap(), "config");
                 assert_eq!(commands[3].args.last().unwrap(), "ps");
             }
+            // Validating prints the resolved configuration: only that command discards
+            // its output (T009, R1).
+            assert!(commands[0].discards_output());
+            assert!(
+                commands[1..]
+                    .iter()
+                    .all(|command| !command.discards_output())
+            );
         }
         let mut invalid = project;
         invalid.error = Some("invalid".into());
