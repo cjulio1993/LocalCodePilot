@@ -1552,4 +1552,81 @@ mod tests {
         assert!(leaked(&lines), "{lines:?}");
         let _ = fs::remove_dir_all(directory);
     }
+
+    /// The same check with a real Compose provider: `docker compose config` without
+    /// `--quiet` (the arguments used for Podman), on a valid and an invalid disposable file.
+    /// `config` starts nothing. Needs the Docker CLI: `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "needs the Docker CLI"]
+    fn validating_a_real_compose_file_keeps_its_secrets_off_the_session() {
+        use localcodepilot_core::containers::ContainerAction;
+        use std::{fs, sync::mpsc::RecvTimeoutError};
+
+        let root = std::env::temp_dir().join(format!(
+            "localcodepilot-validate-real-{}",
+            std::process::id()
+        ));
+        let validate = |name: &str, compose: &str| {
+            let directory = root.join(name);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("compose.yaml"), compose).unwrap();
+            fs::write(
+                directory.join(".env"),
+                "SENHA_FICTICIA=valor-ficticio-do-env\n",
+            )
+            .unwrap();
+            let execution = execute_container_command_with_timeout(
+                ContainerCommand {
+                    action: ContainerAction::Validate,
+                    label: "Validar configuração",
+                    program: "docker",
+                    args: vec!["compose".into(), "config".into()],
+                    working_directory: directory,
+                },
+                std::env::var_os("PATH").as_deref(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+            let mut lines = Vec::new();
+            loop {
+                match execution.events.recv_timeout(Duration::from_secs(60)) {
+                    Ok(ContainerExecutionEvent::Output(line)) => lines.push(line),
+                    Ok(ContainerExecutionEvent::Finished(outcome)) => return (lines, outcome),
+                    Err(RecvTimeoutError::Timeout) => panic!("validation did not finish"),
+                    Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected"),
+                }
+            }
+        };
+
+        let (lines, outcome) = validate(
+            "valido",
+            "name: lcp-validate-real\nservices:\n  web:\n    image: nginx:alpine\n    environment:\n      PASSWORD: ${SENHA_FICTICIA}\n      API_TOKEN: valor-ficticio-no-compose\n",
+        );
+        println!("válido: {outcome:?}, {} linha(s) na sessão", lines.len());
+        assert_eq!(outcome, ContainerExecutionOutcome::Succeeded, "{lines:?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("valor-ficticio")),
+            "{lines:?}"
+        );
+
+        let (lines, outcome) = validate(
+            "invalido",
+            "name: lcp-validate-real\nservices:\n  web:\n    image: nginx:alpine\n    ports: [\"não-é-porta\"]\n    environment:\n      PASSWORD: ${SENHA_FICTICIA}\n",
+        );
+        println!("inválido: {outcome:?}, erro: {lines:?}");
+        assert!(
+            matches!(outcome, ContainerExecutionOutcome::Failed(_)),
+            "{outcome:?}"
+        );
+        assert!(
+            !lines.is_empty(),
+            "the provider's error is kept for diagnosis"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("valor-ficticio")),
+            "{lines:?}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
