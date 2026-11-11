@@ -37,6 +37,10 @@ pub struct WorkspaceState {
     pub sidebar_collapsed: bool,
     /// Start commands the person defined for projects without a detected one.
     pub custom_commands: Vec<CustomCommand>,
+    /// Identities (SHA-256 of folder, program, arguments and resolved script) of the
+    /// project commands the person confirmed before their first run. Older histories have
+    /// none, so every project asks once after the update.
+    pub confirmed_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,6 +70,7 @@ impl Default for WorkspaceState {
             project_view: String::new(),
             sidebar_collapsed: false,
             custom_commands: Vec::new(),
+            confirmed_commands: Vec::new(),
         }
     }
 }
@@ -311,6 +316,21 @@ fn home_directory() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    #[test]
+    fn an_older_history_confirms_no_command() {
+        // A state saved before LCP-SEC-001 knows the command line of a service, not the
+        // identity the person confirmed: the first start after the update still asks.
+        let old = r#"{
+            "schema_version": 3,
+            "projects": [{"path": "C:/projetos/loja", "services": [
+                {"id": "loja-dev", "name": "dev", "command": "npm run dev", "status": "Rodando"}
+            ]}]
+        }"#;
+        let state: WorkspaceState = serde_json::from_str(old).unwrap();
+        assert_eq!(state.projects[0].services[0].command, "npm run dev");
+        assert!(state.confirmed_commands.is_empty());
+    }
 
     #[test]
     fn parses_existing_roots_and_ignores_missing_or_duplicate_paths() {
