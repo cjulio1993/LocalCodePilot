@@ -14,7 +14,7 @@ localcodepilot-platform = { path = "platform" }
 localcodepilot-runtime = { path = "runtime" }
 localcodepilot-services = { path = "services" }
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
-rfd = "0.17.2"
+rfd = "0.18.0"
 sysinfo = "0.39.6"
 egui-phosphor = "0.14"
 serde_json = { version = "1", features = ["preserve_order"] }
