@@ -28,13 +28,14 @@ pub trait Platform {
 }
 
 pub struct NativePlatform {
-    system: System,
+    /// `None` when the operating system refused the query; memory then reads as zero.
+    system: Option<System>,
 }
 
 impl Default for NativePlatform {
     fn default() -> Self {
         Self {
-            system: System::new(),
+            system: System::new().ok(),
         }
     }
 }
@@ -57,10 +58,16 @@ impl Platform for NativePlatform {
     }
 
     fn snapshot(&mut self) -> SystemSnapshot {
-        self.system.refresh_memory();
+        let Some(system) = self.system.as_mut() else {
+            return SystemSnapshot {
+                used_memory_bytes: 0,
+                total_memory_bytes: 0,
+            };
+        };
+        system.refresh_memory();
         SystemSnapshot {
-            used_memory_bytes: self.system.used_memory(),
-            total_memory_bytes: self.system.total_memory(),
+            used_memory_bytes: system.used_memory(),
+            total_memory_bytes: system.total_memory(),
         }
     }
 }

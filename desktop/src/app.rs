@@ -6140,19 +6140,22 @@ fn spawn_output_reader(reader: impl Read + Send + 'static, sender: mpsc::Sender<
 fn terminate_process(child: &mut Child) {
     // Keep the descendants before terminating their parent. Some launchers
     // exit first, and taskkill can be unavailable in restricted environments.
-    let mut system = sysinfo::System::new();
-    system.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+    // Without the process table only the Child itself is terminated.
+    let mut system = sysinfo::System::new().ok();
     let root = sysinfo::Pid::from_u32(child.id());
     let mut tree = vec![root];
-    let mut index = 0;
-    while index < tree.len() {
-        let parent = tree[index];
-        for (pid, process) in system.processes() {
-            if process.parent() == Some(parent) && !tree.contains(pid) {
-                tree.push(*pid);
+    if let Some(system) = system.as_mut() {
+        system.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+        let mut index = 0;
+        while index < tree.len() {
+            let parent = tree[index];
+            for (pid, process) in system.processes() {
+                if process.parent() == Some(parent) && !tree.contains(pid) {
+                    tree.push(*pid);
+                }
             }
+            index += 1;
         }
-        index += 1;
     }
     #[cfg(target_os = "windows")]
     {
@@ -6171,7 +6174,7 @@ fn terminate_process(child: &mut Child) {
     }
     let _ = child.kill();
     for pid in tree.into_iter().rev().filter(|pid| *pid != root) {
-        if let Some(process) = system.process(pid) {
+        if let Some(process) = system.as_ref().and_then(|system| system.process(pid)) {
             #[cfg(not(windows))]
             let _ = process.kill();
             #[cfg(windows)]
