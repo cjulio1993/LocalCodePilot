@@ -49,7 +49,10 @@ pub fn process_descends_from(process_id: u32, ancestor: u32) -> bool {
     if process_id == ancestor {
         return true;
     }
-    let mut system = System::new();
+    // Without the process table, the relationship cannot be proven.
+    let Ok(mut system) = System::new() else {
+        return false;
+    };
     system.refresh_processes(ProcessesToUpdate::All, false);
     let mut current = Pid::from_u32(process_id);
     // Bounded: a corrupted process table must not loop forever.
@@ -107,7 +110,8 @@ pub fn terminate_process_tree(process_id: u32) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let mut system = System::new();
+        let mut system = System::new()
+            .map_err(|error| format!("Não foi possível consultar os processos: {error}"))?;
         let pid = Pid::from_u32(process_id);
         system.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
         let process = system
@@ -121,7 +125,7 @@ pub fn terminate_process_tree(process_id: u32) -> Result<(), String> {
 }
 
 pub fn process_name(process_id: u32) -> Option<String> {
-    let mut system = System::new();
+    let mut system = System::new().ok()?;
     let pid = Pid::from_u32(process_id);
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
     system
@@ -280,7 +284,9 @@ pub fn listening_ports(root: u32) -> Vec<Port> {
     if listeners.is_empty() {
         return Vec::new();
     }
-    let mut system = System::new();
+    let Ok(mut system) = System::new() else {
+        return Vec::new();
+    };
     system.refresh_processes(ProcessesToUpdate::All, false);
     let descends = |process_id: u32| {
         let mut current = Pid::from_u32(process_id);

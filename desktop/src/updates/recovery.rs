@@ -114,10 +114,13 @@ fn same_file_path(left: &Path, right: &Path) -> bool {
 }
 
 /// Waits for a process to end. A zombie (ended but not yet reaped) counts as
-/// ended. Returns `false` when it is still running after `timeout`.
+/// ended. Returns `false` when it is still running after `timeout`, or when the
+/// process table cannot be read (the exit cannot be confirmed).
 pub(super) fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     let pid = sysinfo::Pid::from_u32(pid);
-    let mut system = sysinfo::System::new();
+    let Ok(mut system) = sysinfo::System::new() else {
+        return false;
+    };
     let started = Instant::now();
     loop {
         system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
