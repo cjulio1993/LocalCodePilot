@@ -50,7 +50,7 @@ Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows
 
    Se dois projetos têm o mesmo nome, o cartão mostra também o trecho da pasta que os diferencia.
 3. **Clique no botão.** Na primeira execução de um comando do projeto, confira a pasta e o comando antes de confirmar. A confirmação volta se o comando efetivo mudar. Para instalações e ações do Compose, confira também o plano apresentado; nas ações de containers, a confirmação mostra a pasta e o motor (Docker ou Podman).
-4. **Use o projeto.** Quando o site responde, o cartão mostra o endereço e **Abrir site**. **Ver logs** mostra a saída do programa, e **Parar** encerra tudo o que o projeto abriu.
+4. **Use o projeto.** Quando o site responde, o cartão mostra o endereço e **Abrir site**. **Ver logs** mostra a saída do programa, e **Parar** encerra tudo o que o projeto abriu. Os logs salvos ficam no computador por até 30 dias, com senhas e tokens em formatos conhecidos trocados por `••••`; **Limpar histórico**, em Configurações, apaga todos. A saída ao vivo continua completa: confira se há dados pessoais antes de colar logs num relato público.
 
 A página **Ajuda**, dentro do app, explica cada estado e o que fazer em cada caso.
 
@@ -146,7 +146,7 @@ The files in this version are not digitally signed yet, so Windows may show "Win
 
    When two projects share a name, the card also shows the part of the folder that tells them apart.
 3. **Click the button.** The first time a project command runs, check the folder and the command before you confirm. The confirmation comes back if the effective command changes. For installs and Compose actions, also check the plan shown; for container actions, the confirmation shows the folder and the engine (Docker or Podman).
-4. **Use the project.** When the site answers, the card shows its address and **Open site**. **View logs** shows the program's output, and **Stop** ends everything the project opened.
+4. **Use the project.** When the site answers, the card shows its address and **Open site**. **View logs** shows the program's output, and **Stop** ends everything the project opened. Saved logs stay on the computer for up to 30 days, with passwords and tokens in known formats replaced by `••••`; **Limpar histórico** (Clear history), in Settings, deletes them all. The live output stays complete: check it for personal data before pasting logs into a public report.
 
 The **Help** page inside the app explains each state and what to do.
 

@@ -6,6 +6,7 @@ mod app;
 mod build_support;
 mod config;
 mod pages;
+mod secrets;
 mod theme;
 mod updates;
 

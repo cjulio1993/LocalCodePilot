@@ -646,6 +646,8 @@ pub struct LocalCodePilot {
     help: help_ui::HelpState,
     languages: language_ui::LanguageState,
     command_draft: Option<command_ui::CommandDraft>,
+    /// "Limpar histórico de logs?" is open.
+    confirm_clear_history: bool,
 }
 
 impl LocalCodePilot {
@@ -670,6 +672,9 @@ impl LocalCodePilot {
         let cached_projects = config::load_project_cache();
         let environment_path = refreshed_environment_path().ok();
         let mut workspace_state = config::load_workspace_state();
+        // Older versions saved logs unmasked and without a time limit.
+        let saved_logs_changed =
+            workspace_state.mask_saved_logs() | workspace_state.expire_old_logs(unix_timestamp());
         let receiver = spawn_discovery(
             source,
             environment_path.clone(),
@@ -730,7 +735,7 @@ impl LocalCodePilot {
             scan_root_migration,
             discovery: Some(receiver),
             workspace_state,
-            workspace_dirty: recovered_preparation,
+            workspace_dirty: recovered_preparation || saved_logs_changed,
             last_workspace_save: Instant::now(),
             workspace_save_error_reported: false,
             update_check,
@@ -748,6 +753,7 @@ impl LocalCodePilot {
             help: help_ui::HelpState::default(),
             languages: language_ui::LanguageState::default(),
             command_draft: None,
+            confirm_clear_history: false,
         }
     }
 
@@ -2588,6 +2594,51 @@ impl LocalCodePilot {
             self.terminate_port_owner_and_retry(&request);
         } else if cancel || !open {
             self.port_termination = None;
+        }
+    }
+
+    fn show_clear_history_confirmation(&mut self, root_ui: &mut egui::Ui) {
+        if !self.confirm_clear_history {
+            return;
+        }
+        let mut open = true;
+        let mut cancel = false;
+        let mut confirm = false;
+        egui::Window::new("Limpar histórico de logs?")
+            .id(egui::Id::unique("clear-history-confirmation"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .default_width(460.0)
+            .show(root_ui, |ui| {
+                ui.label(
+                    "Os logs salvos de serviços e de preparação serão removidos deste computador. Esta ação não pode ser desfeita.",
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancelar").clicked() {
+                        cancel = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new("Limpar histórico")
+                                .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.22)),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                });
+            });
+        if confirm {
+            self.confirm_clear_history = false;
+            self.workspace_state.clear_saved_logs();
+            self.workspace_dirty = true;
+            self.persist_workspace_state(true);
+            self.notify("Histórico de logs removido.");
+        } else if cancel || !open {
+            self.confirm_clear_history = false;
         }
     }
 
@@ -4514,6 +4565,19 @@ impl LocalCodePilot {
 
         ui.add_space(18.0);
         ui.heading("Histórico de preparação");
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Limpar histórico").clicked() {
+                self.confirm_clear_history = true;
+            }
+            ui.label(
+                RichText::new(
+                    "Remove os logs de serviços e de preparação salvos neste computador. Não interrompe projetos em execução.",
+                )
+                .color(theme::MUTED)
+                .size(10.0),
+            );
+        });
         ui.add_space(8.0);
         if self.workspace_state.preparations.is_empty() {
             ui.label(
@@ -4640,6 +4704,7 @@ impl eframe::App for LocalCodePilot {
         self.show_dependency_terminal(ui);
         self.show_laravel_migration(ui);
         self.show_port_termination_confirmation(ui);
+        self.show_clear_history_confirmation(ui);
         self.show_notification(ui);
     }
 }

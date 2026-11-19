@@ -171,6 +171,12 @@ const SECTIONS: &[HelpSection] = &[
             Block::Text(
                 "Ver logs leva a Processos, para projetos que rodam direto na máquina, ou a Containers, para projetos com Docker ou Podman.",
             ),
+            Block::Text(
+                "Os logs salvos ficam neste computador por até 30 dias. Senhas e tokens em formatos conhecidos, como TOKEN=valor, aparecem como •••• nos logs salvos e em Copiar logs. Limpar histórico, em Configurações, remove todos os logs salvos.",
+            ),
+            Block::Text(
+                "Antes de colar logs ou caminhos em um relato público, confira se eles contêm senhas, tokens ou dados pessoais. A saída ao vivo pode mostrar esses dados.",
+            ),
         ],
         link: Some((Page::Overview, "Abrir Visão geral")),
     },

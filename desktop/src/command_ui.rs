@@ -18,6 +18,8 @@ pub(super) struct CommandDraft {
     folder: String,
     port: String,
     error: Option<String>,
+    /// The arguments look like a secret and the warning is showing.
+    secret_warning: bool,
 }
 
 /// Checks a draft and turns it into a command, or says what to fix in one sentence.
@@ -152,6 +154,7 @@ impl LocalCodePilot {
                     .map(|port| port.to_string())
                     .unwrap_or_default(),
                 error: None,
+                secret_warning: false,
             },
             None => CommandDraft {
                 project: project.to_path_buf(),
@@ -167,6 +170,7 @@ impl LocalCodePilot {
                 folder: String::new(),
                 port: String::new(),
                 error: None,
+                secret_warning: false,
             },
         });
     }
@@ -272,7 +276,12 @@ impl LocalCodePilot {
             &self.workspace_state.custom_commands,
             self.environment_path.as_deref(),
         );
+        let looks_secret = check
+            .as_ref()
+            .is_ok_and(|command| crate::secrets::arguments_look_secret(&command.args));
         let mut save = false;
+        let mut save_anyway = false;
+        let mut back = false;
         let mut cancel = false;
         let title = if draft.original.is_some() {
             "Editar comando de início"
@@ -331,6 +340,24 @@ impl LocalCodePilot {
                     ui.label(RichText::new(error).color(theme::DANGER));
                 }
                 ui.add_space(10.0);
+                if draft.secret_warning {
+                    ui.label(
+                        RichText::new(
+                            "Este comando parece conter um segredo nos argumentos. Ele pode ficar salvo neste computador e aparecer nos detalhes do projeto. Use uma variável de ambiente no lugar do valor.",
+                        )
+                        .color(theme::WARNING),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Voltar e editar").clicked() {
+                            back = true;
+                        }
+                        if ui.button("Salvar mesmo assim").clicked() {
+                            save_anyway = true;
+                        }
+                    });
+                    return;
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Cancelar").clicked() {
                         cancel = true;
@@ -353,7 +380,16 @@ impl LocalCodePilot {
             });
         if cancel {
             self.command_draft = None;
-        } else if save
+        } else if back {
+            if let Some(draft) = &mut self.command_draft {
+                draft.secret_warning = false;
+            }
+        } else if save && looks_secret {
+            // Warn before anything is written to disk.
+            if let Some(draft) = &mut self.command_draft {
+                draft.secret_warning = true;
+            }
+        } else if (save || save_anyway)
             && let Err(error) = self.save_command_draft()
             && let Some(draft) = &mut self.command_draft
         {
@@ -378,6 +414,7 @@ mod tests {
             folder: String::new(),
             port: String::new(),
             error: None,
+            secret_warning: false,
         }
     }
 
@@ -446,6 +483,7 @@ mod tests {
                 folder: self.folder.clone(),
                 port: self.port.clone(),
                 error: None,
+                secret_warning: false,
             }
         }
     }
