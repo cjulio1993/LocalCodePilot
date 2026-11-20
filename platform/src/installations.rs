@@ -671,6 +671,29 @@ pub fn configure_background_command(_command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executable_candidate_accepts_only_executable_files() {
+        let directory =
+            env::temp_dir().join(format!("lcp executable candidate {}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("qa-tool");
+        std::fs::write(&file, "conteudo").unwrap();
+
+        assert!(!executable_candidate(&directory.join("nao-existe")));
+        assert!(!executable_candidate(&directory));
+        #[cfg(not(unix))]
+        assert!(executable_candidate(&file));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(!executable_candidate(&file));
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(executable_candidate(&file));
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[cfg(target_os = "windows")]
     #[test]
     fn prefers_windows_launcher_over_extensionless_unix_script() {
