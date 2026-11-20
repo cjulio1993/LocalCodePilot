@@ -350,10 +350,30 @@ pub fn read_version(
     path: Option<&OsStr>,
     timeout: Duration,
 ) -> VersionAnswer {
+    read_version_in(executable, version_args, path, timeout, &env::temp_dir())
+}
+
+/// The temporary folder is the working directory of every version query: whatever a
+/// program writes to its current folder (the Erlang VM writes `erl_crash.dump` when it
+/// fails to boot) never lands in the folder the app was opened from. Without a usable
+/// temporary folder nothing runs, rather than falling back to that folder.
+fn read_version_in(
+    executable: &Path,
+    version_args: &[&str],
+    path: Option<&OsStr>,
+    timeout: Duration,
+    working_directory: &Path,
+) -> VersionAnswer {
+    if !working_directory.is_dir() {
+        return VersionAnswer::Failed;
+    }
     // Batch files included: the standard library runs them through cmd.exe and quotes them.
     let mut command = Command::new(localcodepilot_core::paths::plain_path(executable));
     command
         .args(version_args)
+        .current_dir(working_directory)
+        // Only for this child: the Erlang VM (Elixir, Erlang) skips its crash dump.
+        .env("ERL_CRASH_DUMP_SECONDS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -751,6 +771,80 @@ mod tests {
         let inventory = inspect_program("qa-runtime.bat", &["--version"], Some(&path)).unwrap();
         assert_eq!(inventory.version, "Dart SDK version: 3.13.4");
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A stand-in launcher that prints its working folder and the crash-dump variable,
+    /// in a folder whose name has spaces (like `elixir.bat` under Program Files).
+    fn reporting_launcher(directory: &Path) -> PathBuf {
+        std::fs::create_dir_all(directory).unwrap();
+        if cfg!(target_os = "windows") {
+            let script = directory.join("qa-elixir.bat");
+            std::fs::write(
+                &script,
+                "@echo off\r\necho %CD%^|%ERL_CRASH_DUMP_SECONDS%\r\n",
+            )
+            .unwrap();
+            script
+        } else {
+            let script = directory.join("qa-elixir");
+            std::fs::write(
+                &script,
+                "#!/bin/sh\necho \"$(pwd)|$ERL_CRASH_DUMP_SECONDS\"\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            script
+        }
+    }
+
+    #[test]
+    fn version_queries_run_in_the_temporary_folder_without_erlang_crash_dumps() {
+        let root = env::temp_dir().join(format!("lcp version query {}", std::process::id()));
+        let launcher = reporting_launcher(&root.join("bin com espaço"));
+        let work = root.join("pasta temporaria");
+        std::fs::create_dir_all(&work).unwrap();
+        let VersionAnswer::Version(line) =
+            read_version_in(&launcher, &["--version"], None, VERSION_TIMEOUT, &work)
+        else {
+            panic!("the stand-in launcher did not answer");
+        };
+        let (folder, dump_seconds) = line.rsplit_once('|').unwrap();
+        assert_eq!(
+            std::fs::canonicalize(folder.trim()).unwrap(),
+            std::fs::canonicalize(&work).unwrap()
+        );
+        assert_eq!(dump_seconds.trim(), "0");
+        // Only the child got the variable.
+        assert!(env::var_os("ERL_CRASH_DUMP_SECONDS").is_none());
+        // The public entry point uses the system temporary folder.
+        let VersionAnswer::Version(line) =
+            read_version(&launcher, &["--version"], None, VERSION_TIMEOUT)
+        else {
+            panic!("the stand-in launcher did not answer");
+        };
+        let (folder, _) = line.rsplit_once('|').unwrap();
+        assert_eq!(
+            std::fs::canonicalize(folder.trim()).unwrap(),
+            std::fs::canonicalize(env::temp_dir()).unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn without_a_usable_temporary_folder_the_query_fails_and_runs_nothing() {
+        let root = env::temp_dir().join(format!("lcp version missing {}", std::process::id()));
+        let launcher = reporting_launcher(&root.join("bin"));
+        let missing = root.join("nao existe");
+        assert_eq!(
+            read_version_in(&launcher, &["--version"], None, VERSION_TIMEOUT, &missing),
+            VersionAnswer::Failed
+        );
+        assert!(!missing.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

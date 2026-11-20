@@ -6,6 +6,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Corrigido
+
+- A consulta de versões das linguagens (ao abrir o app e em **Verificar de novo**) não deixa mais um `erl_crash.dump` de cerca de 3 MB na pasta de onde o LocalCodePilot foi aberto. Quando a máquina virtual do Erlang falhava ao responder `elixir --version`, ela gravava esse arquivo na pasta atual. Agora as consultas rodam na pasta temporária do sistema e pedem à VM do Erlang que não grave o despejo. Se a pasta temporária não estiver disponível, a versão aparece como indisponível, e nada roda na pasta de abertura.
+
 ### Alterado
 
 - **Instalar dependências** e **Preparar ambiente** mantêm o mesmo verbo do clique até o resultado. Antes, os dois fluxos terminavam com os mesmos textos genéricos de "preparação". Agora, conforme a ação escolhida, o app mostra:
