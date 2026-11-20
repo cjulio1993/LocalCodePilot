@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -146,7 +146,7 @@ jobs:
         run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilotSetup-${{ steps.version.outputs.value }}-windows-x64.exe"
 
       - name: Upload Windows release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-release-assets
           path: |
@@ -161,7 +161,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust targets
         uses: dtolnay/rust-toolchain@stable
@@ -208,7 +208,7 @@ jobs:
         run: bash scripts/package-macos.sh "${{ steps.version.outputs.value }}" target/macos-universal/localcodepilot-desktop
 
       - name: Upload macOS release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: macos-release-assets
           path: |
@@ -228,18 +228,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download Windows assets
         if: needs.windows.result == 'success'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: windows-release-assets
           path: dist/windows
 
       - name: Download macOS assets
         if: needs.macos.result == 'success'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: macos-release-assets
           path: dist/macos

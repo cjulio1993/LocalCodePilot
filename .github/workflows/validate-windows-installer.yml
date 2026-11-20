@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -57,7 +57,7 @@ jobs:
         run: .\scripts\test-windows-installer.ps1 -Installer "dist\LocalCodePilotSetup-${{ steps.version.outputs.value }}-windows-x64.exe"
 
       - name: Upload installer for manual testing
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-installer
           path: |
