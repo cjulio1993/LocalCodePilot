@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust targets
         uses: dtolnay/rust-toolchain@stable
@@ -78,7 +78,7 @@ jobs:
           cmp "$app/Contents/MacOS/LocalCodePilot" "$mount_point/LocalCodePilot.app/Contents/MacOS/LocalCodePilot"
 
       - name: Upload validation artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: LocalCodePilot-macos-universal-validation
           retention-days: 7
