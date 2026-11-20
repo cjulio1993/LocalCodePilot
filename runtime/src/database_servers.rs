@@ -1011,7 +1011,11 @@ fn abandon_fresh_server(server: &ManagedServer) {
 }
 
 fn log_tail(log: &Path) -> String {
-    let text = fs::read_to_string(log).unwrap_or_default();
+    // Server tools may write in the Windows code page (pg_ctl in Portuguese is cp1252):
+    // read the bytes, so a line that is not UTF-8 never hides the rest of the log.
+    let text = fs::read(log)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(20)..].join("\n")
 }
@@ -1196,6 +1200,117 @@ fn mysql_ensure(
     })
 }
 
+/// Sets the project user's password to the project's own, on a server the app manages.
+/// Used by "Corrigir conexão", after a confirmation, only when no other known project uses
+/// the same user.
+pub fn set_project_password(
+    server: &ManagedServer,
+    vault: &dyn Vault,
+    user: &str,
+    password: &str,
+) -> Result<(), ServerError> {
+    if !creatable_name(user) {
+        return Err(ServerError::InvalidName);
+    }
+    match recognize(server) {
+        Recognition::Managed => {}
+        Recognition::NotRunning => {
+            return Err(ServerError::NotManaged(
+                "o servidor não está rodando".into(),
+            ));
+        }
+        Recognition::Existing { reason } => return Err(ServerError::NotManaged(reason)),
+    }
+    let admin = server.admin_password(vault)?;
+    let result = if server.engine == "postgresql" {
+        postgres_admin(
+            server,
+            &admin,
+            &format!(
+                "ALTER ROLE \"{user}\" PASSWORD '{}'",
+                postgres_literal(password)
+            ),
+        )
+    } else {
+        let mut result = Ok(());
+        for host in ["localhost", "127.0.0.1"] {
+            result = result.and_then(|()| {
+                mysql_admin(
+                    server,
+                    &admin,
+                    &format!(
+                        "ALTER USER IF EXISTS '{user}'@'{host}' IDENTIFIED BY '{}'",
+                        mysql_literal(password)
+                    ),
+                )
+            });
+        }
+        result
+    };
+    result.map_err(|error| error.scrubbed(password).scrubbed(&admin))
+}
+
+/// Whether a server log shows damaged data files, the only case where "Criar banco novo" is
+/// offered. A locked file, a permission or a version mismatch is not damage.
+pub fn log_shows_damage(engine: &str, log: &str) -> bool {
+    let log = log.to_ascii_lowercase();
+    let signs: &[&str] = if engine == "postgresql" {
+        &[
+            "could not locate a valid checkpoint record",
+            "invalid checkpoint record",
+            "invalid primary checkpoint record",
+            "incorrect checksum in control file",
+        ]
+    } else {
+        &[
+            "database page corruption",
+            "data structure corruption",
+            "is corrupted",
+            "corrupt page",
+        ]
+    };
+    signs.iter().any(|sign| log.contains(sign))
+}
+
+/// The tail of a server's log, for the damage check and "Detalhes técnicos".
+pub fn server_log_tail(server: &ManagedServer) -> String {
+    log_tail(&server.log_file())
+}
+
+/// "Criar banco novo": keeps the current folder as `<folder>-guardada-<moment>` (nothing is
+/// deleted) and creates the server again with the same identity, port and administrator
+/// password (still in the vault). Returns the kept folder.
+pub fn recreate_with_new_data(
+    server: &mut ManagedServer,
+    root: &Path,
+    vault: &dyn Vault,
+) -> Result<PathBuf, ServerError> {
+    if recognize(server) != Recognition::NotRunning {
+        return Err(ServerError::NotManaged(
+            "o servidor ainda está rodando; pare-o antes".into(),
+        ));
+    }
+    let password = server.admin_password(vault)?;
+    let moment = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let kept = server
+        .folder
+        .with_file_name(format!("{}-guardada-{moment}", server.id));
+    fs::rename(&server.folder, &kept).map_err(io("não foi possível guardar a pasta atual"))?;
+    fs::create_dir_all(&server.folder).map_err(io("não foi possível criar a pasta do banco"))?;
+    fs::write(server.folder.join(IDENTITY_FILE), &server.id)
+        .map_err(io("não foi possível marcar a pasta do banco"))?;
+    server.process_id = None;
+    server.started_at = None;
+    server.stop_failed = false;
+    let result = initialize_and_start(server, root, &password, vault);
+    let cleaned = scrub_file(&server.log_file(), &password);
+    cleaned?;
+    result.map_err(|error| error.scrubbed(&password))?;
+    Ok(kept)
+}
 // --- Administrator connection -----------------------------------------------------------
 
 fn runtime() -> Result<tokio::runtime::Runtime, ServerError> {
@@ -1630,6 +1745,48 @@ mod tests {
             postgres_database_sql("loja", "app"),
             "CREATE DATABASE \"loja\" OWNER \"app\""
         );
+    }
+    #[test]
+    fn only_recognized_damage_offers_a_new_data_folder() {
+        assert!(log_shows_damage(
+            "postgresql",
+            "PANIC:  could not locate a valid checkpoint record"
+        ));
+        assert!(log_shows_damage(
+            "postgresql",
+            "FATAL:  incorrect checksum in control file"
+        ));
+        assert!(log_shows_damage(
+            "mysql",
+            "[ERROR] [MY-011906] [InnoDB] Database page corruption on disk or a failed file read"
+        ));
+        // A locked file, a permission or another version is not damage.
+        for log in [
+            "The innodb_system data file 'ibdata1' must be writable",
+            "FATAL:  database files are incompatible with server",
+            "could not open file \"postmaster.pid\": Permission denied",
+            "Can't create/write to file",
+        ] {
+            assert!(!log_shows_damage("postgresql", log), "{log}");
+            assert!(!log_shows_damage("mysql", log), "{log}");
+        }
+    }
+    #[test]
+    fn a_log_with_text_in_the_windows_code_page_is_still_read() {
+        let root = std::env::temp_dir().join(format!("lcp-log-cp1252-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("servidor.log");
+        // "servidor está parado" from pg_ctl in cp1252, then the server's own line.
+        let mut bytes = b"servidor est\xe1 parado\n".to_vec();
+        bytes.extend_from_slice(b"FATAL:  incorrect checksum in control file\n");
+        fs::write(&log, bytes).unwrap();
+        let tail = log_tail(&log);
+        assert!(
+            tail.contains("incorrect checksum in control file"),
+            "{tail}"
+        );
+        assert!(log_shows_damage("postgresql", &tail));
+        let _ = fs::remove_dir_all(&root);
     }
     #[test]
     fn a_missing_credential_changes_nothing() {

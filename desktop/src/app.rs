@@ -396,6 +396,18 @@ pub(super) struct DatabaseStatus {
     pub available: Option<bool>,
     /// The authenticated login with the project's own access data, when the app tests it.
     pub connection: Option<ConnectionTest>,
+    /// The app's own server for this engine and port, when there is one.
+    pub managed: Option<ManagedInfo>,
+}
+
+/// The app's server behind a project's database, as the last check saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ManagedInfo {
+    pub id: String,
+    /// Running and recognized as the app's (PID, start time, program, data, PID file).
+    pub running: bool,
+    /// For "Detalhes técnicos".
+    pub summary: String,
 }
 
 impl DatabaseStatus {
@@ -768,6 +780,12 @@ enum ProjectCardAction {
     ToggleDetails(PathBuf),
     /// Opens Projects showing this project with its details expanded.
     ShowInProjects(PathBuf, String),
+    /// A guided fix of the project's database, confirmed first.
+    DatabaseFix(PathBuf, database_ui::DatabaseFix),
+    /// "Parar o banco de dados", in "Detalhes técnicos".
+    StopDatabase(PathBuf),
+    /// "Testar conexão" of a remote database, in "Detalhes técnicos".
+    TestRemoteDatabase(PathBuf),
 }
 
 enum DiscoveryEvent {
@@ -2348,13 +2366,24 @@ impl LocalCodePilot {
         match self.project_database_gate(project_path, &environment) {
             database_ui::DatabaseGate::Ready => {
                 self.database.failures.remove(project_path);
+                // A port change confirmed by the login: it stays, and Detalhes says so.
+                if let Some(change) = self.database.port_changes.remove(project_path) {
+                    self.database
+                        .actions
+                        .entry(project_path.to_path_buf())
+                        .or_default()
+                        .push(format!(
+                            "porta alterada de {} para {} em {}; cópia em {}",
+                            change.from,
+                            change.to,
+                            display_path(&change.env),
+                            display_path(&change.backup)
+                        ));
+                }
             }
             database_ui::DatabaseGate::Waiting => return,
-            database_ui::DatabaseGate::Blocked(reason) => {
-                self.database
-                    .failures
-                    .insert(project_path.to_path_buf(), reason.clone());
-                self.notify(reason);
+            database_ui::DatabaseGate::Blocked(failure) => {
+                self.record_database_failure(project_path, failure);
                 return;
             }
         }
@@ -7628,10 +7657,12 @@ fn inspect_project_environment_with_inventory(
                     )
                 })
                 .flatten();
+            let managed = managed_info(&database);
             DatabaseStatus {
                 requirement: database,
                 available,
                 connection,
+                managed,
             }
         })
         .collect();
@@ -7650,6 +7681,33 @@ fn inspect_project_environment_with_inventory(
 
 /// JSON manifests in the project folder that exist but are not valid JSON. Without this the
 /// project only shows that nothing can be started, with no reason.
+/// The app's server for a local database, looked up during the project check.
+fn managed_info(requirement: &DatabaseRequirement) -> Option<ManagedInfo> {
+    let engine = match requirement.engine {
+        DatabaseEngine::PostgreSql => "postgresql",
+        DatabaseEngine::MySql => "mysql",
+        DatabaseEngine::MariaDb => "mariadb",
+        _ => return None,
+    };
+    let root = database_ui::database_root()?;
+    let server =
+        localcodepilot_runtime::database_servers::find_server(&root, engine, requirement.port?)?;
+    let running = localcodepilot_runtime::database_servers::recognize(&server)
+        == localcodepilot_runtime::database_servers::Recognition::Managed;
+    Some(ManagedInfo {
+        summary: format!(
+            "Servidor gerenciado pelo LocalCodePilot: {} {} em 127.0.0.1:{} ({}); dados em {}",
+            requirement.engine.label(),
+            server.version,
+            server.port,
+            if running { "rodando" } else { "parado" },
+            display_path(&server.folder)
+        ),
+        id: server.id,
+        running,
+    })
+}
+
 fn manifest_errors(project_path: &Path) -> Vec<String> {
     ["package.json", "composer.json"]
         .into_iter()

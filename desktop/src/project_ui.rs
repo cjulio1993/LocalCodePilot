@@ -85,6 +85,9 @@ pub(super) enum PrimaryAction {
     InstallDependencies,
     /// No command was found: the person tells how the project starts.
     DefineCommand,
+    /// A guided fix of the project's database (another port, the user's password, a new data
+    /// folder), always confirmed first.
+    DatabaseFix(database_ui::DatabaseFix),
     Details,
     /// Something is in progress; no button.
     Wait,
@@ -99,6 +102,7 @@ impl PrimaryAction {
             Self::PrepareEnvironment => "Preparar ambiente".into(),
             Self::InstallDependencies => "Instalar dependências".into(),
             Self::DefineCommand => "Definir comando de início".into(),
+            Self::DatabaseFix(fix) => fix.label().into(),
             Self::Details => "Detalhes".into(),
             Self::Wait => return None,
         })
@@ -120,6 +124,9 @@ pub(super) struct ProjectSummary {
     pub stops_containers_here: bool,
     /// Shown under "Detalhes técnicos": process, command, exit code, port owner.
     pub technical: Vec<String>,
+    /// "Tentar de novo" next to the main action: a start that stopped at the database for a
+    /// reason that may pass (the server did not start).
+    pub retry: bool,
 }
 
 /// A process of the project that failed, with what the app knows about why.
@@ -150,8 +157,10 @@ pub(super) struct ProjectFacts<'a> {
     pub languages: &'a [RuntimeKind],
     /// The project's database is being prepared or started: the step to show.
     pub database_step: Option<String>,
-    /// The last start stopped at the project's database, and why.
-    pub database_failure: Option<&'a str>,
+    /// The last start stopped at the project's database, why, and the fix it allows.
+    pub database_failure: Option<&'a database_ui::DatabaseFailure>,
+    /// Shown with "Rodando" after "Criar banco novo".
+    pub database_note: Option<&'a str>,
 }
 
 /// Why there is nothing to start: a language the app does not start yet is named, so the
@@ -189,6 +198,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         uses_containers: false,
         stops_containers_here: false,
         technical: vec![],
+        retry: false,
     };
     if facts.running || facts.container_running {
         let url = facts
@@ -215,7 +225,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         };
         return ProjectSummary {
             state: ProjectState::Running,
-            reason: None,
+            reason: facts.database_note.map(str::to_owned),
             http: url.as_ref().and(http),
             primary: url
                 .clone()
@@ -224,6 +234,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             uses_containers: !facts.running,
             stops_containers_here: !facts.running && facts.container_stop_here,
             technical: vec![],
+            retry: false,
         };
     }
     match facts.dependency_install {
@@ -257,12 +268,16 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             PrimaryAction::ViewLogs,
         );
     }
-    if let Some(reason) = facts.database_failure {
-        return summary(
+    if let Some(failure) = facts.database_failure {
+        let mut problem = summary(
             ProjectState::Problem,
-            Some(reason.to_owned()),
-            PrimaryAction::Details,
+            Some(failure.reason.clone()),
+            failure
+                .fix
+                .map_or(PrimaryAction::Details, PrimaryAction::DatabaseFix),
         );
+        problem.retry = failure.retry;
+        return problem;
     }
     if facts.resolving_plan {
         return summary(
@@ -581,12 +596,10 @@ impl LocalCodePilot {
                 .database
                 .jobs
                 .get(&project.path)
+                .filter(|job| job.visible)
                 .map(|job| job.step.text(job.engine)),
-            database_failure: self
-                .database
-                .failures
-                .get(&project.path)
-                .map(String::as_str),
+            database_failure: self.database.failures.get(&project.path),
+            database_note: self.database.notes.get(&project.path).map(String::as_str),
         })
     }
 
@@ -641,7 +654,14 @@ impl LocalCodePilot {
                 ctx.open_url(egui::OpenUrl::new_tab(&url));
                 self.notify(format!("Abrindo {url}"));
             }
-            ProjectCardAction::Start(path) => self.start_project(&path),
+            ProjectCardAction::Start(path) => {
+                // A note from the last start (a new data folder) is about that start only.
+                self.database.notes.remove(&path);
+                self.start_project(&path);
+            }
+            ProjectCardAction::DatabaseFix(path, fix) => self.ask_database_fix(&path, fix),
+            ProjectCardAction::StopDatabase(path) => self.stop_project_database(&path),
+            ProjectCardAction::TestRemoteDatabase(path) => self.test_remote_database(&path),
             ProjectCardAction::Stop(path) => self.stop_project(&path),
             ProjectCardAction::StopContainers(path) => {
                 self.touch_project(&path);
@@ -978,12 +998,7 @@ impl LocalCodePilot {
                                 .hidden_recent_projects
                                 .contains(&project.path),
                             has_install_logs: self.dependency_installs.contains_key(&project.path),
-                            database_actions: self
-                                .database
-                                .actions
-                                .get(&project.path)
-                                .cloned()
-                                .unwrap_or_default(),
+                            database: self.database_card_extras(&project.path),
                         };
                         ui.allocate_ui_with_layout(
                             egui::vec2(card_width, 0.0),
@@ -1025,6 +1040,7 @@ fn primary_to_card_action(project: &Project, summary: &ProjectSummary) -> Projec
         PrimaryAction::PrepareEnvironment => ProjectCardAction::PrepareEnvironment(path),
         PrimaryAction::InstallDependencies => ProjectCardAction::InstallDependencies(path),
         PrimaryAction::DefineCommand => ProjectCardAction::DefineCommand(path),
+        PrimaryAction::DatabaseFix(fix) => ProjectCardAction::DatabaseFix(path, *fix),
         PrimaryAction::Details | PrimaryAction::Wait => {
             ProjectCardAction::ShowInProjects(path, project.name.clone())
         }
@@ -1153,7 +1169,7 @@ fn primary_button(ui: &mut egui::Ui, action: &PrimaryAction, width: f32) -> bool
 /// the cause is solved, without leaving the card.
 fn can_retry(summary: &ProjectSummary) -> bool {
     summary.state == ProjectState::Problem
-        && matches!(summary.primary, PrimaryAction::ViewLogs)
+        && (matches!(summary.primary, PrimaryAction::ViewLogs) || summary.retry)
         && !summary.uses_containers
 }
 
@@ -1426,8 +1442,8 @@ struct ProjectCard<'a> {
     expanded: bool,
     hidden_from_recent: bool,
     has_install_logs: bool,
-    /// What the app created on its database server for this project.
-    database_actions: Vec<String>,
+    /// The project's database: what the app did, the failure and the actions it allows.
+    database: database_ui::DatabaseCardExtras,
 }
 
 impl ProjectCard<'_> {
@@ -1625,11 +1641,57 @@ impl ProjectCard<'_> {
                 ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
             }
         }
-        if !self.database_actions.is_empty() {
+        let extras = &self.database;
+        for line in extras
+            .lines
+            .iter()
+            .chain(extras.failure.iter().flat_map(|failure| &failure.details))
+        {
+            ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+        }
+        if let Some(test) = &extras.remote_test {
+            let status = DatabaseStatus {
+                requirement: localcodepilot_runtime::databases::DatabaseRequirement {
+                    source: PathBuf::new(),
+                    engine: DatabaseEngine::MySql,
+                    host: None,
+                    port: None,
+                    compose_service: None,
+                },
+                available: None,
+                connection: Some(test.clone()),
+                managed: None,
+            };
+            if let Some(line) = status.technical().get(1) {
+                ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            if extras
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.other_port_option)
+                && ui
+                    .button(database_ui::DatabaseFix::OtherPort.label())
+                    .clicked()
+            {
+                action = Some(ProjectCardAction::DatabaseFix(
+                    path(),
+                    database_ui::DatabaseFix::OtherPort,
+                ));
+            }
+            if extras.can_stop && ui.button("Parar o banco de dados").clicked() {
+                action = Some(ProjectCardAction::StopDatabase(path()));
+            }
+            if extras.remote && ui.button("Testar conexão").clicked() {
+                action = Some(ProjectCardAction::TestRemoteDatabase(path()));
+            }
+        });
+        if !extras.stop_blocked_by.is_empty() {
             ui.label(
                 RichText::new(format!(
-                    "No servidor do LocalCodePilot: {}",
-                    self.database_actions.join(", ")
+                    "Para parar o banco de dados, pare primeiro: {}",
+                    extras.stop_blocked_by.join(", ")
                 ))
                 .color(theme::MUTED)
                 .size(12.0),
@@ -1806,6 +1868,7 @@ mod tests {
             languages: &[],
             database_step: None,
             database_failure: None,
+            database_note: None,
         }
     }
 
@@ -1827,6 +1890,7 @@ mod tests {
                 insufficient: vec![],
                 at: std::time::SystemTime::now(),
             }),
+            managed: None,
         }
     }
 
