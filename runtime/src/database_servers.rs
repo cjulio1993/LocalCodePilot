@@ -195,15 +195,16 @@ impl ManagedServer {
     }
 }
 
-/// `my.ini` for MySQL and MariaDB: paths, port and loopback only, no secret.
+/// `my.ini` for MySQL and MariaDB: paths, port and loopback only, no secret. The error
+/// log is chosen per start: the file in a normal start, the console (read and masked by
+/// the app) when the server may see the password.
 fn mysql_config(server: &ManagedServer) -> String {
     let slash = |path: &Path| path.display().to_string().replace('\\', "/");
     let mut config = format!(
-        "[mysqld]\nbasedir={}\ndatadir={}\nport={}\nbind-address=127.0.0.1\nlog-error={}\npid-file={}\n",
+        "[mysqld]\nbasedir={}\ndatadir={}\nport={}\nbind-address=127.0.0.1\npid-file={}\n",
         slash(&server.program_folder),
         slash(&server.data_folder()),
         server.port,
-        slash(&server.log_file()),
         slash(&server.pid_file()),
     );
     if server.engine == "mysql" {
@@ -510,14 +511,14 @@ pub fn prepare(
     fs::write(server.folder.join(IDENTITY_FILE), &server.id)
         .map_err(io("não foi possível marcar a pasta do banco"))?;
     save_server(root, &server)?;
-    let result = initialize_and_start(&mut server, root, &password);
-    // The programs never get the password on their command line, but a server may echo
-    // part of a failed statement of its init file (MySQL writes "near '...'"). Whatever
-    // happened, the log and the error carry no copy of it.
-    // A log that keeps the password and cannot be cleaned fails the operation, loudly.
+    let result = initialize_and_start(&mut server, root, &password, vault);
+    // Every program that sees the password writes through the app, which masks it before
+    // anything reaches the disk (a server may echo part of a failed statement: MySQL writes
+    // "near '...'"). This last check proves the log is clean; a log that still had the
+    // password and could not be cleaned fails the operation, before any other error.
     let cleaned = scrub_file(&server.log_file(), &password);
-    result.map_err(|error| error.scrubbed(&password))?;
     cleaned?;
+    result.map_err(|error| error.scrubbed(&password))?;
     Ok(server)
 }
 
@@ -525,6 +526,7 @@ fn initialize_and_start(
     server: &mut ManagedServer,
     root: &Path,
     password: &str,
+    vault: &dyn Vault,
 ) -> Result<(), ServerError> {
     match server.engine.as_str() {
         "postgresql" => {
@@ -532,9 +534,9 @@ fn initialize_and_start(
             start(server, root)?;
         }
         _ => {
-            initialize_mysql(server)?;
+            initialize_mysql(server, password)?;
             let init = SecretFile::create(root, &mysql_init_sql(password))?;
-            let started = start_with(server, root, Some(&init));
+            let started = start_with(server, root, Some((&init, password)));
             // The server writes "ready for connections" only after running its init file:
             // once the start returns, the file was consumed. It goes now, whatever happened.
             let removed = init.remove();
@@ -545,6 +547,13 @@ fn initialize_and_start(
                 abandon_fresh_server(server);
                 return Err(error);
             }
+            // The first start ran with its output read by the app. Once the password is
+            // set, the server restarts in the normal way, writing its own log, and never
+            // sees the password again.
+            save_server(root, server)?;
+            admin_check(server, password)?;
+            stop(server, root, vault)?;
+            start(server, root)?;
         }
     }
     save_server(root, server)?;
@@ -664,14 +673,14 @@ fn initialize_postgres(
             "--auth=scram-sha-256",
         ])
         .arg(format!("--pwfile={}", password_file.path.display()));
-    let result = run_to_end(command, &server.log_file(), "initdb");
+    let result = run_to_end(command, &server.log_file(), "initdb", Some(password));
     // initdb has exited: nothing reads the file any more.
     let removed = password_file.remove();
     result?;
     removed
 }
 
-fn initialize_mysql(server: &ManagedServer) -> Result<(), ServerError> {
+fn initialize_mysql(server: &ManagedServer, password: &str) -> Result<(), ServerError> {
     fs::write(server.config_file(), mysql_config(server))
         .map_err(io("não foi possível gravar a configuração do banco"))?;
     let mut command = if server.engine == "mysql" {
@@ -681,7 +690,8 @@ fn initialize_mysql(server: &ManagedServer) -> Result<(), ServerError> {
                 "--defaults-file={}",
                 server.config_file().display()
             ))
-            .arg("--initialize-insecure");
+            .arg("--initialize-insecure")
+            .arg("--console");
         command
     } else {
         let mut command = Command::new(server.program("mariadb-install-db.exe"));
@@ -689,10 +699,21 @@ fn initialize_mysql(server: &ManagedServer) -> Result<(), ServerError> {
         command
     };
     command.current_dir(&server.folder);
-    run_to_end(command, &server.log_file(), "inicialização")
+    run_to_end(command, &server.log_file(), "inicialização", Some(password))
 }
 
-fn run_to_end(mut command: Command, log: &Path, name: &str) -> Result<(), ServerError> {
+/// Opens the log for a program. With a `secret`, the program writes to pipes the app reads,
+/// and each line reaches the log only after the secret is masked: it is never on disk.
+fn attach_output(
+    command: &mut Command,
+    log: &Path,
+    secret: Option<&str>,
+) -> Result<(), ServerError> {
+    command.stdin(Stdio::null());
+    if secret.is_some() {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        return Ok(());
+    }
     let output = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -702,13 +723,73 @@ fn run_to_end(mut command: Command, log: &Path, name: &str) -> Result<(), Server
         .try_clone()
         .map_err(io("não foi possível abrir o log do banco"))?;
     command
-        .stdin(Stdio::null())
         .stdout(Stdio::from(output))
         .stderr(Stdio::from(errors));
+    Ok(())
+}
+
+/// Copies the program's piped output to the log, line by line, with `secret` masked.
+/// The threads end when the program closes its output.
+fn copy_masked(child: &mut Child, log: &Path, secret: &str) -> Vec<std::thread::JoinHandle<()>> {
+    let streams: Vec<Box<dyn std::io::Read + Send>> = [
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    streams
+        .into_iter()
+        .map(|stream| {
+            let log = log.to_path_buf();
+            let secret = secret.to_owned();
+            std::thread::spawn(move || {
+                use std::io::{BufRead, Write};
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = Vec::new();
+                while reader
+                    .read_until(b'\n', &mut line)
+                    .is_ok_and(|read| read > 0)
+                {
+                    let masked = scrub(&String::from_utf8_lossy(&line), &secret);
+                    if let Ok(mut file) =
+                        fs::OpenOptions::new().create(true).append(true).open(&log)
+                    {
+                        let _ = file.write_all(masked.as_bytes());
+                    }
+                    line.clear();
+                }
+            })
+        })
+        .collect()
+}
+
+fn run_to_end(
+    mut command: Command,
+    log: &Path,
+    name: &str,
+    secret: Option<&str>,
+) -> Result<(), ServerError> {
+    attach_output(&mut command, log, secret)?;
     configure_background_command(&mut command);
-    let status = command
-        .status()
+    let mut child = command
+        .spawn()
         .map_err(io("não foi possível iniciar o programa do banco"))?;
+    let copies = secret
+        .map(|secret| copy_masked(&mut child, log, secret))
+        .unwrap_or_default();
+    let status = child
+        .wait()
+        .map_err(io("não foi possível acompanhar o programa do banco"))?;
+    for copy in copies {
+        let _ = copy.join();
+    }
     if status.success() {
         Ok(())
     } else {
@@ -724,11 +805,12 @@ pub fn start(server: &mut ManagedServer, root: &Path) -> Result<(), ServerError>
     start_with(server, root, None)
 }
 
-/// `init` is MySQL's first-start SQL file.
+/// `first_start` is MySQL's init file with the password it sets: that start writes to the
+/// console, read and masked by the app, instead of its own log file.
 fn start_with(
     server: &mut ManagedServer,
     root: &Path,
-    init: Option<&SecretFile>,
+    first_start: Option<(&SecretFile, &str)>,
 ) -> Result<(), ServerError> {
     if !port_is_free(server.port) {
         return Err(ServerError::PortInUse(server.port));
@@ -753,29 +835,32 @@ fn start_with(
             // server would never be recognized as the app's (nor stopped by it).
             command.arg("--no-monitor");
         }
-        if let Some(init) = init {
-            command.arg(format!("--init-file={}", init.path.display()));
+        match first_start {
+            Some((init, _)) => {
+                command
+                    .arg("--console")
+                    .arg(format!("--init-file={}", init.path.display()));
+            }
+            None => {
+                command.arg(format!("--log-error={}", server.log_file().display()));
+            }
         }
     }
-    let log = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(server.log_file())
-        .map_err(io("não foi possível abrir o log do banco"))?;
     // Only what this start writes counts as its readiness.
-    let log_start = log.metadata().map(|meta| meta.len()).unwrap_or(0);
-    let errors = log
-        .try_clone()
-        .map_err(io("não foi possível abrir o log do banco"))?;
-    command
-        .current_dir(&server.folder)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(errors));
+    let log_start = fs::metadata(server.log_file())
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let secret = first_start.map(|(_, secret)| secret);
+    attach_output(&mut command, &server.log_file(), secret)?;
+    command.current_dir(&server.folder);
     configure_background_command(&mut command);
     let mut child = command
         .spawn()
         .map_err(io("não foi possível iniciar o banco"))?;
+    // The copies live as long as the server's output: until this first start is stopped.
+    if let Some(secret) = secret {
+        drop(copy_masked(&mut child, &server.log_file(), secret));
+    }
     server.process_id = Some(child.id());
     server.started_at = ports::process_started_at(child.id());
     // MySQL and MariaDB are ready, and have run their init file, only when they write
@@ -852,7 +937,7 @@ pub fn stop(server: &mut ManagedServer, root: &Path, vault: &dyn Vault) -> Resul
                     &STOP_TIMEOUT.as_secs().to_string(),
                 ]);
             // pg_ctl reports the timeout as a failure; the port check below decides.
-            let _ = run_to_end(command, &server.log_file(), "pg_ctl stop");
+            let _ = run_to_end(command, &server.log_file(), "pg_ctl stop", None);
         }
         _ => {
             let password = server.admin_password(vault)?;
@@ -1187,6 +1272,38 @@ mod tests {
         let error =
             ServerError::Authentication("MARCA-SECRETA-123".into()).scrubbed("MARCA-SECRETA-123");
         assert_eq!(error, ServerError::Authentication("••••".into()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A program that prints the password (as a server echoing a failed statement would):
+    /// its output goes through the app, and the log never holds the password, not even for
+    /// a moment, so nothing depends on cleaning the file afterwards.
+    #[test]
+    fn a_program_that_prints_the_secret_never_writes_it_to_disk() {
+        let root = std::env::temp_dir().join(format!("lcp-masked-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("servidor.log");
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args([
+                "/C",
+                "echo near 'MARCA-SECRETA-321' && echo erro MARCA-SECRETA-321 1>&2",
+            ]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args([
+                "-c",
+                "echo \"near 'MARCA-SECRETA-321'\"; echo erro MARCA-SECRETA-321 1>&2",
+            ]);
+            command
+        };
+        command.current_dir(&root);
+        run_to_end(command, &log, "teste", Some("MARCA-SECRETA-321")).unwrap();
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(!text.contains("MARCA-SECRETA-321"), "{text}");
+        assert!(text.contains("near '••••'"), "{text}");
+        assert!(text.contains("erro ••••"), "{text}");
         let _ = fs::remove_dir_all(&root);
     }
 
