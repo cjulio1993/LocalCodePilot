@@ -38,7 +38,13 @@ Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e
 
 **Se você usa a Alpha 7:** baixe o instalador ou o zip. O botão **Atualizar agora** da Alpha 7 não conclui a atualização.
 
-Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows pode mostrar "O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**. Se quiser conferir o arquivo, compare o SHA-256 publicado na release. A assinatura digital está a caminho, pelo programa gratuito de assinatura para projetos open source do [SignPath.io](https://about.signpath.io), com certificado da [SignPath Foundation](https://signpath.org); veja a [Code signing policy](CODE_SIGNING_POLICY.md).
+**Windows: confira o arquivo antes de abrir.** As versões atuais não têm assinatura de código, e o SmartScreen pode mostrar "O Windows protegeu o computador".
+
+1. Baixe o instalador ou o zip pela [página oficial de releases](https://github.com/cjulio1993/LocalCodePilot/releases).
+2. Na mesma release, abra o `SHA256SUMS.txt` e encontre o SHA-256 publicado para **o mesmo arquivo** que você baixou.
+3. Abra o PowerShell na pasta do arquivo e execute `Get-FileHash -Algorithm SHA256 -LiteralPath '.\NOME-DO-ARQUIVO'`, trocando `NOME-DO-ARQUIVO` pelo nome do instalador ou do zip baixado.
+4. Compare o valor em `Hash` com o SHA-256 da release. Se forem diferentes, **não execute o arquivo**: apague o download e baixe de novo pela página oficial. Se não encontrar o SHA-256 desse arquivo, não prossiga.
+5. Só se os valores coincidirem e você confiar na origem, abra o arquivo. Se o SmartScreen aparecer, clique em **Mais informações** e depois em **Executar assim mesmo**.
 
 **macOS (experimental).** Há um pacote universal (Intel e Apple Silicon) para testes; a validação em Mac real ainda está em andamento. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
@@ -138,7 +144,13 @@ Everything runs on your computer. The app does not send your projects anywhere, 
 
 **If you use Alpha 7:** download the installer or zip. Alpha 7's **Update now** button does not complete the update.
 
-The files in this version are not digitally signed yet, so Windows may show "Windows protected your PC". Click **More info** and then **Run anyway**. To check the file, compare the SHA-256 published on the release. Digital signing is on its way, through the free open-source code signing program of [SignPath.io](https://about.signpath.io), with a certificate by [SignPath Foundation](https://signpath.org); see the [Code signing policy](CODE_SIGNING_POLICY.md).
+**Windows: verify the file before opening it.** Current releases are not code signed, and SmartScreen may show "Windows protected your PC".
+
+1. Download the installer or zip from the [official releases page](https://github.com/cjulio1993/LocalCodePilot/releases).
+2. On the same release, open `SHA256SUMS.txt` and find the SHA-256 published for **the exact file** you downloaded.
+3. Open PowerShell in the file's folder and run `Get-FileHash -Algorithm SHA256 -LiteralPath '.\FILE-NAME'`, replacing `FILE-NAME` with the name of the downloaded installer or zip.
+4. Compare `Hash` with the SHA-256 on the release. If they differ, **do not run the file**: delete the download and download it again from the official releases page. If you cannot find the SHA-256 for that file, do not proceed.
+5. Only if the values match and you trust the source, open the file. If SmartScreen appears, click **More info** and then **Run anyway**.
 
 **macOS (experimental).** A universal package (Intel and Apple Silicon) is available for testing; validation on a real Mac is still in progress. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 

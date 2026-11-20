@@ -494,18 +494,19 @@ LISTEN 0 128 10.0.0.2:22 0.0.0.0:* users:((\"sshd\",pid=8,fd=3))";
 
     #[test]
     fn recognizes_a_child_process_and_not_an_unrelated_one() {
-        let mut child = if cfg!(target_os = "windows") {
-            std::process::Command::new("cmd")
-                .args(["/C", "ping", "-n", "3", "127.0.0.1"])
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .unwrap()
-        } else {
-            std::process::Command::new("sleep")
-                .arg("2")
-                .spawn()
-                .unwrap()
-        };
+        // `ping` itself, hidden like every program the app starts: a console (`cmd`) opened
+        // and killed while it starts can fail with 0xc0000142 and leave an error popup.
+        #[cfg(target_os = "windows")]
+        let mut child = hidden_windows_command("ping")
+            .args(["-n", "3", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        #[cfg(not(target_os = "windows"))]
+        let mut child = std::process::Command::new("sleep")
+            .arg("2")
+            .spawn()
+            .unwrap();
         let own = std::process::id();
         assert!(process_descends_from(child.id(), own));
         assert!(process_descends_from(own, own));

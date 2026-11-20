@@ -419,6 +419,26 @@ pub(super) struct ProjectUiState {
     expanded: HashSet<PathBuf>,
     /// The list of scanned folders is open on Projects.
     pub(super) show_roots: bool,
+    /// Height of the tallest closed card on the last frame, so every closed card has it.
+    card_layout: CardLayout,
+}
+
+/// The two parts of a closed card, measured apart so the actions line up at the bottom.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct CardLayout {
+    /// Name, folder, technologies, state, address and reason.
+    content: f32,
+    /// The main action and the row of secondary actions.
+    actions: f32,
+}
+
+impl CardLayout {
+    fn max(self, other: Self) -> Self {
+        Self {
+            content: self.content.max(other.content),
+            actions: self.actions.max(other.actions),
+        }
+    }
 }
 
 /// Projects with their summaries, in display order.
@@ -875,6 +895,10 @@ impl LocalCodePilot {
             let gap = 14.0;
             let card_width =
                 ((available_width - gap * (columns - 1) as f32) / columns as f32).floor();
+            // Every closed card takes the height of the tallest one measured on the last
+            // frame; an open card grows and is left out of the measure.
+            let target = self.project_ui.card_layout;
+            let mut tallest = CardLayout::default();
             for row in visible.chunks(columns) {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
@@ -898,14 +922,23 @@ impl LocalCodePilot {
                             egui::vec2(card_width, 0.0),
                             Layout::top_down(Align::Min),
                             |ui| {
-                                if let Some(selected) = card.show(ui, card_width) {
+                                let (selected, measured) = card.show(ui, card_width, target);
+                                if let Some(selected) = selected {
                                     action = Some(selected);
+                                }
+                                if !card.expanded {
+                                    tallest = tallest.max(measured);
                                 }
                             },
                         );
                     }
                 });
                 ui.add_space(gap);
+            }
+            if tallest != self.project_ui.card_layout {
+                // Width, filter or content changed: the next frame lines the cards up.
+                self.project_ui.card_layout = tallest;
+                ui.ctx().request_repaint();
             }
         }
         if let Some(action) = action {
@@ -1187,6 +1220,131 @@ pub(super) fn folder_line(ui: &mut egui::Ui, path: &Path, folder: Option<&str>) 
     }
 }
 
+/// The technology and language badges of a card, in display order.
+fn card_badges(project: &Project) -> Vec<(String, Color32)> {
+    let mut badges = project
+        .shown_technologies()
+        .map(|technology| (technology.to_string(), technology_color(technology)))
+        .chain(
+            project
+                .runtimes
+                .iter()
+                .copied()
+                .filter(|runtime| project.shows_runtime(*runtime))
+                .map(|runtime| (runtime.to_string(), runtime_color(runtime))),
+        )
+        .collect::<Vec<_>>();
+    if badges.is_empty() {
+        badges.push(("Projeto local".to_owned(), theme::MUTED));
+    }
+    badges
+}
+
+/// How many badges fit in one line of `available` width, keeping room for a "+N" badge
+/// when some are left out. At least the first one is shown.
+fn badges_that_fit(
+    widths: &[f32],
+    available: f32,
+    spacing: f32,
+    more_width: impl Fn(usize) -> f32,
+) -> usize {
+    let mut used = 0.0;
+    let mut shown = 0;
+    for (index, width) in widths.iter().enumerate() {
+        let next = used + if index > 0 { spacing } else { 0.0 } + width;
+        let left_out = widths.len() - index - 1;
+        let reserve = if left_out > 0 {
+            spacing + more_width(left_out)
+        } else {
+            0.0
+        };
+        if index > 0 && next + reserve > available {
+            break;
+        }
+        used = next;
+        shown = index + 1;
+    }
+    shown
+}
+
+/// The badges in a single line; the ones that do not fit become "+N", and the whole list
+/// goes to the hover, to screen readers and to "Detalhes técnicos".
+fn badge_line(ui: &mut egui::Ui, badges: &[(String, Color32)]) -> bool {
+    let badge_width = |ui: &egui::Ui, label: &str| {
+        let text = ui.ctx().fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    label.to_owned(),
+                    egui::FontId::proportional(12.0),
+                    theme::TEXT,
+                )
+                .size()
+                .x
+        });
+        // Inner margin (7 each side) and the stroke.
+        text + 16.0
+    };
+    let spacing = ui.spacing().item_spacing.x;
+    let widths = badges
+        .iter()
+        .map(|(label, _)| badge_width(ui, label))
+        .collect::<Vec<_>>();
+    let shown = badges_that_fit(&widths, ui.available_width(), spacing, |left_out| {
+        badge_width(ui, &format!("+{left_out}"))
+    });
+    let all = badges
+        .iter()
+        .map(|(label, _)| label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let response = ui
+        .horizontal(|ui| {
+            for (label, color) in &badges[..shown] {
+                runtime_badge(ui, label, *color);
+            }
+            if shown < badges.len() {
+                runtime_badge(ui, &format!("+{}", badges.len() - shown), theme::MUTED);
+            }
+        })
+        .response;
+    if shown < badges.len() {
+        let response = response.on_hover_text(&all);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &all));
+    }
+    shown == badges.len()
+}
+
+/// The reason in up to 3 lines, ending in "…" when longer. The whole sentence goes to the
+/// hover, to screen readers and to "Detalhes técnicos".
+fn reason_label(ui: &mut egui::Ui, reason: &str) -> bool {
+    let mut job = egui::text::LayoutJob::simple(
+        reason.to_owned(),
+        egui::FontId::proportional(13.0),
+        ui.visuals().text_color(),
+        ui.available_width(),
+    );
+    job.wrap.max_rows = REASON_MAX_LINES;
+    job.wrap.overflow_character = Some('…');
+    let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
+    let elided = galley.elided;
+    let mut response = ui.add(egui::Label::new(galley));
+    if elided {
+        response = response.on_hover_text(reason);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, reason));
+    !elided
+}
+
+/// What a closed card shortened, to show in full in "Detalhes técnicos".
+#[derive(Debug, Default, Clone)]
+struct Shortened {
+    reason: Option<String>,
+    badges: Option<String>,
+}
+
+/// Lines of the reason on a closed card; the rest is in "Detalhes técnicos".
+const REASON_MAX_LINES: usize = 3;
+
 struct ProjectCard<'a> {
     project: &'a Project,
     summary: &'a ProjectSummary,
@@ -1204,12 +1362,22 @@ struct ProjectCard<'a> {
 }
 
 impl ProjectCard<'_> {
-    fn show(&self, ui: &mut egui::Ui, width: f32) -> Option<ProjectCardAction> {
-        let ProjectCard {
-            project, summary, ..
-        } = *self;
-        let path = || project.path.clone();
+    /// Draws the card. A closed card is padded to `target`, so every closed card in the grid
+    /// has the same height with the actions at the bottom; returns the card's own measure.
+    fn show(
+        &self,
+        ui: &mut egui::Ui,
+        width: f32,
+        target: CardLayout,
+    ) -> (Option<ProjectCardAction>, CardLayout) {
+        let summary = self.summary;
         let mut action = None;
+        let mut measured = CardLayout::default();
+        let pad = |ui: &mut egui::Ui, wanted: f32, own: f32| {
+            if !self.expanded {
+                ui.add_space((wanted - own).max(0.0));
+            }
+        };
         Frame::new()
             .fill(theme::SURFACE)
             .stroke(Stroke::new(
@@ -1224,120 +1392,150 @@ impl ProjectCard<'_> {
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.set_width(width - 32.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&project.name).strong().size(16.0))
-                        .on_hover_text(display_path(&project.path));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let name = if self.favorite {
-                            "Remover dos favoritos"
-                        } else {
-                            "Adicionar aos favoritos"
-                        };
-                        let star = ui
-                            .button(RichText::new(STAR).color(if self.favorite {
-                                theme::PRIMARY
-                            } else {
-                                theme::MUTED
-                            }))
-                            .on_hover_text(name);
-                        star.widget_info(|| {
-                            egui::WidgetInfo::selected(
-                                egui::Role::Button,
-                                true,
-                                self.favorite,
-                                format!("{name}: {}", project.name),
-                            )
-                        });
-                        if star.clicked() {
-                            action = Some(ProjectCardAction::ToggleFavorite(path()));
-                        }
-                    });
-                });
-                folder_line(ui, &project.path, self.folder);
-                ui.horizontal_wrapped(|ui| {
-                    for technology in project.shown_technologies() {
-                        runtime_badge(ui, &technology.to_string(), technology_color(technology));
-                    }
-                    for runtime in project
-                        .runtimes
-                        .iter()
-                        .copied()
-                        .filter(|runtime| project.shows_runtime(*runtime))
-                    {
-                        runtime_badge(ui, &runtime.to_string(), runtime_color(runtime));
-                    }
-                    if project.runtimes.is_empty() && project.shown_technologies().next().is_none()
-                    {
-                        runtime_badge(ui, "Projeto local", theme::MUTED);
-                    }
-                });
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    state_badge(ui, summary);
-                    if let Some(http) = summary.http {
-                        http_badge(ui, http);
-                    }
-                });
-                if let Some(url) = &summary.url {
-                    address_label(ui, summary, url);
-                }
-                if let Some(reason) = &summary.reason {
-                    ui.label(RichText::new(reason).size(13.0));
-                }
-                if !self.custom_commands.is_empty() {
-                    ui.label(
-                        RichText::new("Comando definido por você")
-                            .color(theme::MUTED)
-                            .size(12.0),
-                    );
-                }
+                let content = ui.vertical(|ui| self.content(ui, &mut action));
+                let cut = content.inner;
+                measured.content = content.response.rect.height();
+                pad(ui, target.content, measured.content);
                 ui.add_space(10.0);
-                if primary_button(ui, &summary.primary, ui.available_width()) {
-                    action = Some(match summary.primary {
-                        PrimaryAction::Details => ProjectCardAction::ToggleDetails(path()),
-                        _ => primary_to_card_action(project, summary),
-                    });
-                }
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    if can_retry(summary) && retry_button(ui) {
-                        action = Some(ProjectCardAction::Start(project.path.clone()));
-                    }
-                    if summary.state == ProjectState::Running {
-                        if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
-                            action = Some(logs_action(project, summary));
-                        }
-                        if stop_button(ui, summary) {
-                            action = Some(stop_action(project, summary));
-                        }
-                    }
-                    let details = if self.expanded {
-                        "Ocultar detalhes técnicos"
-                    } else {
-                        "Detalhes técnicos"
-                    };
-                    if summary.primary != PrimaryAction::Details || self.expanded {
-                        let response = ui.button(details);
-                        if response.clicked() {
-                            action = Some(ProjectCardAction::ToggleDetails(path()));
-                        }
-                    }
-                });
+                measured.actions = ui
+                    .vertical(|ui| self.actions(ui, &mut action))
+                    .response
+                    .rect
+                    .height();
+                pad(ui, target.actions, measured.actions);
                 if self.expanded {
                     ui.separator();
-                    if let Some(selected) = self.details(ui) {
+                    if let Some(selected) = self.details(ui, cut) {
                         action = Some(selected);
                     }
                 }
             });
-        action
+        (action, measured)
+    }
+
+    /// Name, folder, technologies (one line), state, address and reason (up to 3 lines).
+    fn content(&self, ui: &mut egui::Ui, action: &mut Option<ProjectCardAction>) -> Shortened {
+        let ProjectCard {
+            project, summary, ..
+        } = *self;
+        let path = || project.path.clone();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&project.name).strong().size(16.0))
+                .on_hover_text(display_path(&project.path));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let name = if self.favorite {
+                    "Remover dos favoritos"
+                } else {
+                    "Adicionar aos favoritos"
+                };
+                let star = ui
+                    .button(RichText::new(STAR).color(if self.favorite {
+                        theme::PRIMARY
+                    } else {
+                        theme::MUTED
+                    }))
+                    .on_hover_text(name);
+                star.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::Role::Button,
+                        true,
+                        self.favorite,
+                        format!("{name}: {}", project.name),
+                    )
+                });
+                if star.clicked() {
+                    *action = Some(ProjectCardAction::ToggleFavorite(path()));
+                }
+            });
+        });
+        folder_line(ui, &project.path, self.folder);
+        let badges = card_badges(project);
+        let mut cut = Shortened {
+            badges: (!badge_line(ui, &badges)).then(|| {
+                badges
+                    .iter()
+                    .map(|(label, _)| label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }),
+            reason: None,
+        };
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            state_badge(ui, summary);
+            if let Some(http) = summary.http {
+                http_badge(ui, http);
+            }
+        });
+        if let Some(url) = &summary.url {
+            address_label(ui, summary, url);
+        }
+        if let Some(reason) = &summary.reason
+            && !reason_label(ui, reason)
+        {
+            cut.reason = Some(reason.clone());
+        }
+        if !self.custom_commands.is_empty() {
+            ui.label(
+                RichText::new("Comando definido por você")
+                    .color(theme::MUTED)
+                    .size(12.0),
+            );
+        }
+        cut
+    }
+
+    /// The main action and the row of secondary actions.
+    fn actions(&self, ui: &mut egui::Ui, action: &mut Option<ProjectCardAction>) {
+        let ProjectCard {
+            project, summary, ..
+        } = *self;
+        let path = || project.path.clone();
+        if primary_button(ui, &summary.primary, ui.available_width()) {
+            *action = Some(match summary.primary {
+                PrimaryAction::Details => ProjectCardAction::ToggleDetails(path()),
+                _ => primary_to_card_action(project, summary),
+            });
+        }
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if can_retry(summary) && retry_button(ui) {
+                *action = Some(ProjectCardAction::Start(project.path.clone()));
+            }
+            if summary.state == ProjectState::Running {
+                if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
+                    *action = Some(logs_action(project, summary));
+                }
+                if stop_button(ui, summary) {
+                    *action = Some(stop_action(project, summary));
+                }
+            }
+            let details = if self.expanded {
+                "Ocultar detalhes técnicos"
+            } else {
+                "Detalhes técnicos"
+            };
+            if summary.primary != PrimaryAction::Details || self.expanded {
+                let response = ui.button(details);
+                if response.clicked() {
+                    *action = Some(ProjectCardAction::ToggleDetails(path()));
+                }
+            }
+        });
     }
 
     /// Technical details and secondary actions, shown only on request.
-    fn details(&self, ui: &mut egui::Ui) -> Option<ProjectCardAction> {
+    fn details(&self, ui: &mut egui::Ui, cut: Shortened) -> Option<ProjectCardAction> {
         let project = self.project;
         let path = || project.path.clone();
         let mut action = None;
+        // What the closed card shortened is shown in full here, where the keyboard reaches.
+        if let Some(reason) = &cut.reason {
+            ui.label(RichText::new(reason).size(13.0));
+        }
+        if let Some(badges) = &cut.badges {
+            ui.label(RichText::new(badges).color(theme::MUTED).size(12.0));
+        }
         // The reason is already on the card; repeating it here adds nothing.
         let reason = self.summary.reason.as_deref().unwrap_or_default();
         let detail = |ui: &mut egui::Ui, text: &str| {
@@ -1460,6 +1658,39 @@ impl ProjectCard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn badges_that_do_not_fit_leave_room_for_the_count() {
+        let more = |_: usize| 30.0;
+        // Everything fits: no "+N".
+        assert_eq!(badges_that_fit(&[60.0, 60.0], 200.0, 10.0, more), 2);
+        // 60 + 10 + 60 + (10 + 30) = 170 fits in 170; the third badge does not.
+        assert_eq!(badges_that_fit(&[60.0, 60.0, 60.0], 170.0, 10.0, more), 2);
+        // Room for one badge and the count.
+        assert_eq!(badges_that_fit(&[60.0, 60.0, 60.0], 120.0, 10.0, more), 1);
+        // The first badge is always shown, even in a very narrow card.
+        assert_eq!(badges_that_fit(&[200.0, 60.0], 100.0, 10.0, more), 1);
+        assert_eq!(badges_that_fit(&[], 100.0, 10.0, more), 0);
+    }
+
+    #[test]
+    fn the_tallest_closed_card_sets_both_parts() {
+        let a = CardLayout {
+            content: 120.0,
+            actions: 40.0,
+        };
+        let b = CardLayout {
+            content: 90.0,
+            actions: 80.0,
+        };
+        assert_eq!(
+            a.max(b),
+            CardLayout {
+                content: 120.0,
+                actions: 80.0
+            }
+        );
+    }
 
     fn ready() -> ProjectEnvironment {
         ProjectEnvironment {

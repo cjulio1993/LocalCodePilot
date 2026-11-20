@@ -210,6 +210,32 @@ const SECTIONS: &[HelpSection] = &[
         link: None,
     },
     HelpSection {
+        id: "instalar-windows",
+        title: "Instalar no Windows com segurança",
+        blocks: &[
+            Block::Text(
+                "As versões atuais não têm assinatura de código, e o SmartScreen pode mostrar \"O Windows protegeu o computador\". Antes de abrir o instalador ou o zip, confira o SHA-256 do arquivo.",
+            ),
+            Block::Item(
+                "1. Baixe pela página oficial",
+                "use a página de releases do LocalCodePilot no GitHub e encontre, no arquivo SHA256SUMS.txt da mesma release, o SHA-256 publicado para esse mesmo arquivo.",
+            ),
+            Block::Item(
+                "2. Calcule o SHA-256",
+                "no PowerShell, na pasta do download, execute Get-FileHash -Algorithm SHA256 -LiteralPath '.\\NOME-DO-ARQUIVO', trocando o nome pelo do arquivo baixado.",
+            ),
+            Block::Item(
+                "3. Compare",
+                "se o valor em Hash for diferente, ou se não houver SHA-256 para esse arquivo, não execute o arquivo: apague-o e baixe de novo pela página oficial.",
+            ),
+            Block::Item(
+                "4. Abra",
+                "só se os valores coincidirem e você confiar na origem. Se aparecer \"O Windows protegeu o computador\", escolha Mais informações e depois Executar assim mesmo.",
+            ),
+        ],
+        link: None,
+    },
+    HelpSection {
         id: "tecnico",
         title: "Detalhes técnicos",
         blocks: &[
@@ -622,13 +648,14 @@ mod tests {
                 "Abrir site e ver logs",
                 "Containers e Compose",
                 "Bancos de dados",
+                "Instalar no Windows com segurança",
                 "Detalhes técnicos",
             ]
         );
         // Only the first steps are open at first; the rest is one click away.
         assert_eq!(
             HelpState::default().open,
-            [true, false, false, false, false, false, false]
+            [true, false, false, false, false, false, false, false]
         );
     }
 
