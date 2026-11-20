@@ -1,0 +1,34 @@
+name: Validate database packages
+
+# The database server packages pinned in runtime/src/database-packages.json must keep
+# matching an independent source: Scoop's manifest (PostgreSQL), the signed sha256sums.txt
+# (MariaDB) and Oracle's GPG signature (MySQL). A weekly run catches a source that changed.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-database-packages.yml"
+      - "runtime/src/database-packages.json"
+      - "scripts/verify-database-packages.ps1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify pinned database packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download every package and check it against its independent source
+        shell: pwsh
+        run: ./scripts/verify-database-packages.ps1 -Completo
