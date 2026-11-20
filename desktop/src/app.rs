@@ -48,7 +48,8 @@ use localcodepilot_platform::{
     },
     ports::{
         PortAvailability, PortOwner, answers_http, inspect_tcp_port, listener_process_ids,
-        listening_ports, process_descends_from, process_name, terminate_process_tree,
+        listening_ports, process_descends_from, process_name, process_started_at,
+        terminate_process_tree,
     },
 };
 use localcodepilot_runtime::databases::{
@@ -166,7 +167,7 @@ struct RunningProcess {
     last_health_check: Instant,
     port_unavailable_since: Option<Instant>,
     /// Listener confirmed to be this process or one of its children.
-    verified_listener: Option<u32>,
+    verified_listener: Option<VerifiedListener>,
     /// Another program listening on the port reserved for this process.
     foreign_listener: Option<PortOwner>,
     http_health: Option<HttpHealthCheckResult>,
@@ -3764,7 +3765,7 @@ impl LocalCodePilot {
             // app would mark the project as running and check another program's site.
             let listeners = listener_process_ids(port);
             let belongs = |process_id: &u32| {
-                running.verified_listener == Some(*process_id)
+                still_verified(running.verified_listener, *process_id, process_started_at)
                     || process_descends_from(*process_id, running.child.id())
             };
             let own_listener = listeners
@@ -3799,9 +3800,13 @@ impl LocalCodePilot {
                 running.verified_listener,
                 running.child.id(),
                 process_descends_from,
+                process_started_at,
             ) {
                 PortListener::Project(process_id) => {
-                    running.verified_listener = process_id;
+                    running.verified_listener = process_id.map(|process_id| VerifiedListener {
+                        process_id,
+                        started_at: process_started_at(process_id),
+                    });
                     running.foreign_listener = None;
                     true
                 }
@@ -7735,17 +7740,42 @@ enum PortListener {
     None,
 }
 
+/// A listener already confirmed as the project's. The start time tells it apart from a later
+/// process that got the same PID after it exited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifiedListener {
+    process_id: u32,
+    started_at: Option<u64>,
+}
+
+/// Whether `process_id` is still the confirmed listener: same PID and same start time. Without
+/// a start time, the earlier confirmation is not reused.
+fn still_verified(
+    verified: Option<VerifiedListener>,
+    process_id: u32,
+    started_at: impl Fn(u32) -> Option<u64>,
+) -> bool {
+    verified.is_some_and(|verified| {
+        verified.process_id == process_id
+            && verified.started_at.is_some()
+            && started_at(process_id) == verified.started_at
+    })
+}
+
 fn port_listener(
     availability: PortAvailability,
-    verified: Option<u32>,
+    verified: Option<VerifiedListener>,
     project_process: u32,
     descends_from: impl Fn(u32, u32) -> bool,
+    started_at: impl Fn(u32) -> Option<u64>,
 ) -> PortListener {
     match availability {
         PortAvailability::Available => PortListener::None,
-        PortAvailability::Occupied { owner: None } => PortListener::Project(verified),
+        PortAvailability::Occupied { owner: None } => {
+            PortListener::Project(verified.map(|verified| verified.process_id))
+        }
         PortAvailability::Occupied { owner: Some(owner) } => {
-            if verified == Some(owner.process_id)
+            if still_verified(verified, owner.process_id, started_at)
                 || descends_from(owner.process_id, project_process)
             {
                 PortListener::Project(Some(owner.process_id))
@@ -7976,7 +8006,7 @@ mod tests {
 
     #[test]
     fn the_port_counts_only_when_the_project_listens_on_it() {
-        use super::{PortAvailability, PortListener, PortOwner, port_listener};
+        use super::{PortAvailability, PortListener, PortOwner, VerifiedListener, port_listener};
         let owner = |process_id| PortAvailability::Occupied {
             owner: Some(PortOwner {
                 process_id,
@@ -7984,16 +8014,76 @@ mod tests {
             }),
         };
         let child_of_10 = |process: u32, ancestor: u32| process == 11 && ancestor == 10;
+        let started_at_100 = |_: u32| Some(100);
         assert_eq!(
-            port_listener(owner(11), None, 10, child_of_10),
+            port_listener(owner(11), None, 10, child_of_10, started_at_100),
             PortListener::Project(Some(11))
         );
         assert!(matches!(
-            port_listener(owner(99), None, 10, child_of_10),
+            port_listener(owner(99), None, 10, child_of_10, started_at_100),
             PortListener::Foreign(PortOwner { process_id: 99, .. })
         ));
+        // A listener whose relationship to the project was rejected (for example, its
+        // registered parent PID now belongs to the project but the project is newer) is
+        // another program's: no Rodando, no address, no Abrir site.
+        let relationship_rejected = |_: u32, _: u32| false;
+        assert!(matches!(
+            port_listener(owner(11), None, 10, relationship_rejected, started_at_100),
+            PortListener::Foreign(PortOwner { process_id: 11, .. })
+        ));
+        // A listener confirmed earlier is reused only while it is the same process: same PID
+        // and same start time.
+        let verified = Some(VerifiedListener {
+            process_id: 11,
+            started_at: Some(100),
+        });
         assert_eq!(
-            port_listener(PortAvailability::Available, Some(11), 10, child_of_10),
+            port_listener(
+                owner(11),
+                verified,
+                10,
+                relationship_rejected,
+                started_at_100
+            ),
+            PortListener::Project(Some(11))
+        );
+        // The confirmed listener exited and another program got its PID: it started later, so
+        // the earlier confirmation does not count and the relationship is checked again.
+        let started_later = |_: u32| Some(500);
+        assert!(matches!(
+            port_listener(
+                owner(11),
+                verified,
+                10,
+                relationship_rejected,
+                started_later
+            ),
+            PortListener::Foreign(PortOwner { process_id: 11, .. })
+        ));
+        // Without a start time, the earlier confirmation is not reused either.
+        let unknown_start = |_: u32| None;
+        let verified_without_time = Some(VerifiedListener {
+            process_id: 11,
+            started_at: None,
+        });
+        assert!(matches!(
+            port_listener(
+                owner(11),
+                verified_without_time,
+                10,
+                relationship_rejected,
+                unknown_start
+            ),
+            PortListener::Foreign(PortOwner { process_id: 11, .. })
+        ));
+        assert_eq!(
+            port_listener(
+                PortAvailability::Available,
+                verified,
+                10,
+                child_of_10,
+                started_at_100
+            ),
             PortListener::None
         );
         // Known limitation: without the owner (macOS, Linux, or netstat failing on Windows)
@@ -8003,12 +8093,12 @@ mod tests {
                 PortAvailability::Occupied { owner: None },
                 None,
                 10,
-                child_of_10
+                child_of_10,
+                started_at_100
             ),
             PortListener::Project(None)
         );
     }
-
     #[test]
     fn a_foreign_port_owner_is_named_only_in_the_log() {
         let port = localcodepilot_core::ports::Port::new(5173).unwrap();

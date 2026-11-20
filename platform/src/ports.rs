@@ -54,13 +54,62 @@ pub fn process_descends_from(process_id: u32, ancestor: u32) -> bool {
         return false;
     };
     system.refresh_processes(ProcessesToUpdate::All, false);
-    let mut current = Pid::from_u32(process_id);
+    descends_through(process_id, ancestor, |process_id| {
+        system
+            .process(Pid::from_u32(process_id))
+            .map(|process| ProcessLink {
+                parent: process.parent().map(Pid::as_u32),
+                started_at: process.start_time(),
+            })
+    })
+}
+
+/// When `process_id` started, in seconds since the epoch. Together with the PID it tells a
+/// process apart from a later one that got the same PID.
+pub fn process_started_at(process_id: u32) -> Option<u64> {
+    let pid = Pid::from_u32(process_id);
+    let mut system = System::new().ok()?;
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
+    system.process(pid).map(|process| process.start_time())
+}
+
+/// What the process table says about one process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessLink {
+    parent: Option<u32>,
+    /// Start time in seconds since the epoch.
+    started_at: u64,
+}
+
+/// Walks up from `process_id` looking for `ancestor`. A process keeps the PID of its parent
+/// after the parent exits, and Windows may give that PID to a new process: a "parent" that
+/// started after its child is that new process, not the parent, and the walk stops there.
+/// Start times have a one-second resolution, so a parent from the same second is accepted.
+/// Anything the table does not show (a process that exited) proves nothing: the answer is
+/// `false`, and the port is then treated as another program's.
+fn descends_through(
+    process_id: u32,
+    ancestor: u32,
+    lookup: impl Fn(u32) -> Option<ProcessLink>,
+) -> bool {
+    if process_id == ancestor {
+        return true;
+    }
+    let Some(mut current) = lookup(process_id) else {
+        return false;
+    };
     // Bounded: a corrupted process table must not loop forever.
     for _ in 0..64 {
-        let Some(parent) = system.process(current).and_then(|process| process.parent()) else {
+        let Some(parent_id) = current.parent else {
             return false;
         };
-        if parent.as_u32() == ancestor {
+        let Some(parent) = lookup(parent_id) else {
+            return false;
+        };
+        if parent.started_at > current.started_at {
+            return false;
+        }
+        if parent_id == ancestor {
             return true;
         }
         current = parent;
@@ -460,9 +509,62 @@ LISTEN 0 128 10.0.0.2:22 0.0.0.0:* users:((\"sshd\",pid=8,fd=3))";
         let own = std::process::id();
         assert!(process_descends_from(child.id(), own));
         assert!(process_descends_from(own, own));
+        // The child is newer than every ancestor of this process, so even when Windows gave
+        // it the PID once held by one of them, it is not taken for an ancestor.
         assert!(!process_descends_from(own, child.id()));
         child.kill().ok();
         child.wait().ok();
+    }
+
+    fn table(entries: &[(u32, Option<u32>, u64)]) -> impl Fn(u32) -> Option<ProcessLink> + '_ {
+        move |process_id| {
+            entries
+                .iter()
+                .find(|(id, _, _)| *id == process_id)
+                .map(|(_, parent, started_at)| ProcessLink {
+                    parent: *parent,
+                    started_at: *started_at,
+                })
+        }
+    }
+
+    #[test]
+    fn a_legitimate_chain_of_parents_is_recognized() {
+        // 10 (project) -> 11 (shell) -> 12 (server); 12 and 11 started in the same second.
+        let processes = [(10, Some(1), 100), (11, Some(10), 105), (12, Some(11), 105)];
+        assert!(descends_through(10, 10, table(&processes)));
+        assert!(descends_through(11, 10, table(&processes)));
+        assert!(descends_through(12, 10, table(&processes)));
+        assert!(!descends_through(10, 12, table(&processes)));
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_taken_for_an_ancestor() {
+        // 50 started at 200 under a parent with PID 10 that exited; the project later got
+        // PID 10 at 300. 50 is not the project's.
+        let reused_ancestor = [(10, Some(1), 300), (50, Some(10), 200)];
+        assert!(!descends_through(50, 10, table(&reused_ancestor)));
+
+        // Same, one level up: 61's parent 60 is real, but 60's parent PID 10 now belongs
+        // to the project, which started after 60.
+        let reused_link = [(10, Some(1), 300), (60, Some(10), 200), (61, Some(60), 250)];
+        assert!(!descends_through(61, 10, table(&reused_link)));
+
+        // A reused PID in the middle of the chain stops the walk before the project.
+        let reused_middle = [(10, Some(1), 100), (20, Some(10), 400), (30, Some(20), 150)];
+        assert!(!descends_through(30, 10, table(&reused_middle)));
+    }
+
+    #[test]
+    fn what_the_table_does_not_show_proves_nothing() {
+        // The server's parent exited: the relationship cannot be checked.
+        let missing_parent = [(10, Some(1), 100), (12, Some(11), 110)];
+        assert!(!descends_through(12, 10, table(&missing_parent)));
+        // The project itself is not in the table.
+        let missing_project = [(12, Some(10), 110)];
+        assert!(!descends_through(12, 10, table(&missing_project)));
+        // The process looked up is not in the table.
+        assert!(!descends_through(12, 10, table(&[])));
     }
 
     #[cfg(target_os = "windows")]
