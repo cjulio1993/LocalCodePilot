@@ -4,6 +4,8 @@ mod command_trust;
 mod command_ui;
 #[path = "container_ui.rs"]
 mod container_ui;
+#[path = "database_ui.rs"]
+mod database_ui;
 #[path = "help_ui.rs"]
 mod help_ui;
 #[path = "language_ui.rs"]
@@ -411,6 +413,23 @@ impl DatabaseStatus {
                 ))
     }
 
+    /// The app can prepare and start this database itself (Windows, a pinned package for the
+    /// engine, a host on this computer, not a Compose service): "Iniciar" leads there.
+    pub(super) fn app_can_prepare(&self) -> bool {
+        cfg!(windows)
+            && self.requirement.compose_service.is_none()
+            && self
+                .requirement
+                .host
+                .as_deref()
+                .and_then(localcodepilot_runtime::database_connection::loopback_address)
+                .is_some()
+            && localcodepilot_runtime::database_packages::package_for_this_system(
+                self.requirement.engine,
+            )
+            .is_some()
+    }
+
     /// The server answered but did not let the project in: "Com problema", with the reason.
     pub(super) fn rejection(&self) -> Option<String> {
         let test = self.connection.as_ref()?;
@@ -809,6 +828,8 @@ pub struct LocalCodePilot {
     update_confirmed_runs: Vec<ActiveRun>,
     container_state: container_ui::ContainerState,
     project_ui: project_ui::ProjectUiState,
+    /// Preparing and starting the databases of projects (T019.04).
+    database: database_ui::DatabaseState,
     help: help_ui::HelpState,
     languages: language_ui::LanguageState,
     command_draft: Option<command_ui::CommandDraft>,
@@ -919,6 +940,7 @@ impl LocalCodePilot {
             update_confirmed_runs: Vec::new(),
             container_state: container_ui::ContainerState::default(),
             project_ui: project_ui::ProjectUiState::default(),
+            database: database_ui::DatabaseState::default(),
             help: help_ui::HelpState::default(),
             languages: language_ui::LanguageState::default(),
             command_draft: None,
@@ -2317,6 +2339,24 @@ impl LocalCodePilot {
             command_trust::AfterConfirm::StartProject(project_path.to_path_buf()),
         ) {
             return;
+        }
+        // A local database the project needs must accept the project's login before any of
+        // its processes start (CA-5); on Windows the app prepares or starts its own server.
+        if self.database.jobs.contains_key(project_path) {
+            return;
+        }
+        match self.project_database_gate(project_path, &environment) {
+            database_ui::DatabaseGate::Ready => {
+                self.database.failures.remove(project_path);
+            }
+            database_ui::DatabaseGate::Waiting => return,
+            database_ui::DatabaseGate::Blocked(reason) => {
+                self.database
+                    .failures
+                    .insert(project_path.to_path_buf(), reason.clone());
+                self.notify(reason);
+                return;
+            }
         }
         for database in detect_database_requirements(project_path) {
             if database.engine == DatabaseEngine::Sqlite {
@@ -5079,6 +5119,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_update_install(ctx);
         self.poll_containers(ctx);
         self.poll_languages(ctx);
+        self.poll_database_jobs(ctx);
         self.persist_workspace_state(false);
     }
 
@@ -5094,6 +5135,7 @@ impl eframe::App for LocalCodePilot {
         self.show_port_termination_confirmation(ui);
         self.show_clear_history_confirmation(ui);
         self.show_update_confirmation(ui);
+        self.show_database_confirmation(ui);
         self.show_notification(ui);
     }
 }
@@ -5123,6 +5165,8 @@ impl Drop for LocalCodePilot {
                 terminate_process(&mut running.child);
             }
         }
+        // After the projects: their database servers, with the servers' own shutdown.
+        self.stop_session_databases();
     }
 }
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Pinned database server packages (Windows x64). Change version, url, sha256 and size together, after confirming the SHA-256 against the independent source in provenance. scripts/verify-database-packages.ps1 checks these pins in CI.",
+  "_comment": "Pinned database server packages (Windows x64). Change version, url, sha256 and size together (space_bytes: the extracted package plus a new server's data, measured), after confirming the SHA-256 against the independent source in provenance. scripts/verify-database-packages.ps1 checks these pins in CI.",
   "packages": [
     {
       "engine": "postgresql",
@@ -8,6 +8,7 @@
       "url": "https://get.enterprisedb.com/postgresql/postgresql-19.0-1-windows-x64-binaries.zip",
       "sha256": "bc397f1e58f018e364262074c2e9d960f6169e7436892dbe6e73313d1bb201ff",
       "size_bytes": 68546993,
+      "space_bytes": 270000000,
       "archive_root": "pgsql",
       "server_program": "bin/postgres.exe",
       "provenance": "EDB publishes no hash list; SHA-256 equal to ScoopInstaller/Main bucket/postgresql.json at commit 253eb4e8e76f7f4f33118aa16de089db6010900b"
@@ -19,6 +20,7 @@
       "url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.4-winx64.zip",
       "sha256": "641bdaf01004927194c561b956f14f915a3166c9b0f9b1b5464ae63152bf4b96",
       "size_bytes": 344052123,
+      "space_bytes": 1650000000,
       "archive_root": "mysql-9.7.4-winx64",
       "server_program": "bin/mysqld.exe",
       "provenance": "GPG signature (mysql-9.7.4-winx64.zip.asc) by MySQL Release Engineering, key B7B3B788A8D3785C (BCA4 3417 C3B4 85DD 128E C6D4 B7B3 B788 A8D3 785C), the key the MySQL manual names for 9.5.0 and later; MySQL 9.7 is the current LTS"
@@ -30,6 +32,7 @@
       "url": "https://archive.mariadb.org/mariadb-12.3.4/winx64-packages/mariadb-12.3.4-winx64.zip",
       "sha256": "178020ae8ff7d0caf77b5a3ad7e33e574e13001352d31b02503f97224e4b1f77",
       "size_bytes": 106623921,
+      "space_bytes": 500000000,
       "archive_root": "mariadb-12.3.4-winx64",
       "server_program": "bin/mariadbd.exe",
       "provenance": "sha256sums.txt of the release (signed) and the downloads.mariadb.org REST API; MariaDB 12.3 is the current LTS"

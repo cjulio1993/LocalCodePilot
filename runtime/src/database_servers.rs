@@ -52,6 +52,10 @@ pub struct ManagedServer {
     /// The running process, as started by the app.
     pub process_id: Option<u32>,
     pub started_at: Option<u64>,
+    /// The app closed while this server did not stop in time; cleared once it is seen
+    /// stopped, or stopped by the app.
+    #[serde(default)]
+    pub stop_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +77,10 @@ pub enum ServerError {
     StopTimedOut,
     /// The server answered but did not accept the administrator password.
     Authentication(String),
+    /// The project's database or user name has characters the app does not create.
+    InvalidName,
+    /// The server on the port is not recognized as the app's: nothing is changed on it.
+    NotManaged(String),
     Io(String),
 }
 
@@ -104,6 +112,14 @@ impl std::fmt::Display for ServerError {
             Self::Authentication(detail) => write!(
                 formatter,
                 "o banco não aceitou a senha de administração: {detail}"
+            ),
+            Self::InvalidName => write!(
+                formatter,
+                "O nome do banco ou do usuário na configuração deste projeto não pode ser criado automaticamente. Confira os nomes em Detalhes."
+            ),
+            Self::NotManaged(reason) => write!(
+                formatter,
+                "o servidor na porta não é o que o LocalCodePilot preparou ({reason}); nada foi alterado nele"
             ),
             Self::Io(detail) => write!(formatter, "{detail}"),
         }
@@ -344,6 +360,24 @@ pub fn load_registry(root: &Path) -> Vec<ManagedServer> {
         .unwrap_or_default()
 }
 
+/// The server the app prepared for `engine` (`postgresql`, `mysql`, `mariadb`) on `port`.
+pub fn find_server(root: &Path, engine: &str, port: u16) -> Option<ManagedServer> {
+    load_registry(root)
+        .into_iter()
+        .find(|server| server.engine == engine && server.port == port)
+}
+
+/// Remembers (or forgets) that a server did not stop when the app closed.
+pub fn mark_stop_failed(
+    root: &Path,
+    server: &ManagedServer,
+    failed: bool,
+) -> Result<(), ServerError> {
+    let mut server = server.clone();
+    server.stop_failed = failed;
+    save_server(root, &server)
+}
+
 fn save_server(root: &Path, server: &ManagedServer) -> Result<(), ServerError> {
     let mut servers = load_registry(root);
     servers.retain(|known| known.id != server.id);
@@ -496,6 +530,7 @@ pub fn prepare(
         id,
         process_id: None,
         started_at: None,
+        stop_failed: false,
     };
     let password = new_password()?;
     vault
@@ -957,6 +992,7 @@ pub fn stop(server: &mut ManagedServer, root: &Path, vault: &dyn Vault) -> Resul
         if port_is_free(server.port) && process_gone(server) {
             server.process_id = None;
             server.started_at = None;
+            server.stop_failed = false;
             return save_server(root, server);
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -978,6 +1014,186 @@ fn log_tail(log: &Path) -> String {
     let text = fs::read_to_string(log).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(20)..].join("\n")
+}
+
+// --- The project's database and user ---------------------------------------------------
+
+/// Names the app creates: letters, digits and `_`, up to 63 characters, not starting with a
+/// digit. Anything else is left to the person (no quoting games with other servers' rules).
+pub fn creatable_name(name: &str) -> bool {
+    (1..=63).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && !name.as_bytes()[0].is_ascii_digit()
+}
+
+/// A MySQL string literal body: backslashes and quotes escaped.
+fn mysql_literal(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\'', "''")
+}
+
+/// A PostgreSQL string literal body (standard_conforming_strings): quotes doubled.
+fn postgres_literal(text: &str) -> String {
+    text.replace('\'', "''")
+}
+
+/// The statements that give the project its database and user on MySQL/MariaDB. Privileges
+/// stay on the project's database (`db.*`), never `*.*` nor `GRANT OPTION`; an existing user
+/// is not changed (`IF NOT EXISTS`).
+fn mysql_project_sql(database: &str, user: &str, password: &str) -> Vec<String> {
+    let mut sql = vec![format!("CREATE DATABASE IF NOT EXISTS `{database}`")];
+    for host in ["localhost", "127.0.0.1"] {
+        sql.push(format!(
+            "CREATE USER IF NOT EXISTS '{user}'@'{host}' IDENTIFIED BY '{}'",
+            mysql_literal(password)
+        ));
+        sql.push(format!(
+            "GRANT ALL PRIVILEGES ON `{database}`.* TO '{user}'@'{host}'"
+        ));
+    }
+    sql
+}
+
+/// PostgreSQL: a login role without SUPERUSER or CREATEDB, owner of the project's database.
+fn postgres_role_sql(user: &str, password: &str) -> String {
+    format!(
+        "CREATE ROLE \"{user}\" LOGIN PASSWORD '{}'",
+        postgres_literal(password)
+    )
+}
+
+fn postgres_database_sql(database: &str, user: &str) -> String {
+    format!("CREATE DATABASE \"{database}\" OWNER \"{user}\"")
+}
+
+/// Gives the project its database and user on a server the app manages, only what is
+/// missing. Returns what was created, for "Detalhes técnicos". The project's connection test
+/// decides afterwards whether it is ready: nothing here presumes it.
+pub fn ensure_project_database(
+    server: &ManagedServer,
+    vault: &dyn Vault,
+    database: &str,
+    user: &str,
+    password: &str,
+) -> Result<Vec<String>, ServerError> {
+    if !creatable_name(database) || !creatable_name(user) {
+        return Err(ServerError::InvalidName);
+    }
+    match recognize(server) {
+        Recognition::Managed => {}
+        Recognition::NotRunning => {
+            return Err(ServerError::NotManaged(
+                "o servidor não está rodando".into(),
+            ));
+        }
+        Recognition::Existing { reason } => return Err(ServerError::NotManaged(reason)),
+    }
+    let admin = server.admin_password(vault)?;
+    let result = if server.engine == "postgresql" {
+        postgres_ensure(server, &admin, database, user, password)
+    } else {
+        mysql_ensure(server, &admin, database, user, password)
+    };
+    result.map_err(|error| error.scrubbed(password).scrubbed(&admin))
+}
+
+fn postgres_ensure(
+    server: &ManagedServer,
+    admin: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+) -> Result<Vec<String>, ServerError> {
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host("127.0.0.1")
+        .port(server.port)
+        .user(POSTGRES_ADMIN)
+        .password(admin)
+        .dbname("postgres")
+        .connect_timeout(Duration::from_secs(10));
+    let failed = |error: tokio_postgres::Error| ServerError::Authentication(error.to_string());
+    runtime()?.block_on(async {
+        let (client, connection) = config
+            .connect(tokio_postgres::NoTls)
+            .await
+            .map_err(failed)?;
+        let driver = tokio::spawn(connection);
+        let mut done = vec![];
+        let role = client
+            .query_opt("SELECT 1 FROM pg_roles WHERE rolname = $1", &[&user])
+            .await
+            .map_err(failed)?;
+        if role.is_none() {
+            client
+                .batch_execute(&postgres_role_sql(user, password))
+                .await
+                .map_err(failed)?;
+            done.push(format!("criado o usuário {user}"));
+        }
+        let exists = client
+            .query_opt("SELECT 1 FROM pg_database WHERE datname = $1", &[&database])
+            .await
+            .map_err(failed)?;
+        if exists.is_none() {
+            client
+                .batch_execute(&postgres_database_sql(database, user))
+                .await
+                .map_err(failed)?;
+            done.push(format!("criado o banco {database}"));
+        }
+        drop(client);
+        let _ = driver.await;
+        Ok(done)
+    })
+}
+
+fn mysql_ensure(
+    server: &ManagedServer,
+    admin: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+) -> Result<Vec<String>, ServerError> {
+    use mysql_async::prelude::Queryable;
+    let ssl = mysql_async::SslOpts::default().with_danger_accept_invalid_certs(true);
+    let options = mysql_async::OptsBuilder::default()
+        .ip_or_hostname("127.0.0.1")
+        .tcp_port(server.port)
+        .user(Some(MYSQL_ADMIN))
+        .pass(Some(admin))
+        .ssl_opts(ssl);
+    let failed = |error: mysql_async::Error| ServerError::Authentication(error.to_string());
+    runtime()?.block_on(async {
+        let mut connection = mysql_async::Conn::new(options).await.map_err(failed)?;
+        let had_database: Option<String> = connection
+            .exec_first(
+                "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?",
+                (database,),
+            )
+            .await
+            .map_err(failed)?;
+        let had_user: Option<String> = connection
+            .exec_first(
+                "SELECT User FROM mysql.user WHERE User = ? LIMIT 1",
+                (user,),
+            )
+            .await
+            .map_err(failed)?;
+        for statement in mysql_project_sql(database, user, password) {
+            connection.query_drop(statement).await.map_err(failed)?;
+        }
+        let _ = connection.disconnect().await;
+        let mut done = vec![];
+        if had_user.is_none() {
+            done.push(format!("criado o usuário {user}"));
+        }
+        if had_database.is_none() {
+            done.push(format!("criado o banco {database}"));
+        }
+        Ok(done)
+    })
 }
 
 // --- Administrator connection -----------------------------------------------------------
@@ -1071,6 +1287,7 @@ mod tests {
                 .join("abc"),
             process_id: Some(4242),
             started_at: Some(1000),
+            stop_failed: false,
         }
     }
 
@@ -1374,6 +1591,46 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn only_plain_names_are_created() {
+        for name in ["loja", "app_2", "_x", "Loja_DB"] {
+            assert!(creatable_name(name), "{name}");
+        }
+        for name in [
+            "",
+            "2app",
+            "loja-dev",
+            "a b",
+            "x`y",
+            "x'y",
+            "x\"y",
+            "x;DROP",
+            &"a".repeat(64),
+        ] {
+            assert!(!creatable_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn project_privileges_stay_on_the_project_database() {
+        let sql = mysql_project_sql("loja", "app", "s'e\\nha").join("\n");
+        assert!(sql.contains("CREATE DATABASE IF NOT EXISTS `loja`"));
+        assert!(
+            sql.contains("CREATE USER IF NOT EXISTS 'app'@'localhost' IDENTIFIED BY 's''e\\\\nha'")
+        );
+        assert!(sql.contains("GRANT ALL PRIVILEGES ON `loja`.* TO 'app'@'127.0.0.1'"));
+        assert!(!sql.contains("*.*"));
+        assert!(!sql.to_ascii_uppercase().contains("GRANT OPTION"));
+        let role = postgres_role_sql("app", "s'enha");
+        assert_eq!(role, "CREATE ROLE \"app\" LOGIN PASSWORD 's''enha'");
+        for forbidden in ["SUPERUSER", "CREATEDB", "CREATEROLE"] {
+            assert!(!role.contains(forbidden));
+        }
+        assert_eq!(
+            postgres_database_sql("loja", "app"),
+            "CREATE DATABASE \"loja\" OWNER \"app\""
+        );
+    }
     #[test]
     fn a_missing_credential_changes_nothing() {
         let vault = MemoryVault(RefCell::default());

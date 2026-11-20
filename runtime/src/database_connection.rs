@@ -49,6 +49,12 @@ impl DatabaseCredentials {
         self.database.is_some() && self.user.is_some() && !self.unresolved.contains(&"senha")
     }
 
+    /// The project's password, to create its user on a server the app manages (never shown
+    /// nor stored by the app). Empty when the project has none.
+    pub fn password_for_setup(&self) -> String {
+        self.password.clone().unwrap_or_default()
+    }
+
     /// The setting names that keep the test from running, for "Detalhes técnicos".
     pub fn insufficient(&self) -> Vec<String> {
         let missing = self.missing.iter().map(|name| format!("{name} ausente"));
