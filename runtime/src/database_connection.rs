@@ -291,6 +291,100 @@ pub fn test_connection(
     Some(test)
 }
 
+/// Tests a database outside this computer, only when the person asks ("Testar conexão" in
+/// "Detalhes técnicos"). No certificate exception: PostgreSQL without TLS, MySQL/MariaDB
+/// without TLS (a server that requires TLS reports it as the failure).
+pub fn test_remote_connection(
+    requirement: &DatabaseRequirement,
+    credentials: &DatabaseCredentials,
+    timeout: Duration,
+) -> Option<ConnectionTest> {
+    let host = requirement.host.as_deref()?.trim().to_owned();
+    if requirement.compose_service.is_some()
+        || loopback_address(&host).is_some()
+        || host.is_empty()
+        || !matches!(
+            requirement.engine,
+            DatabaseEngine::PostgreSql | DatabaseEngine::MySql | DatabaseEngine::MariaDb
+        )
+    {
+        return None;
+    }
+    let port = requirement.port?;
+    let mut test = ConnectionTest {
+        outcome: ConnectionOutcome::InsufficientData,
+        target: format!("{host}:{port}"),
+        user: credentials.user.clone(),
+        database: credentials.database.clone(),
+        insufficient: credentials.insufficient(),
+        at: SystemTime::now(),
+    };
+    let (Some(user), Some(database)) = (&credentials.user, &credentials.database) else {
+        return Some(test);
+    };
+    if !credentials.complete() {
+        return Some(test);
+    }
+    let password = credentials.password.as_deref().unwrap_or_default();
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        test.outcome = ConnectionOutcome::Failed("não foi possível preparar o teste".into());
+        return Some(test);
+    };
+    let engine = requirement.engine;
+    let attempt = async {
+        if engine == DatabaseEngine::PostgreSql {
+            let mut config = tokio_postgres::Config::new();
+            config
+                .host(&host)
+                .port(port)
+                .user(user)
+                .password(password)
+                .dbname(database);
+            match config.connect(tokio_postgres::NoTls).await {
+                Ok((client, connection)) => {
+                    let driver = tokio::spawn(connection);
+                    drop(client);
+                    let _ = driver.await;
+                    ConnectionOutcome::Connected
+                }
+                Err(error) => match error.code() {
+                    Some(code) => classify_postgres(code.code()),
+                    None => classify_error_chain(&error),
+                },
+            }
+        } else {
+            let options = mysql_async::OptsBuilder::default()
+                .ip_or_hostname(host.clone())
+                .tcp_port(port)
+                .user(Some(user))
+                .pass(Some(password))
+                .db_name(Some(database));
+            match mysql_async::Conn::new(options).await {
+                Ok(connection) => {
+                    let _ = connection.disconnect().await;
+                    ConnectionOutcome::Connected
+                }
+                Err(mysql_async::Error::Server(error)) => {
+                    classify_mysql(error.code, &error.message)
+                }
+                Err(mysql_async::Error::Io(error)) => classify_error_chain(&error),
+                Err(error) => ConnectionOutcome::Failed(error.to_string()),
+            }
+        }
+    };
+    test.outcome = runtime
+        .block_on(async { tokio::time::timeout(timeout, attempt).await })
+        .unwrap_or(ConnectionOutcome::TimedOut);
+    if let ConnectionOutcome::Failed(message) = &mut test.outcome
+        && !password.is_empty()
+    {
+        *message = message.replace(password, "••••");
+    }
+    Some(test)
+}
 async fn postgres_login(
     address: IpAddr,
     port: u16,
@@ -355,9 +449,15 @@ fn classify_error_chain(error: &(dyn std::error::Error + 'static)) -> Connection
 }
 
 fn classify_io(message: &str) -> ConnectionOutcome {
-    let lower = message.to_ascii_lowercase();
+    let lower = message.to_lowercase();
     if lower.contains("refused") || lower.contains("10061") || lower.contains("recusou") {
         ConnectionOutcome::NotResponding
+    } else if lower.contains("11001")
+        || lower.contains("not known")
+        || lower.contains("no such host")
+        || lower.contains("não é conhecido")
+    {
+        ConnectionOutcome::Failed("o nome do servidor não foi encontrado".into())
     } else {
         ConnectionOutcome::Failed(message.to_owned())
     }
@@ -563,6 +663,41 @@ mod tests {
     }
 
     #[test]
+    fn the_remote_test_is_only_for_hosts_outside_this_computer() {
+        let credentials = DatabaseCredentials {
+            database: Some("app".into()),
+            user: Some("app".into()),
+            ..Default::default()
+        };
+        for host in ["localhost", "127.0.0.1", "::1"] {
+            assert!(
+                test_remote_connection(
+                    &requirement(PathBuf::new(), DatabaseEngine::MySql, host),
+                    &credentials,
+                    Duration::from_secs(1)
+                )
+                .is_none(),
+                "{host}"
+            );
+        }
+        let mut compose = requirement(PathBuf::new(), DatabaseEngine::MySql, "db");
+        compose.compose_service = Some("db".into());
+        assert!(test_remote_connection(&compose, &credentials, Duration::from_secs(1)).is_none());
+        // A name that does not resolve fails fast and says so.
+        let test = test_remote_connection(
+            &requirement(
+                PathBuf::new(),
+                DatabaseEngine::PostgreSql,
+                "nao-existe.invalid",
+            ),
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(test.target, "nao-existe.invalid:5432");
+        assert_ne!(test.outcome, ConnectionOutcome::Connected);
+    }
+    #[test]
     fn the_certificate_exception_cannot_be_built_for_another_host() {
         let remote = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 10));
         assert!(mysql_options(remote, 3306, "u", "p", "d", true).is_none());
@@ -589,6 +724,10 @@ mod tests {
         assert_eq!(
             classify_io("connection refused (os error 10061)"),
             ConnectionOutcome::NotResponding
+        );
+        assert_eq!(
+            classify_io("Input/output error: Este host não é conhecido. (os error 11001)"),
+            ConnectionOutcome::Failed("o nome do servidor não foi encontrado".into())
         );
     }
 
