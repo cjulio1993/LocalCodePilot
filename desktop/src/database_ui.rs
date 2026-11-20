@@ -1281,98 +1281,18 @@ impl LocalCodePilot {
         let Some(mut request) = self.database.sql_confirmation.clone() else {
             return;
         };
-        let engine_name = if request.engine == "podman" {
-            "Podman"
-        } else {
-            "Docker"
-        };
-        let mut open = true;
-        let mut cancel = false;
-        let mut confirm = false;
-        egui::Window::new("Preparar SQL Server para este projeto?")
-            .id(egui::Id::unique("sql-server-confirmation"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .default_width(540.0)
-            .show(root_ui, |ui| {
-                ui.label(format!(
-                    "O LocalCodePilot vai baixar a imagem oficial do SQL Server ({}) e criar um container com o {engine_name}. O SQL Server Developer é gratuito para desenvolvimento e teste, nos termos da Microsoft. Os dados ficarão num volume do {engine_name}. Ao fechar o aplicativo, o LocalCodePilot tentará parar o container.",
-                    sql_server_container::APPROXIMATE_DOWNLOAD
-                ));
-                if let Some(old) = &request.replaces {
-                    ui.add_space(6.0);
-                    ui.label(format!(
-                        "O projeto passará a usar um banco vazio. Os dados anteriores continuam no volume {}.",
-                        old.volume()
-                    ));
-                }
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(format!(
-                        "Banco {} e usuário {}, com acesso só a esse banco.",
-                        request.database, request.user
-                    ))
-                    .color(theme::MUTED),
-                );
-                egui::CollapsingHeader::new("Detalhes técnicos")
-                    .id_salt("sql-server-confirmation-details")
-                    .show(ui, |ui| {
-                        for line in [
-                            format!(
-                                "{} em 127.0.0.1:{}",
-                                sql_server_container::VERSION_LABEL,
-                                request.port
-                            ),
-                            format!("Imagem: {}", sql_server_container::IMAGE),
-                            "Container e volume: localcodepilot-mssql-<identificador>".to_owned(),
-                            format!("Configuração: {}", display_path(&request.requirement.source)),
-                            "Quem administra o motor de containers consegue ver a senha inicial do administrador, que o LocalCodePilot troca logo depois do preparo.".to_owned(),
-                        ] {
-                            ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
-                        }
-                    });
-                ui.add_space(8.0);
-                ui.checkbox(
-                    &mut request.accepted,
-                    "Li e aceito os termos de licença do Microsoft SQL Server",
-                );
-                ui.hyperlink_to(
-                    "Ler os termos de licença (site da Microsoft)",
-                    sql_server_container::TERMS_URL,
-                );
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Agora não").clicked() {
-                        cancel = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            request.accepted,
-                            egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY),
-                        )
-                        .clicked()
-                    {
-                        confirm = true;
-                    }
+        match sql_server_confirmation_window(root_ui, &mut request) {
+            SqlChoice::Cancel => self.database.sql_confirmation = None,
+            SqlChoice::Waiting => self.database.sql_confirmation = Some(request),
+            SqlChoice::Confirm => {
+                self.database.sql_confirmation = None;
+                let project = request.project.clone();
+                self.spawn_job(&project, "SQL Server", true, move |sender| {
+                    run_sql_prepare_job(&request, sender)
                 });
-            });
-        if cancel || !open {
-            self.database.sql_confirmation = None;
-            return;
+            }
         }
-        if !(confirm && request.accepted) {
-            self.database.sql_confirmation = Some(request);
-            return;
-        }
-        self.database.sql_confirmation = None;
-        let project = request.project.clone();
-        self.spawn_job(&project, "SQL Server", true, move |sender| {
-            run_sql_prepare_job(&request, sender)
-        });
     }
-
     fn show_fix_confirmation(&mut self, root_ui: &mut egui::Ui) {
         let Some(confirmation) = self.database.fix_confirmation.clone() else {
             return;
@@ -1542,6 +1462,105 @@ impl LocalCodePilot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlChoice {
+    Waiting,
+    Cancel,
+    /// Only with the terms accepted.
+    Confirm,
+}
+
+/// "Preparar SQL Server para este projeto?": what is downloaded, where the data stays, the
+/// terms checkbox (unchecked) and "Preparar e iniciar", enabled only once it is checked.
+fn sql_server_confirmation_window(
+    root_ui: &mut egui::Ui,
+    request: &mut SqlServerRequest,
+) -> SqlChoice {
+    let engine_name = if request.engine == "podman" {
+        "Podman"
+    } else {
+        "Docker"
+    };
+    let mut open = true;
+    let mut cancel = false;
+    let mut confirm = false;
+    egui::Window::new("Preparar SQL Server para este projeto?")
+        .id(egui::Id::unique("sql-server-confirmation"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .default_width(540.0)
+        .show(root_ui, |ui| {
+            ui.label(format!(
+                "O LocalCodePilot vai baixar a imagem oficial do SQL Server ({}) e criar um container com o {engine_name}. O SQL Server Developer é gratuito para desenvolvimento e teste, nos termos da Microsoft. Os dados ficarão num volume do {engine_name}. Ao fechar o aplicativo, o LocalCodePilot tentará parar o container.",
+                sql_server_container::APPROXIMATE_DOWNLOAD
+            ));
+            if let Some(old) = &request.replaces {
+                ui.add_space(6.0);
+                ui.label(format!(
+                    "O projeto passará a usar um banco vazio. Os dados anteriores continuam no volume {}.",
+                    old.volume()
+                ));
+            }
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "Banco {} e usuário {}, com acesso só a esse banco.",
+                    request.database, request.user
+                ))
+                .color(theme::MUTED),
+            );
+            egui::CollapsingHeader::new("Detalhes técnicos")
+                .id_salt("sql-server-confirmation-details")
+                .show(ui, |ui| {
+                    for line in [
+                        format!(
+                            "{} em 127.0.0.1:{}",
+                            sql_server_container::VERSION_LABEL,
+                            request.port
+                        ),
+                        format!("Imagem: {}", sql_server_container::IMAGE),
+                        "Container e volume: localcodepilot-mssql-<identificador>".to_owned(),
+                        format!("Configuração: {}", display_path(&request.requirement.source)),
+                        "Quem administra o motor de containers consegue ver a senha inicial do administrador, que o LocalCodePilot troca logo depois do preparo.".to_owned(),
+                    ] {
+                        ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+                    }
+                });
+            ui.add_space(8.0);
+            ui.checkbox(
+                &mut request.accepted,
+                "Li e aceito os termos de licença do Microsoft SQL Server",
+            );
+            ui.hyperlink_to(
+                "Ler os termos de licença (site da Microsoft)",
+                sql_server_container::TERMS_URL,
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("Agora não").clicked() {
+                    cancel = true;
+                }
+                if ui
+                    .add_enabled(
+                        request.accepted,
+                        egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY),
+                    )
+                    .clicked()
+                {
+                    confirm = true;
+                }
+            });
+        });
+    if cancel || !open {
+        SqlChoice::Cancel
+    } else if confirm && request.accepted {
+        SqlChoice::Confirm
+    } else {
+        SqlChoice::Waiting
+    }
+}
 /// The first free port after `default` that no server of the app uses either.
 fn free_port_after(default: u16) -> Option<u16> {
     let registered: Vec<u16> = database_root()
@@ -2030,6 +2049,113 @@ fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Renders the SQL Server confirmation without a screen and reads its accessibility tree:
+    /// (choice, [(name, disabled)]).
+    fn sql_confirmation_tree(request: &mut SqlServerRequest) -> (SqlChoice, Vec<(String, bool)>) {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut choice = SqlChoice::Waiting;
+        let mut nodes = vec![];
+        // A window settles its size in the first frames.
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| choice = sql_server_confirmation_window(ui, request),
+            );
+            output.textures_delta.clear();
+            if let Some(update) = output.platform_output.accesskit_update {
+                nodes = update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        node.label()
+                            .or(node.value())
+                            .map(|name| (name.to_owned(), node.is_disabled()))
+                    })
+                    .collect();
+            }
+        }
+        (choice, nodes)
+    }
+
+    #[test]
+    fn the_sql_server_terms_are_never_accepted_for_the_person() {
+        let mut request = SqlServerRequest {
+            project: PathBuf::from("loja"),
+            requirement: DatabaseRequirement {
+                source: PathBuf::from("loja").join(".env"),
+                engine: DatabaseEngine::SqlServer,
+                host: Some("127.0.0.1".into()),
+                port: Some(14339),
+                compose_service: None,
+            },
+            engine: "docker",
+            port: 14339,
+            database: "loja".into(),
+            user: "app_loja".into(),
+            password: "x".into(),
+            replaces: None,
+            accepted: false,
+            path: None,
+        };
+        let (choice, nodes) = sql_confirmation_tree(&mut request);
+        let find = |nodes: &[(String, bool)], name: &str| {
+            nodes
+                .iter()
+                .find(|(label, _)| label.contains(name))
+                .cloned()
+                .unwrap_or_else(|| panic!("{name} não está na janela: {nodes:?}"))
+        };
+        assert_eq!(choice, SqlChoice::Waiting);
+        // What is downloaded and where the data stays, before any choice.
+        find(
+            &nodes,
+            "baixar a imagem oficial do SQL Server (cerca de 1,5 GB)",
+        );
+        find(&nodes, "Os dados ficarão num volume do Docker");
+        find(
+            &nodes,
+            "Banco loja e usuário app_loja, com acesso só a esse banco.",
+        );
+        find(&nodes, "Ler os termos de licença");
+        // The box starts unchecked and "Preparar e iniciar" is disabled until it is checked.
+        assert!(!request.accepted);
+        find(
+            &nodes,
+            "Li e aceito os termos de licença do Microsoft SQL Server",
+        );
+        assert!(
+            find(&nodes, "Preparar e iniciar").1,
+            "deve estar desabilitado"
+        );
+        assert!(!find(&nodes, "Agora não").1);
+        request.accepted = true;
+        let (choice, nodes) = sql_confirmation_tree(&mut request);
+        assert_eq!(choice, SqlChoice::Waiting, "marcar não inicia nada sozinho");
+        assert!(
+            !find(&nodes, "Preparar e iniciar").1,
+            "habilitado depois do aceite"
+        );
+        // "Criar SQL Server novo" says the project starts empty and where the old data is.
+        request.replaces = Some(SqlServerContainer {
+            id: "abc123".into(),
+            engine: "docker".into(),
+            port: 14339,
+            stop_failed: false,
+        });
+        let (_, nodes) = sql_confirmation_tree(&mut request);
+        find(
+            &nodes,
+            "Os dados anteriores continuam no volume localcodepilot-mssql-abc123.",
+        );
+    }
 
     #[test]
     fn sql_server_failures_offer_only_the_recovery_that_helps() {
