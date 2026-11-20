@@ -34,7 +34,9 @@ param(
     [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida')]
     [string[]]$Cenario = @('todos'),
     [string]$Pasta = (Join-Path ([IO.Path]::GetTempPath()) 'lcp-e2e-update'),
-    [switch]$Recompilar
+    [switch]$Recompilar,
+    # Pasta para salvar a janela de cada falha de download, com "Detalhes técnicos" aberto.
+    [string]$Capturas = ''
 )
 
 Set-StrictMode -Version 3
@@ -46,7 +48,7 @@ $versaoNova = '0.4.0-alpha.91'
 $todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida')
 if ($Cenario -contains 'todos') { $Cenario = $todos }
 
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 $uia = [System.Windows.Automation.AutomationElement]
 
 # --- Pasta descartável -------------------------------------------------------
@@ -190,6 +192,23 @@ function Find-Botao([int]$ProcessId, [string]$Nome) {
     catch { $null }
 }
 
+function Save-Janela([int]$ProcessId, [string]$Arquivo) {
+    $janela = Get-Janela $ProcessId
+    if (-not $janela) { return }
+    if (-not ('E2eJanela' -as [type])) {
+        Add-Type 'using System; using System.Runtime.InteropServices; public static class E2eJanela { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
+    }
+    [E2eJanela]::SetForegroundWindow([IntPtr]$janela.Current.NativeWindowHandle) | Out-Null
+    Start-Sleep -Milliseconds 600
+    $r = $janela.Current.BoundingRectangle
+    if ([double]::IsInfinity($r.X) -or $r.Width -le 0) { return }
+    $imagem = New-Object System.Drawing.Bitmap ([int]$r.Width), ([int]$r.Height)
+    $grafico = [System.Drawing.Graphics]::FromImage($imagem)
+    $grafico.CopyFromScreen([int]$r.X, [int]$r.Y, 0, 0, $imagem.Size)
+    $imagem.Save($Arquivo)
+    $grafico.Dispose(); $imagem.Dispose()
+}
+
 function Wait-Ate([scriptblock]$Condicao, [int]$Segundos) {
     $limite = (Get-Date).AddSeconds($Segundos)
     while ((Get-Date) -lt $limite) {
@@ -268,6 +287,10 @@ function Invoke-Cenario([string]$Nome) {
     $app = $null
     $na_tela = ''
     $esperado = ''
+    $tentarDeNovo = $false
+    $atualizarAgora = $false
+    $paginaOficial = $false
+    $copiarErro = $false
     try {
         $app = Start-Process -FilePath $alvo -PassThru
         $botao = Wait-Ate { Find-Botao $app.Id 'Atualizar agora' } $(if ($Nome -eq 'sem-conexao') { 20 } else { 60 })
@@ -285,9 +308,11 @@ function Invoke-Cenario([string]$Nome) {
                 'sucesso' { "LocalCodePilot atualizado para a versão $versaoNova." }
                 'confirmacao-lenta' { "LocalCodePilot atualizado para a versão $versaoNova." }
                 'rollback' { "A versão $versaoAntiga foi restaurada e continua em uso" }
-                'sha-errado' { 'o SHA-256 do executável baixado não corresponde ao publicado' }
-                'queda-no-meio' { 'download' }
-                'assinatura-invalida' { 'a assinatura dos checksums não confere com a chave do LocalCodePilot' }
+                # Falhas aparecem em camadas (T002.07): o título simples fica na tela e o erro
+                # técnico fica recolhido em "Detalhes técnicos".
+                'sha-errado' { 'Atualização recusada por segurança' }
+                'queda-no-meio' { 'O download foi interrompido' }
+                'assinatura-invalida' { 'Atualização recusada por segurança' }
             }
             $falhaNoDownload = $Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida'
             $na_tela = Wait-Ate {
@@ -296,11 +321,36 @@ function Invoke-Cenario([string]$Nome) {
                 }
                 foreach ($processo in $processos) {
                     $texto = (Get-TextosNaTela $processo.Id) | Where-Object {
-                        $_.Contains($esperado) -and (-not $falhaNoDownload -or $_.StartsWith('Atualização automática:'))
+                        if ($falhaNoDownload) { $_ -eq $esperado } else { $_.Contains($esperado) }
                     } | Select-Object -First 1
                     if ($texto) { return $texto }
                 }
             } 150
+            if ($falhaNoDownload -and $na_tela) {
+                $textosDaFalha = Get-TextosNaTela $app.Id
+                $tentarDeNovo = $textosDaFalha -contains 'Tentar de novo'
+                $atualizarAgora = [bool](Find-Botao $app.Id 'Atualizar agora')
+                $paginaOficial = ($textosDaFalha -contains 'Consultar página oficial da versão') -or ($textosDaFalha -contains 'Ver página oficial da versão')
+                $detalhes = Find-Botao $app.Id 'Detalhes técnicos'
+                if ($detalhes) {
+                    $padroes = $detalhes.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }
+                    try {
+                        if ($padroes -contains 'InvokePatternIdentifiers.Pattern') {
+                            $detalhes.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+                        }
+                        elseif ($padroes -contains 'TogglePatternIdentifiers.Pattern') {
+                            $detalhes.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
+                        }
+                        else { $detalhes.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand() }
+                    }
+                    catch {}
+                }
+                $copiarErro = [bool](Wait-Ate { Find-Botao $app.Id 'Copiar erro técnico' } 5)
+                if ($Capturas) {
+                    New-Item -ItemType Directory -Force $Capturas | Out-Null
+                    Save-Janela $app.Id (Join-Path $Capturas "atualizacao-$Nome.png")
+                }
+            }
         }
         # O atualizador e a limpeza terminam antes de conferir os arquivos.
         Wait-Ate {
@@ -336,7 +386,14 @@ function Invoke-Cenario([string]$Nome) {
             $checagens["cópia das configurações em backups\antes-de-$versaoNova"] = $resultado.copia_das_configuracoes -eq "antes-de-$versaoNova"
             $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
         }
-        if ($Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida') { $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0 }
+        if ($Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida') {
+            $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
+            $checagens['link para a página oficial da versão'] = $paginaOficial
+            $checagens['Detalhes técnicos com Copiar erro técnico'] = $copiarErro
+            # Recusa por segurança não oferece "Tentar de novo" nem "Atualizar agora"; queda no download oferece.
+            if ($Nome -eq 'queda-no-meio') { $checagens['oferece Tentar de novo'] = $tentarDeNovo }
+            else { $checagens['sem Tentar de novo nem Atualizar agora na recusa por segurança'] = -not ($tentarDeNovo -or $atualizarAgora) }
+        }
         if ($Nome -eq 'assinatura-invalida') {
             $checagens['executável nem chegou a ser baixado'] = -not ((Get-Content -LiteralPath (Join-Path $raiz 'servidor.log') -ErrorAction SilentlyContinue) -match [regex]::Escape($nomeExe))
         }

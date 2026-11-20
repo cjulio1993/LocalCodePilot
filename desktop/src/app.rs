@@ -17,7 +17,9 @@ mod update_progress_ui;
 
 use crate::{
     config, theme,
-    updates::{self, UpdateInfo, UpdateInstallEvent, UpdatePhase},
+    updates::{
+        self, UpdateFailure, UpdateFailureKind, UpdateInfo, UpdateInstallEvent, UpdatePhase,
+    },
 };
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
 use egui_phosphor::regular::{
@@ -630,15 +632,15 @@ pub struct LocalCodePilot {
     workspace_dirty: bool,
     last_workspace_save: Instant,
     workspace_save_error_reported: bool,
-    update_check: Option<Receiver<Result<Option<UpdateInfo>, String>>>,
+    update_check: Option<Receiver<Result<Option<UpdateInfo>, UpdateFailure>>>,
     available_update: Option<UpdateInfo>,
     manual_update_check: bool,
-    update_check_result: Option<Result<String, String>>,
+    update_check_result: Option<Result<String, UpdateFailure>>,
     update_install: Option<Receiver<UpdateInstallEvent>>,
     update_install_version: Option<String>,
     update_install_progress: Option<(u64, Option<u64>)>,
     update_install_phase: Option<UpdatePhase>,
-    update_install_error: Option<String>,
+    update_install_error: Option<UpdateFailure>,
     /// The updater was launched; the app shows "Reiniciando" until it closes.
     update_restart_at: Option<Instant>,
     container_state: container_ui::ContainerState,
@@ -917,20 +919,25 @@ impl LocalCodePilot {
                     update.filter(updates::cached_update_is_newer).filter(|_| {
                         self.manual_update_check || self.workspace_state.update_remind_after <= now
                     });
+                // Uma consulta nova pode trazer arquivos corrigidos: a próxima instalação
+                // verifica tudo de novo, então o erro anterior deixa de valer.
+                if !self.update_in_progress() {
+                    self.update_install_error = None;
+                }
                 self.manual_update_check = false;
                 self.workspace_dirty = true;
                 self.update_check = None;
             }
             Ok(Err(error)) => {
-                self.update_check_result = Some(Err(format!(
-                    "Não foi possível verificar atualizações: {error}"
-                )));
+                self.update_check_result = Some(Err(error));
                 self.manual_update_check = false;
                 self.update_check = None;
             }
             Err(TryRecvError::Disconnected) => {
-                self.update_check_result =
-                    Some(Err("A consulta foi interrompida. Tente novamente.".into()));
+                self.update_check_result = Some(Err(UpdateFailure::new(
+                    UpdateFailureKind::NoConnection,
+                    "a consulta de atualizações foi interrompida",
+                )));
                 self.manual_update_check = false;
                 self.update_check = None;
             }
@@ -940,6 +947,13 @@ impl LocalCodePilot {
 
     fn update_in_progress(&self) -> bool {
         self.update_install.is_some() || self.update_restart_at.is_some()
+    }
+
+    /// A última tentativa foi recusada por segurança (checksum, assinatura ou arquivo inválido).
+    fn update_refused_for_safety(&self) -> bool {
+        self.update_install_error
+            .as_ref()
+            .is_some_and(|failure| !failure.can_retry())
     }
 
     fn update_progress(&self) -> update_progress_ui::UpdateProgress {
@@ -1019,7 +1033,8 @@ impl LocalCodePilot {
                         }
                         Err(error) => {
                             self.update_install_version = None;
-                            self.update_install_error = Some(error);
+                            self.update_install_error =
+                                Some(UpdateFailure::new(UpdateFailureKind::Local, error));
                         }
                     }
                 }
@@ -1035,8 +1050,10 @@ impl LocalCodePilot {
             self.update_install = None;
             self.update_install_progress = None;
             self.update_install_version = None;
-            self.update_install_error =
-                Some("o download da atualização foi interrompido; tente novamente".into());
+            self.update_install_error = Some(UpdateFailure::new(
+                UpdateFailureKind::Download,
+                "o download da atualização foi interrompido",
+            ));
         }
     }
 
@@ -1045,6 +1062,7 @@ impl LocalCodePilot {
             return;
         };
         let automatic_update = updates::automatic_update_available(&update);
+        let refused = self.update_refused_for_safety();
         let installing = self.update_in_progress();
         let progress = self.update_progress();
         let mut remind_later = false;
@@ -1086,13 +1104,16 @@ impl LocalCodePilot {
                             remind_later = true;
                         }
                         if automatic_update {
-                            if ui
-                                .add_enabled(
-                                    !installing,
-                                    egui::Button::new("Atualizar agora")
-                                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                                )
-                                .clicked()
+                            // Depois de uma recusa por segurança, "Atualizar agora" seria só
+                            // tentar de novo o mesmo arquivo: a ação passa a ser a página oficial.
+                            if !refused
+                                && ui
+                                    .add_enabled(
+                                        !installing,
+                                        egui::Button::new("Atualizar agora")
+                                            .fill(theme::PRIMARY.gamma_multiply(0.72)),
+                                    )
+                                    .clicked()
                             {
                                 start_install = true;
                             }
@@ -1118,14 +1139,8 @@ impl LocalCodePilot {
                 }
                 if let Some(error) = &self.update_install_error {
                     ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(format!("Atualização automática: {error}"))
-                            .color(Color32::from_rgb(255, 112, 112))
-                            .size(10.0),
-                    );
-                    if ui.link("Baixar o ZIP manualmente").clicked() {
-                        ui.ctx()
-                            .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                    if update_failure_panel(ui, error, Some(&update.release_url), "banner") {
+                        start_install = true;
                     }
                 }
             });
@@ -4476,6 +4491,8 @@ impl LocalCodePilot {
             .as_ref()
             .is_some_and(updates::automatic_update_available);
         let mut start_install = false;
+        let mut retry_check = false;
+        let refused = self.update_refused_for_safety();
         let updating = self.update_in_progress();
         let progress = self.update_progress();
         ui.heading("Atualizações");
@@ -4490,13 +4507,10 @@ impl LocalCodePilot {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!("LocalCodePilot {}", updates::current_version())).strong());
                     if ui.add_enabled(self.update_check.is_none() && !updating, egui::Button::new("Verificar se há atualizações")).clicked() {
-                        self.manual_update_check = true;
-                        self.workspace_state.update_remind_after = 0;
-                        self.workspace_dirty = true;
-                        self.update_check_result = None;
-                        self.update_check = Some(updates::spawn_update_check(ui.ctx().clone()));
+                        retry_check = true;
                     }
                     if automatic_update
+                        && !refused
                         && ui
                             .add_enabled(
                                 !updating,
@@ -4533,25 +4547,23 @@ impl LocalCodePilot {
                     ui.horizontal(|ui| { ui.spinner(); ui.label("Verificando atualizações..."); });
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
                 } else if let Some(result) = &self.update_check_result {
-                    let (message, color) = match result {
-                        Ok(message) => (message, theme::SUCCESS),
-                        Err(message) => (message, Color32::from_rgb(255, 112, 112)),
-                    };
-                    ui.label(RichText::new(message).color(color).size(11.0));
+                    match result {
+                        Ok(message) => {
+                            ui.label(RichText::new(message).color(theme::SUCCESS).size(11.0));
+                        }
+                        Err(failure) => {
+                            if update_failure_panel(ui, failure, None, "check") {
+                                retry_check = true;
+                            }
+                        }
+                    }
                 }
                 if updating {
                     update_progress_ui::show(ui, &progress);
                 } else if let Some(error) = &self.update_install_error {
-                    ui.label(
-                        RichText::new(format!("Atualização automática: {error}"))
-                            .color(Color32::from_rgb(255, 112, 112))
-                            .size(11.0),
-                    );
-                    if let Some(update) = &available_update
-                        && ui.link("Baixar o ZIP manualmente").clicked()
-                    {
-                        ui.ctx()
-                            .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                    let release_url = available_update.as_ref().map(|update| update.release_url.as_str());
+                    if update_failure_panel(ui, error, release_url, "settings") {
+                        start_install = true;
                     }
                 }
                 if self.workspace_state.last_update_check > 0 {
@@ -4559,6 +4571,13 @@ impl LocalCodePilot {
                 }
                 ui.label(RichText::new("A consulta automática acontece uma vez por dia ao abrir o app. Você pode verificar agora a qualquer momento.").color(theme::MUTED).size(10.0));
             });
+        if retry_check && self.update_check.is_none() && !updating {
+            self.manual_update_check = true;
+            self.workspace_state.update_remind_after = 0;
+            self.workspace_dirty = true;
+            self.update_check_result = None;
+            self.update_check = Some(updates::spawn_update_check(ui.ctx().clone()));
+        }
         if start_install && let Some(update) = available_update {
             self.start_update_install(&update, ui.ctx().clone());
         }
@@ -6620,6 +6639,62 @@ fn update_versions_line(new_version: &str) -> String {
         "Versão atual: {} · Nova versão: {new_version}",
         updates::current_version()
     )
+}
+
+/// Erro de atualização em camadas: título e mensagem simples, a ação segura e, sob "Detalhes
+/// técnicos", o erro original com um botão de copiar. Retorna `true` quando o usuário pede "Tentar
+/// de novo". Na falha de verificação não há tentar de novo: a página oficial vira a ação principal.
+fn update_failure_panel(
+    ui: &mut egui::Ui,
+    failure: &UpdateFailure,
+    release_url: Option<&str>,
+    id: &str,
+) -> bool {
+    let mut retry = false;
+    ui.label(
+        RichText::new(failure.title())
+            .strong()
+            .color(theme::DANGER)
+            .size(12.0),
+    );
+    ui.label(
+        RichText::new(failure.message())
+            .color(theme::MUTED)
+            .size(11.0),
+    );
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        let release = release_url.zip(failure.release_page_label());
+        if failure.can_retry() {
+            if ui.button("Tentar de novo").clicked() {
+                retry = true;
+            }
+            if let Some((url, label)) = release
+                && ui.link(label).clicked()
+            {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            }
+        } else if let Some((url, label)) = release
+            && ui
+                .add(egui::Button::new(label).fill(theme::PRIMARY.gamma_multiply(0.72)))
+                .clicked()
+        {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+    });
+    let details_key = egui::Id::unique(("update-failure-details", id));
+    if notice::disclosure(ui, details_key, "Detalhes técnicos", false) {
+        ui.label(
+            RichText::new(&failure.technical)
+                .monospace()
+                .color(theme::MUTED)
+                .size(10.0),
+        );
+        if ui.button("Copiar erro técnico").clicked() {
+            ui.ctx().copy_text(failure.technical.clone());
+        }
+    }
+    retry
 }
 
 fn process_state_key(state: ProcessState) -> &'static str {

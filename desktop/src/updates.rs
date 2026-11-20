@@ -97,7 +97,120 @@ pub enum UpdateInstallEvent {
         total_bytes: Option<u64>,
     },
     Prepared(PreparedUpdate),
-    Failed(String),
+    Failed(UpdateFailure),
+}
+
+/// Why checking for or preparing an update failed (T002 CA-6). The app shows a
+/// plain title, a sentence and one action per kind; the original error stays in
+/// `technical`, behind "Detalhes técnicos". In every kind nothing was installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateFailureKind {
+    /// The releases could not be reached (no network, DNS, refused, timeout).
+    NoConnection,
+    /// The release service answered with an error status or something unreadable.
+    InvalidResponse,
+    /// The download stopped or the server failed while sending the files.
+    Download,
+    /// A safety check refused the files: signature, checksum, size or format.
+    Verification,
+    /// Something on this computer failed: folder, disk, permission, starting the updater.
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateFailure {
+    pub kind: UpdateFailureKind,
+    /// The original error, in the words of the component that failed.
+    pub technical: String,
+}
+
+impl UpdateFailure {
+    pub fn new(kind: UpdateFailureKind, technical: impl Into<String>) -> Self {
+        Self {
+            kind,
+            technical: technical.into(),
+        }
+    }
+
+    pub fn title(&self) -> &'static str {
+        match self.kind {
+            UpdateFailureKind::NoConnection | UpdateFailureKind::InvalidResponse => {
+                "Não foi possível verificar atualizações"
+            }
+            UpdateFailureKind::Download => "O download foi interrompido",
+            UpdateFailureKind::Verification => "Atualização recusada por segurança",
+            UpdateFailureKind::Local => "Não foi possível preparar a atualização",
+        }
+    }
+
+    pub fn message(&self) -> &'static str {
+        match self.kind {
+            UpdateFailureKind::NoConnection => {
+                "Confira sua conexão e tente novamente. A versão atual continua funcionando."
+            }
+            UpdateFailureKind::InvalidResponse => {
+                "O serviço de atualizações não respondeu como esperado. Tente novamente mais tarde."
+            }
+            UpdateFailureKind::Download => {
+                "A atualização não foi instalada. A versão atual continua funcionando."
+            }
+            UpdateFailureKind::Verification => {
+                "O arquivo não passou na verificação. Nada foi instalado e a versão atual continua funcionando. Não instale manualmente esta atualização."
+            }
+            UpdateFailureKind::Local => {
+                "Nada foi instalado e a versão atual continua funcionando. Consulte os detalhes técnicos ou tente novamente mais tarde."
+            }
+        }
+    }
+
+    /// A refused file is never offered again as the main action.
+    pub fn can_retry(&self) -> bool {
+        self.kind != UpdateFailureKind::Verification
+    }
+
+    /// Label of the link to the release page, when there is one for this kind.
+    pub fn release_page_label(&self) -> Option<&'static str> {
+        match self.kind {
+            UpdateFailureKind::NoConnection | UpdateFailureKind::InvalidResponse => None,
+            UpdateFailureKind::Verification => Some("Consultar página oficial da versão"),
+            UpdateFailureKind::Download | UpdateFailureKind::Local => {
+                Some("Ver página oficial da versão")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for UpdateFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.technical)
+    }
+}
+
+fn local_failure(technical: impl Into<String>) -> UpdateFailure {
+    UpdateFailure::new(UpdateFailureKind::Local, technical)
+}
+
+fn verification_failure(technical: impl Into<String>) -> UpdateFailure {
+    UpdateFailure::new(UpdateFailureKind::Verification, technical)
+}
+
+fn download_failure(technical: impl Into<String>) -> UpdateFailure {
+    UpdateFailure::new(UpdateFailureKind::Download, technical)
+}
+
+/// An HTTP error: an error status from the server, or no answer at all.
+fn http_failure(
+    error: &ureq::Error,
+    on_status: UpdateFailureKind,
+    on_transport: UpdateFailureKind,
+    context: &str,
+) -> UpdateFailure {
+    let kind = if matches!(error, ureq::Error::StatusCode(_)) {
+        on_status
+    } else {
+        on_transport
+    };
+    UpdateFailure::new(kind, format!("{context}: {error}"))
 }
 
 #[derive(Debug)]
@@ -202,7 +315,9 @@ pub fn automatic_update_available(update: &UpdateInfo) -> bool {
             .is_some_and(trusted_release_asset_url)
 }
 
-pub fn spawn_update_check(repaint: egui::Context) -> Receiver<Result<Option<UpdateInfo>, String>> {
+pub fn spawn_update_check(
+    repaint: egui::Context,
+) -> Receiver<Result<Option<UpdateInfo>, UpdateFailure>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let result = fetch_update(&current_version());
@@ -215,27 +330,33 @@ pub fn spawn_update_check(repaint: egui::Context) -> Receiver<Result<Option<Upda
 pub fn spawn_update_download(
     update: &UpdateInfo,
     repaint: egui::Context,
-) -> Result<Receiver<UpdateInstallEvent>, String> {
+) -> Result<Receiver<UpdateInstallEvent>, UpdateFailure> {
     if !cached_update_is_newer(update) {
-        return Err("a versão selecionada não é mais recente que a instalada".into());
+        return Err(local_failure(
+            "a versão selecionada não é mais recente que a instalada",
+        ));
     }
-    let target_path = packaged_executable_path()?;
-    verify_target_directory_writable(&target_path)?;
+    let target_path = packaged_executable_path().map_err(local_failure)?;
+    verify_target_directory_writable(&target_path).map_err(local_failure)?;
     let executable_url = update
         .executable_url
         .clone()
         .filter(|url| trusted_release_asset_url(url))
         .ok_or_else(|| {
-            "a release não oferece um executável confiável para atualização".to_owned()
+            verification_failure("a release não oferece um executável confiável para atualização")
         })?;
     let checksum_url = update
         .checksum_url
         .clone()
         .filter(|url| trusted_release_asset_url(url))
-        .ok_or_else(|| "a release não oferece o arquivo oficial de checksums".to_owned())?;
+        .ok_or_else(|| {
+            verification_failure("a release não oferece o arquivo oficial de checksums")
+        })?;
     let asset_name = windows_update_asset_name(&update.version);
     if !executable_url.ends_with(&format!("/{asset_name}")) {
-        return Err("o nome do executável da release não corresponde à versão selecionada".into());
+        return Err(verification_failure(
+            "o nome do executável da release não corresponde à versão selecionada",
+        ));
     }
     let preparation = UpdatePreparation {
         executable_url,
@@ -244,7 +365,7 @@ pub fn spawn_update_download(
         asset_name,
         version: update.version.clone(),
         target_path,
-        stage_directory: new_stage_directory(&update.version)?,
+        stage_directory: new_stage_directory(&update.version).map_err(local_failure)?,
     };
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
@@ -396,7 +517,7 @@ fn configuration_directory() -> Option<PathBuf> {
     crate::config::config_directory()
 }
 
-fn fetch_update(current: &Version) -> Result<Option<UpdateInfo>, String> {
+fn fetch_update(current: &Version) -> Result<Option<UpdateInfo>, UpdateFailure> {
     let agent = update_agent(Duration::from_secs(8));
     let mut response = agent
         .get(releases_url())
@@ -404,11 +525,20 @@ fn fetch_update(current: &Version) -> Result<Option<UpdateInfo>, String> {
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", "LocalCodePilot-Update-Checker")
         .call()
-        .map_err(|error| format!("não foi possível consultar as releases: {error}"))?;
-    let releases: Vec<GithubRelease> = response
-        .body_mut()
-        .read_json()
-        .map_err(|error| format!("resposta de atualização inválida: {error}"))?;
+        .map_err(|error| {
+            http_failure(
+                &error,
+                UpdateFailureKind::InvalidResponse,
+                UpdateFailureKind::NoConnection,
+                "não foi possível consultar as releases",
+            )
+        })?;
+    let releases: Vec<GithubRelease> = response.body_mut().read_json().map_err(|error| {
+        UpdateFailure::new(
+            UpdateFailureKind::InvalidResponse,
+            format!("resposta de atualização inválida: {error}"),
+        )
+    })?;
     Ok(select_update(releases, current))
 }
 
@@ -483,9 +613,12 @@ fn prepare_update(
     preparation: &UpdatePreparation,
     sender: &Sender<UpdateInstallEvent>,
     repaint: &egui::Context,
-) -> Result<PreparedUpdate, String> {
-    fs::create_dir_all(&preparation.stage_directory)
-        .map_err(|error| format!("não foi possível criar a pasta temporária: {error}"))?;
+) -> Result<PreparedUpdate, UpdateFailure> {
+    fs::create_dir_all(&preparation.stage_directory).map_err(|error| {
+        local_failure(format!(
+            "não foi possível criar a pasta temporária: {error}"
+        ))
+    })?;
     let agent = download_agent();
     send_phase(sender, repaint, UpdatePhase::Checksums);
     let checksums = download_checksums(&agent, &preparation.checksum_url)?;
@@ -497,8 +630,13 @@ fn prepare_update(
         &format!("{}{SIGNATURE_SUFFIX}", preparation.checksum_url),
     )?;
     verify_checksums_signature(checksums.as_bytes(), &signature, &preparation.signing_key)?;
-    let expected_sha256 = checksum_for_asset(&checksums, &preparation.asset_name)
-        .ok_or_else(|| format!("o checksum de {} não foi publicado", preparation.asset_name))?;
+    let expected_sha256 =
+        checksum_for_asset(&checksums, &preparation.asset_name).ok_or_else(|| {
+            verification_failure(format!(
+                "o checksum de {} não foi publicado",
+                preparation.asset_name
+            ))
+        })?;
     let candidate_path = preparation.stage_directory.join("LocalCodePilot.exe");
     send_phase(sender, repaint, UpdatePhase::Downloading);
     download_executable(
@@ -512,8 +650,11 @@ fn prepare_update(
     let helper_path = preparation
         .stage_directory
         .join("LocalCodePilot-updater.exe");
-    fs::copy(&preparation.target_path, &helper_path)
-        .map_err(|error| format!("não foi possível preparar o atualizador temporário: {error}"))?;
+    fs::copy(&preparation.target_path, &helper_path).map_err(|error| {
+        local_failure(format!(
+            "não foi possível preparar o atualizador temporário: {error}"
+        ))
+    })?;
     Ok(PreparedUpdate {
         helper_path,
         candidate_path,
@@ -524,28 +665,40 @@ fn prepare_update(
     })
 }
 
-fn download_checksums(agent: &ureq::Agent, url: &str) -> Result<String, String> {
+/// A missing file in a release (404) means it was not published, which the
+/// safety checks refuse; any other HTTP failure is a download problem.
+fn release_file_failure(error: &ureq::Error, context: &str) -> UpdateFailure {
+    let kind = if matches!(error, ureq::Error::StatusCode(404)) {
+        UpdateFailureKind::Verification
+    } else {
+        UpdateFailureKind::Download
+    };
+    UpdateFailure::new(kind, format!("{context}: {error}"))
+}
+
+fn download_checksums(agent: &ureq::Agent, url: &str) -> Result<String, UpdateFailure> {
     let mut response = agent
         .get(url)
         .header("User-Agent", "LocalCodePilot-Updater")
         .call()
-        .map_err(|error| format!("não foi possível baixar os checksums: {error}"))?;
+        .map_err(|error| release_file_failure(&error, "não foi possível baixar os checksums"))?;
     response
         .body_mut()
         .with_config()
         .limit(MAX_CHECKSUM_BYTES)
         .read_to_string()
-        .map_err(|error| format!("o arquivo de checksums é inválido: {error}"))
+        .map_err(|error| download_failure(format!("o arquivo de checksums é inválido: {error}")))
 }
 
-fn download_signature(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, String> {
+fn download_signature(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, UpdateFailure> {
     let mut response = agent
         .get(url)
         .header("User-Agent", "LocalCodePilot-Updater")
         .call()
         .map_err(|error| {
-            format!(
-                "a release não publicou a assinatura dos checksums (SHA256SUMS.txt.sig): {error}"
+            release_file_failure(
+                &error,
+                "a release não publicou a assinatura dos checksums (SHA256SUMS.txt.sig)",
             )
         })?;
     response
@@ -553,19 +706,25 @@ fn download_signature(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, String>
         .with_config()
         .limit(MAX_SIGNATURE_BYTES)
         .read_to_vec()
-        .map_err(|error| format!("não foi possível baixar a assinatura dos checksums: {error}"))
+        .map_err(|error| {
+            download_failure(format!(
+                "não foi possível baixar a assinatura dos checksums: {error}"
+            ))
+        })
 }
 
 fn verify_checksums_signature(
     checksums: &[u8],
     signature: &[u8],
     public_key: &[u8; 32],
-) -> Result<(), String> {
+) -> Result<(), UpdateFailure> {
     use ring::signature::{ED25519, UnparsedPublicKey};
     UnparsedPublicKey::new(&ED25519, public_key)
         .verify(checksums, signature)
         .map_err(|_| {
-            "a assinatura dos checksums não confere com a chave do LocalCodePilot; a atualização foi recusada".to_owned()
+            verification_failure(
+                "a assinatura dos checksums não confere com a chave do LocalCodePilot; a atualização foi recusada",
+            )
         })
 }
 
@@ -576,12 +735,19 @@ fn download_executable(
     expected_sha256: &str,
     sender: &Sender<UpdateInstallEvent>,
     repaint: &egui::Context,
-) -> Result<(), String> {
+) -> Result<(), UpdateFailure> {
     let mut response = agent
         .get(url)
         .header("User-Agent", "LocalCodePilot-Updater")
         .call()
-        .map_err(|error| format!("não foi possível baixar a atualização: {error}"))?;
+        .map_err(|error| {
+            http_failure(
+                &error,
+                UpdateFailureKind::Download,
+                UpdateFailureKind::Download,
+                "não foi possível baixar a atualização",
+            )
+        })?;
     let total_bytes = response
         .headers()
         .get("content-length")
@@ -589,8 +755,11 @@ fn download_executable(
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|size| *size <= MAX_EXECUTABLE_BYTES);
     let partial_path = destination.with_extension("exe.part");
-    let mut output = File::create(&partial_path)
-        .map_err(|error| format!("não foi possível criar o download temporário: {error}"))?;
+    let mut output = File::create(&partial_path).map_err(|error| {
+        local_failure(format!(
+            "não foi possível criar o download temporário: {error}"
+        ))
+    })?;
     let mut reader = response.body_mut().as_reader();
     let mut hasher = Sha256::new();
     let mut downloaded_bytes = 0_u64;
@@ -601,9 +770,9 @@ fn download_executable(
             Ok(read) => read,
             Err(error) => {
                 let _ = fs::remove_file(&partial_path);
-                return Err(format!(
+                return Err(download_failure(format!(
                     "o download da atualização foi interrompido: {error}"
-                ));
+                )));
             }
         };
         if read == 0 {
@@ -612,11 +781,16 @@ fn download_executable(
         downloaded_bytes = downloaded_bytes.saturating_add(read as u64);
         if downloaded_bytes > MAX_EXECUTABLE_BYTES {
             let _ = fs::remove_file(&partial_path);
-            return Err("o executável baixado excede o limite permitido".into());
+            return Err(verification_failure(
+                "o executável baixado excede o limite permitido",
+            ));
         }
-        output
-            .write_all(&buffer[..read])
-            .map_err(|error| format!("não foi possível salvar a atualização: {error}"))?;
+        if let Err(error) = output.write_all(&buffer[..read]) {
+            let _ = fs::remove_file(&partial_path);
+            return Err(local_failure(format!(
+                "não foi possível salvar a atualização: {error}"
+            )));
+        }
         hasher.update(&buffer[..read]);
         if last_progress.is_none_or(|sent| sent.elapsed() >= PROGRESS_INTERVAL) {
             last_progress = Some(Instant::now());
@@ -627,11 +801,13 @@ fn download_executable(
     send_progress(sender, repaint, downloaded_bytes, total_bytes);
     output
         .sync_all()
-        .map_err(|error| format!("não foi possível concluir o download: {error}"))?;
+        .map_err(|error| local_failure(format!("não foi possível concluir o download: {error}")))?;
     drop(output);
     if total_bytes.is_some_and(|total| total != downloaded_bytes) {
         let _ = fs::remove_file(&partial_path);
-        return Err("o download da atualização foi interrompido antes do fim".into());
+        return Err(download_failure(
+            "o download da atualização foi interrompido antes do fim",
+        ));
     }
     send_phase(sender, repaint, UpdatePhase::Verifying);
     let actual_sha256 = hasher
@@ -641,14 +817,18 @@ fn download_executable(
         .collect::<String>();
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
         let _ = fs::remove_file(&partial_path);
-        return Err("o SHA-256 do executável baixado não corresponde ao publicado".into());
+        return Err(verification_failure(
+            "o SHA-256 do executável baixado não corresponde ao publicado",
+        ));
     }
-    if downloaded_bytes < 1024 || !file_starts_with_mz(&partial_path)? {
+    if downloaded_bytes < 1024 || !file_starts_with_mz(&partial_path).map_err(local_failure)? {
         let _ = fs::remove_file(&partial_path);
-        return Err("o arquivo baixado não é um executável Windows válido".into());
+        return Err(verification_failure(
+            "o arquivo baixado não é um executável Windows válido",
+        ));
     }
     fs::rename(&partial_path, destination)
-        .map_err(|error| format!("não foi possível finalizar o download: {error}"))
+        .map_err(|error| local_failure(format!("não foi possível finalizar o download: {error}")))
 }
 
 /// Message after the new version failed to start. `configuration_restored`
@@ -1732,7 +1912,8 @@ mod tests {
             (checksums.as_slice(), Vec::new(), public),
         ] {
             let error = verify_checksums_signature(contents, &signature, &key).unwrap_err();
-            assert!(error.contains("não confere"), "{error}");
+            assert!(error.technical.contains("não confere"), "{error}");
+            assert_eq!(error.kind, UpdateFailureKind::Verification);
         }
     }
 
@@ -1799,7 +1980,10 @@ mod tests {
                 prepare_update(&preparation, &sender, &egui::Context::default()).unwrap_err();
             drop(sender);
 
-            assert!(error.contains(expected), "{name}: {error}");
+            assert!(error.technical.contains(expected), "{name}: {error}");
+            // A missing or wrong signature is a refusal, never a retryable download error.
+            assert_eq!(error.kind, UpdateFailureKind::Verification, "{name}");
+            assert!(!error.can_retry(), "{name}");
             // Nothing was downloaded: the phase never reached the executable.
             assert!(
                 !receiver.iter().any(|event| matches!(
@@ -1970,7 +2154,8 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("interrompido"), "{error}");
+        assert!(error.technical.contains("interrompido"), "{error}");
+        assert_eq!(error.kind, UpdateFailureKind::Download);
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(!destination.exists());
         assert!(!destination.with_extension("exe.part").exists());
@@ -2002,10 +2187,100 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("interrompido"), "{error}");
+        assert!(error.technical.contains("interrompido"), "{error}");
+        assert_eq!(error.kind, UpdateFailureKind::Download);
         assert!(!destination.exists());
         assert!(!destination.with_extension("exe.part").exists());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// T002 CA-6: each kind has a plain title, a sentence that says the current
+    /// version keeps working, and the action agreed with the founder.
+    #[test]
+    fn each_failure_kind_has_a_plain_message_and_a_safe_action() {
+        let kinds = [
+            UpdateFailureKind::NoConnection,
+            UpdateFailureKind::InvalidResponse,
+            UpdateFailureKind::Download,
+            UpdateFailureKind::Verification,
+            UpdateFailureKind::Local,
+        ];
+        for kind in kinds {
+            let failure = UpdateFailure::new(kind, "erro técnico de exemplo");
+            assert!(!failure.title().is_empty());
+            // The technical text never reaches the first layer.
+            assert!(!failure.title().contains("erro técnico"));
+            assert!(!failure.message().contains("erro técnico"));
+            assert_eq!(failure.to_string(), "erro técnico de exemplo");
+        }
+        let verification = UpdateFailure::new(UpdateFailureKind::Verification, "x");
+        assert_eq!(verification.title(), "Atualização recusada por segurança");
+        assert!(!verification.can_retry());
+        assert_eq!(
+            verification.release_page_label(),
+            Some("Consultar página oficial da versão")
+        );
+        assert!(verification.message().contains("Não instale manualmente"));
+        for kind in [UpdateFailureKind::Download, UpdateFailureKind::Local] {
+            let failure = UpdateFailure::new(kind, "x");
+            assert!(failure.can_retry());
+            assert_eq!(
+                failure.release_page_label(),
+                Some("Ver página oficial da versão")
+            );
+        }
+        for kind in [
+            UpdateFailureKind::NoConnection,
+            UpdateFailureKind::InvalidResponse,
+        ] {
+            let failure = UpdateFailure::new(kind, "x");
+            assert_eq!(failure.title(), "Não foi possível verificar atualizações");
+            assert!(failure.can_retry());
+            assert_eq!(failure.release_page_label(), None);
+        }
+        assert!(
+            UpdateFailure::new(UpdateFailureKind::NoConnection, "x")
+                .message()
+                .starts_with("Confira sua conexão")
+        );
+        assert!(
+            UpdateFailure::new(UpdateFailureKind::InvalidResponse, "x")
+                .message()
+                .starts_with("O serviço de atualizações não respondeu")
+        );
+    }
+
+    #[test]
+    fn http_failures_split_no_connection_from_an_error_status() {
+        let status = ureq::Error::StatusCode(403);
+        let failure = http_failure(
+            &status,
+            UpdateFailureKind::InvalidResponse,
+            UpdateFailureKind::NoConnection,
+            "consulta",
+        );
+        assert_eq!(failure.kind, UpdateFailureKind::InvalidResponse);
+        let transport = ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "recusada",
+        ));
+        let failure = http_failure(
+            &transport,
+            UpdateFailureKind::InvalidResponse,
+            UpdateFailureKind::NoConnection,
+            "consulta",
+        );
+        assert_eq!(failure.kind, UpdateFailureKind::NoConnection);
+        assert!(failure.technical.starts_with("consulta: "));
+        // A file that the release did not publish is refused; other errors are downloads.
+        assert_eq!(
+            release_file_failure(&ureq::Error::StatusCode(404), "x").kind,
+            UpdateFailureKind::Verification
+        );
+        assert_eq!(
+            release_file_failure(&ureq::Error::StatusCode(503), "x").kind,
+            UpdateFailureKind::Download
+        );
     }
 
     #[test]

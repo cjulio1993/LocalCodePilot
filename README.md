@@ -91,7 +91,7 @@ Quando uma linguagem não está instalada, **Preparar ambiente** usa o `winget` 
 - **Bancos de dados:** projetos que precisam de banco (Rails com `db:prepare`, Phoenix com Ecto) ainda pedem esse passo manual. O erro aparece em **Ver logs**.
 - **Formatos não cobertos:** Leiningen (`project.clj`) e Haskell só com Cabal ainda pedem o comando de início.
 - **Containers:** o app não instala o Docker nem o Podman.
-- **Atualização pelo app:** é experimental até ser testada com uma versão mais nova. Durante a atualização, o app mostra as etapas Baixar, Verificar e Reiniciar e a barra do download. Antes de baixar, ele confere a assinatura do projeto nos checksums da release e recusa a atualização se ela não conferir.
+- **Atualização pelo app:** é experimental até ser testada com uma versão mais nova. Durante a atualização, o app mostra as etapas Baixar, Verificar e Reiniciar e a barra do download. Antes de baixar, ele confere a assinatura do projeto nos checksums da release e recusa a atualização se ela não conferir. Se algo falhar, o aviso diz o que aconteceu em linguagem simples, oferece **Tentar de novo** ou a página oficial da versão e guarda o erro original em **Detalhes técnicos**.
 
 ### Para desenvolvedores
 
@@ -191,7 +191,7 @@ When a language is not installed, **Prepare environment** uses Windows' `winget`
 - **Databases:** projects that need a database (Rails with `db:prepare`, Phoenix with Ecto) still need that manual step. The error shows in **View logs**.
 - **Formats not covered:** Leiningen (`project.clj`) and Cabal-only Haskell projects still ask for the start command.
 - **Containers:** the app does not install Docker or Podman.
-- **In-app update:** experimental until tested against a newer release. While updating, the app shows the download, verify, and restart steps and a download progress bar. Before downloading, it checks the project's signature on the release checksums and refuses the update if it does not match.
+- **In-app update:** experimental until tested against a newer release. While updating, the app shows the download, verify, and restart steps and a download progress bar. Before downloading, it checks the project's signature on the release checksums and refuses the update if it does not match. If something fails, the notice says what happened in plain language, offers **Tentar de novo** (try again) or the official release page, and keeps the original error under **Detalhes técnicos** (technical details).
 
 ### For developers
 
