@@ -1064,8 +1064,11 @@ mod tests {
             engine: "mysql".into(),
             version: "9.7.4".into(),
             port: 1,
-            program_folder: PathBuf::from(r"C:\lcp\bancos\mysql-9.7.4"),
-            folder: PathBuf::from(r"C:\lcp\bancos\servidores\abc"),
+            program_folder: Path::new("lcp").join("bancos").join("mysql-9.7.4"),
+            folder: Path::new("lcp")
+                .join("bancos")
+                .join("servidores")
+                .join("abc"),
             process_id: Some(4242),
             started_at: Some(1000),
         }
@@ -1096,13 +1099,22 @@ mod tests {
         )
     }
 
-    const EXE: &str = r"C:\lcp\bancos\mysql-9.7.4\bin\mysqld.exe";
-    const CONFIG: &str = r"C:\lcp\bancos\servidores\abc\my.ini";
+    // Paths built with `join`, so the tests mean the same on every system.
+    fn exe() -> String {
+        server().server_program().display().to_string()
+    }
+    fn config() -> String {
+        server().config_file().display().to_string()
+    }
 
     #[test]
     fn the_app_server_is_recognized_only_when_every_check_passes() {
         assert_eq!(
-            check(Some(4242), Some(details(1000, EXE, CONFIG)), Some("4242\n")),
+            check(
+                Some(4242),
+                Some(details(1000, &exe(), &config())),
+                Some("4242\n")
+            ),
             Recognition::Managed
         );
     }
@@ -1111,24 +1123,40 @@ mod tests {
     fn any_doubt_makes_it_an_existing_server() {
         let cases = [
             // Another process on the port.
-            (Some(7), Some(details(1000, EXE, CONFIG)), Some("7")),
+            (Some(7), Some(details(1000, &exe(), &config())), Some("7")),
             // Same PID, later start: the PID was reused.
-            (Some(4242), Some(details(2000, EXE, CONFIG)), Some("4242")),
+            (
+                Some(4242),
+                Some(details(2000, &exe(), &config())),
+                Some("4242"),
+            ),
             // Another program with our PID and start time.
             (
                 Some(4242),
-                Some(details(1000, r"C:\outro\mysqld.exe", CONFIG)),
+                Some(details(
+                    1000,
+                    &Path::new("outro").join("mysqld.exe").display().to_string(),
+                    &config(),
+                )),
                 Some("4242"),
             ),
             // Our program, but another data folder.
             (
                 Some(4242),
-                Some(details(1000, EXE, r"C:\outros\my.ini")),
+                Some(details(
+                    1000,
+                    &exe(),
+                    &Path::new("outros").join("my.ini").display().to_string(),
+                )),
                 Some("4242"),
             ),
             // The server's own PID file disagrees, or is missing.
-            (Some(4242), Some(details(1000, EXE, CONFIG)), Some("99")),
-            (Some(4242), Some(details(1000, EXE, CONFIG)), None),
+            (
+                Some(4242),
+                Some(details(1000, &exe(), &config())),
+                Some("99"),
+            ),
+            (Some(4242), Some(details(1000, &exe(), &config())), None),
             // The process could not be read.
             (Some(4242), None, Some("4242")),
         ];
@@ -1147,7 +1175,7 @@ mod tests {
     fn mysql_config_listens_on_loopback_without_secrets_or_x_protocol() {
         let config = mysql_config(&server());
         assert!(config.contains("bind-address=127.0.0.1"));
-        assert!(config.contains("datadir=C:/lcp/bancos/servidores/abc/dados"));
+        assert!(config.contains("datadir=lcp/bancos/servidores/abc/dados"));
         assert!(config.contains("mysqlx=OFF"));
         assert!(!config.to_ascii_lowercase().contains("password"));
         let mut mariadb = server();
