@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Avisos longos no canto da janela, como o resultado de uma atualização, quebram linha e aparecem inteiros. Antes, o começo da mensagem ficava fora da borda esquerda da janela.
 - A consulta de versões das linguagens (ao abrir o app e em **Verificar de novo**) não deixa mais um `erl_crash.dump` de cerca de 3 MB na pasta de onde o LocalCodePilot foi aberto. Quando a máquina virtual do Erlang falhava ao responder `elixir --version`, ela gravava esse arquivo na pasta atual. Agora as consultas rodam na pasta temporária do sistema e pedem à VM do Erlang que não grave o despejo. Se a pasta temporária não estiver disponível, a versão aparece como indisponível, e nada roda na pasta de abertura.
 
 ### Alterado

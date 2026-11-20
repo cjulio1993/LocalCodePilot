@@ -81,6 +81,7 @@ use std::{
 const NOTIFICATION_DURATION: Duration = Duration::from_millis(4_200);
 const NOTIFICATION_FADE: Duration = Duration::from_millis(1_000);
 const UPDATE_RESULT_NOTIFICATION_DURATION: Duration = Duration::from_secs(12);
+const NOTIFICATION_MAX_WIDTH: f32 = 420.0;
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_START_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESS_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
@@ -1285,6 +1286,7 @@ impl LocalCodePilot {
             1.0 - fade_elapsed.as_secs_f32() / NOTIFICATION_FADE.as_secs_f32()
         };
         let message = notification.message.clone();
+        let root_ui_width = root_ui.ctx().content_rect().width();
         root_ui
             .ctx()
             .request_repaint_after(Duration::from_millis(50));
@@ -1304,17 +1306,25 @@ impl LocalCodePilot {
                     .corner_radius(10)
                     .inner_margin(Margin::symmetric(14, 10))
                     .show(ui, |ui| {
-                        ui.set_max_width(360.0);
-                        ui.horizontal(|ui| {
+                        // Long messages (an update result, for example) wrap inside the
+                        // window instead of growing past its left edge.
+                        let width = NOTIFICATION_MAX_WIDTH
+                            .min(root_ui_width - 48.0 - 28.0)
+                            .max(160.0);
+                        ui.set_max_width(width);
+                        ui.horizontal_top(|ui| {
                             ui.label(
                                 RichText::new(CIRCLE)
                                     .color(theme::SUCCESS.gamma_multiply(opacity))
                                     .size(8.0),
                             );
-                            ui.label(
-                                RichText::new(message)
-                                    .color(theme::TEXT.gamma_multiply(opacity))
-                                    .size(11.0),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(message)
+                                        .color(theme::TEXT.gamma_multiply(opacity))
+                                        .size(11.0),
+                                )
+                                .wrap(),
                             );
                         });
                     });

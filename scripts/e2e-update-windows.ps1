@@ -616,6 +616,18 @@ function Remove-InstalacaoDeTeste {
     if (Test-Path -LiteralPath $chaveDoTesteNoRegistro) { Remove-Item -LiteralPath $chaveDoTesteNoRegistro -Recurse -Force }
 }
 
+# O texto inteiro está dentro da janela (não só na árvore de acessibilidade): o retângulo do
+# rótulo cabe no retângulo da janela.
+function Test-TextoDentroDaJanela([int]$ProcessId, [string]$Texto) {
+    $janela = Get-Janela $ProcessId
+    if (-not $janela) { return $false }
+    $condicao = New-Object System.Windows.Automation.PropertyCondition($uia::NameProperty, $Texto)
+    $rotulo = $janela.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condicao)
+    if (-not $rotulo) { return $false }
+    $r = $rotulo.Current.BoundingRectangle; $j = $janela.Current.BoundingRectangle
+    ($r.Width -gt 0) -and ($r.Left -ge $j.Left) -and ($r.Right -le $j.Right) -and ($r.Top -ge $j.Top) -and ($r.Bottom -le $j.Bottom)
+}
+
 function Get-VersaoRegistrada {
     $chave = Get-ItemProperty -LiteralPath $chaveDoTesteNoRegistro -ErrorAction SilentlyContinue
     if ($chave -and $chave.PSObject.Properties['DisplayVersion']) { [string]$chave.DisplayVersion } else { '' }
@@ -711,6 +723,7 @@ function Invoke-CenarioInstalador([string]$Nome) {
             }
         } 180
         if ($na_tela) { $reaberto = $script:reabertoId }
+        $avisoInteiro = [bool]$reaberto -and (Test-TextoDentroDaJanela $reaberto $(if ($Nome -eq 'instalador-falha') { "$esperado. Não foi possível instalar a versão $versaoNova. A versão $versaoAntiga foi reaberta e você pode continuar trabalhando. Tente novamente mais tarde ou baixe o instalador na página oficial." } else { $na_tela }))
 
         $mensagemAprovada = $false; $tentarDeNovo = $false; $paginaOficial = $false; $copiarErro = $false; $codigoNoDetalhe = $false
         if ($Nome -eq 'instalador-falha' -and $reaberto) {
@@ -757,6 +770,7 @@ function Invoke-CenarioInstalador([string]$Nome) {
             'nenhuma sobra ao lado do executável' = -not $resultado.sobras_na_instalacao
             'registro da atualização removido' = -not $resultado.registro_da_atualizacao
             'app aberto no fim' = $resultado.app_aberto
+            'aviso ao reabrir inteiro dentro da janela' = $avisoInteiro
         }
         if ($Nome -eq 'instalador-sucesso') {
             $checagens['instalador novo baixado (não o executável)'] = (Get-Content -LiteralPath (Join-Path $raiz 'servidor.log') -ErrorAction SilentlyContinue) -match [regex]::Escape($nomeSetup)
