@@ -1,4 +1,4 @@
-use crate::updates::UpdateInfo;
+use crate::{secrets::mask_lines, updates::UpdateInfo};
 use localcodepilot_core::{custom_commands::CustomCommand, projects::Project};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,6 +12,8 @@ const SCAN_ROOTS_FILE: &str = "scan-roots.txt";
 const PROJECT_CACHE_FILE: &str = "project-cache.json";
 const WORKSPACE_STATE_FILE: &str = "workspace-state.json";
 const WORKSPACE_SCHEMA_VERSION: u32 = 3;
+/// Saved logs older than this are removed when the app opens.
+pub const LOG_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -141,7 +143,8 @@ impl WorkspaceState {
             .find(|service| service.id == id)
     }
 
-    pub fn record_service(&mut self, project_path: &Path, service: ServiceHistory) {
+    pub fn record_service(&mut self, project_path: &Path, mut service: ServiceHistory) {
+        service.logs = mask_lines(&service.logs);
         let project = if let Some(project) = self
             .projects
             .iter_mut()
@@ -175,6 +178,7 @@ impl WorkspaceState {
                 .logs
                 .split_off(preparation.logs.len() - MAX_LOG_LINES);
         }
+        preparation.logs = mask_lines(&preparation.logs);
         if let Some(existing) = self.preparations.iter_mut().find(|entry| {
             entry.project_path == preparation.project_path && entry.status == "em andamento"
         }) {
@@ -185,6 +189,53 @@ impl WorkspaceState {
         self.preparations
             .sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
         self.preparations.truncate(MAX_HISTORY);
+    }
+
+    /// Every saved log line, of services and preparations.
+    fn saved_logs_mut(&mut self) -> impl Iterator<Item = (u64, &mut Vec<String>)> {
+        let services = self
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.services)
+            .map(|service| (service.updated_at, &mut service.logs));
+        let preparations = self
+            .preparations
+            .iter_mut()
+            .map(|preparation| (preparation.updated_at, &mut preparation.logs));
+        services.chain(preparations)
+    }
+
+    /// Empties the logs saved more than [`LOG_RETENTION_SECONDS`] before `now`.
+    /// Names, commands, states and steps stay. Returns whether anything changed.
+    pub fn expire_old_logs(&mut self, now: u64) -> bool {
+        let mut changed = false;
+        for (updated_at, logs) in self.saved_logs_mut() {
+            if now.saturating_sub(updated_at) > LOG_RETENTION_SECONDS && !logs.is_empty() {
+                logs.clear();
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Masks secrets in logs saved by versions that did not mask them.
+    pub fn mask_saved_logs(&mut self) -> bool {
+        let mut changed = false;
+        for (_, logs) in self.saved_logs_mut() {
+            let masked = mask_lines(logs);
+            if masked != *logs {
+                *logs = masked;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Removes every saved log, of services and preparations.
+    pub fn clear_saved_logs(&mut self) {
+        for (_, logs) in self.saved_logs_mut() {
+            logs.clear();
+        }
     }
 }
 
@@ -234,8 +285,17 @@ pub fn save_project_cache(projects: &[Project]) -> io::Result<()> {
 }
 
 pub fn load_workspace_state() -> WorkspaceState {
-    let mut state = workspace_state_file_path()
-        .and_then(|path| fs::read_to_string(path).ok())
+    workspace_state_file_path()
+        .map(|path| load_workspace_state_from(&path))
+        .unwrap_or_else(|| WorkspaceState {
+            schema_version: WORKSPACE_SCHEMA_VERSION,
+            ..WorkspaceState::default()
+        })
+}
+
+fn load_workspace_state_from(path: &Path) -> WorkspaceState {
+    let mut state = fs::read_to_string(path)
+        .ok()
         .and_then(|contents| serde_json::from_str::<WorkspaceState>(&contents).ok())
         .unwrap_or_default();
     state.schema_version = WORKSPACE_SCHEMA_VERSION;
@@ -249,6 +309,10 @@ pub fn save_workspace_state(state: &WorkspaceState) -> io::Result<()> {
             "diretório de configuração do usuário não encontrado",
         )
     })?;
+    save_workspace_state_to(&path, state)
+}
+
+fn save_workspace_state_to(path: &Path, state: &WorkspaceState) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -316,6 +380,131 @@ fn home_directory() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    const DAY: u64 = 24 * 60 * 60;
+
+    fn service(id: &str, updated_at: u64, logs: &[&str]) -> ServiceHistory {
+        ServiceHistory {
+            id: id.into(),
+            name: "dev".into(),
+            command: "npm run dev".into(),
+            status: "parado".into(),
+            updated_at,
+            logs: logs.iter().map(|line| line.to_string()).collect(),
+            ..ServiceHistory::default()
+        }
+    }
+
+    fn preparation(updated_at: u64, logs: &[&str]) -> PreparationHistory {
+        PreparationHistory {
+            project_path: PathBuf::from("exemplo"),
+            status: "concluído".into(),
+            updated_at,
+            steps: vec!["npm install".into()],
+            logs: logs.iter().map(|line| line.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn logs_older_than_thirty_days_expire_and_metadata_stays() {
+        let now = 100 * DAY;
+        let mut state = WorkspaceState::default();
+        let project = Path::new("exemplo");
+        state.record_service(project, service("velho", now - 31 * DAY, &["linha antiga"]));
+        state.record_service(project, service("novo", now - 29 * DAY, &["linha recente"]));
+        state.record_preparation(preparation(now - 31 * DAY, &["instalação antiga"]));
+        state.record_preparation(preparation(now - 29 * DAY, &["instalação recente"]));
+
+        assert!(state.expire_old_logs(now));
+        let old = state.service("velho").unwrap();
+        assert!(old.logs.is_empty());
+        assert_eq!(old.command, "npm run dev");
+        assert_eq!(state.service("novo").unwrap().logs, ["linha recente"]);
+        let logs: Vec<_> = state
+            .preparations
+            .iter()
+            .map(|entry| entry.logs.clone())
+            .collect();
+        assert!(logs.contains(&Vec::new()));
+        assert!(logs.contains(&vec!["instalação recente".to_string()]));
+        assert!(
+            state
+                .preparations
+                .iter()
+                .all(|entry| entry.steps == ["npm install"])
+        );
+        assert!(!state.expire_old_logs(now), "nothing left to expire");
+    }
+
+    #[test]
+    fn clearing_the_history_removes_every_saved_log() {
+        let mut state = WorkspaceState::default();
+        state.record_service(Path::new("exemplo"), service("a", 1, &["x"]));
+        state.record_preparation(preparation(1, &["y"]));
+        state.clear_saved_logs();
+        assert!(state.service("a").unwrap().logs.is_empty());
+        assert!(state.preparations[0].logs.is_empty());
+        assert_eq!(state.preparations[0].steps, ["npm install"]);
+    }
+
+    #[test]
+    fn logs_saved_by_older_versions_are_masked_when_loaded() {
+        let mut state = WorkspaceState::default();
+        state.projects.push(ProjectHistory {
+            path: PathBuf::from("exemplo"),
+            services: vec![service("a", 1, &["API_TOKEN=valor-ficticio"])],
+            ..ProjectHistory::default()
+        });
+        assert!(state.mask_saved_logs());
+        assert_eq!(state.service("a").unwrap().logs, ["API_TOKEN=••••"]);
+        assert!(!state.mask_saved_logs());
+    }
+
+    /// R6: after a start and stop of a project that prints secrets, the
+    /// saved file holds none of them.
+    #[test]
+    fn saved_workspace_never_contains_secret_values_from_logs() {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!("localcodepilot-t011-{nonce}"));
+        let path = root.join(WORKSPACE_STATE_FILE);
+        let printed = [
+            "Iniciando com DB_PASSWORD=senha-ficticia-1",
+            "Authorization: Bearer token-ficticio-2",
+            "conectado a postgres://app:senha-ficticia-3@localhost/app",
+            r#"{"apiKey": "chave-ficticia-4"}"#,
+        ];
+        let mut state = WorkspaceState::default();
+        let project = Path::new("exemplo");
+        // Iniciar: the service is recorded while running...
+        let mut running = service("exemplo:dev", 10, &printed);
+        running.status = "rodando".into();
+        state.record_service(project, running);
+        save_workspace_state_to(&path, &state).unwrap();
+        // ...and Parar records it again with the same output.
+        state.record_service(project, service("exemplo:dev", 20, &printed));
+        state.record_preparation(preparation(20, &printed));
+        save_workspace_state_to(&path, &state).unwrap();
+
+        let saved = fs::read_to_string(&path).unwrap();
+        for secret in [
+            "senha-ficticia-1",
+            "token-ficticio-2",
+            "senha-ficticia-3",
+            "chave-ficticia-4",
+        ] {
+            assert!(!saved.contains(secret), "{secret} was saved");
+        }
+        assert!(saved.contains("DB_PASSWORD=••••"));
+        let loaded = load_workspace_state_from(&path);
+        assert_eq!(
+            loaded.service("exemplo:dev").unwrap().logs.len(),
+            printed.len()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn an_older_history_confirms_no_command() {

@@ -2405,8 +2405,15 @@ impl LocalCodePilot {
                 }
                 ui.add_space(8.0);
                 if ui.button("Copiar logs").clicked() {
-                    ui.ctx()
-                        .copy_text(session.logs.iter().cloned().collect::<Vec<_>>().join("\n"));
+                    // The window stays faithful; what leaves the app is masked.
+                    ui.ctx().copy_text(
+                        session
+                            .logs
+                            .iter()
+                            .map(|line| crate::secrets::mask_secrets(line))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
                 }
                 egui::ScrollArea::vertical()
                     .id_salt("container-execution-output")

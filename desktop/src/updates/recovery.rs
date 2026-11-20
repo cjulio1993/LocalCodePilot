@@ -19,6 +19,7 @@ pub(super) const NEW_FILE_NAME: &str = "LocalCodePilot.update-new.exe";
 const JOURNAL_FILE_NAME: &str = "update-state.json";
 const CONFIG_BACKUPS_DIRECTORY: &str = "backups";
 const CONFIG_BACKUP_PREFIX: &str = "antes-de-";
+const WORKSPACE_STATE_FILE: &str = "workspace-state.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,8 +282,37 @@ pub(super) fn restore_previous_executable(target: &Path, timeout: Duration) -> b
     rename_with_retry(&backup, target, timeout).is_ok()
 }
 
+/// The saved workspace without the logs of services and preparations. `None`
+/// when the file is not valid JSON: the app would read it as empty anyway, and
+/// nothing that could not be filtered goes into the copy.
+fn workspace_state_without_logs(path: &Path) -> Option<Vec<u8>> {
+    let mut state: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let remove_logs = |entries: Option<&mut serde_json::Value>| {
+        for entry in entries
+            .and_then(serde_json::Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(entry) = entry.as_object_mut() {
+                entry.remove("logs");
+            }
+        }
+    };
+    for project in state
+        .get_mut("projects")
+        .and_then(serde_json::Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        remove_logs(project.get_mut("services"));
+    }
+    remove_logs(state.get_mut("preparations"));
+    serde_json::to_vec_pretty(&state).ok()
+}
+
 /// Copies the top-level configuration files (not the updater's own files) to
-/// `backups/antes-de-<version>` and keeps only that copy.
+/// `backups/antes-de-<version>` and keeps only that copy. The saved logs stay
+/// out of it.
 pub(super) fn backup_configuration(config_directory: &Path, version: &str) -> io::Result<PathBuf> {
     let safe_version: String = version
         .chars()
@@ -299,7 +329,14 @@ pub(super) fn backup_configuration(config_directory: &Path, version: &str) -> io
             };
             let name = entry.file_name();
             let is_updater_file = name.to_string_lossy().starts_with("update-");
-            if metadata.is_file() && !is_updater_file {
+            if !metadata.is_file() || is_updater_file {
+                continue;
+            }
+            if name == WORKSPACE_STATE_FILE {
+                if let Some(contents) = workspace_state_without_logs(&entry.path()) {
+                    fs::write(destination.join(&name), contents)?;
+                }
+            } else {
                 fs::copy(entry.path(), destination.join(&name))?;
             }
         }
@@ -616,7 +653,10 @@ mod tests {
     #[test]
     fn configuration_backup_keeps_only_the_latest_copy_and_restores_it() {
         let config = temporary_directory("config");
-        fs::write(config.join("workspace-state.json"), "before").unwrap();
+        let json = |path: PathBuf| -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+        };
+        fs::write(config.join("workspace-state.json"), BEFORE).unwrap();
         fs::write(config.join("scan-roots.txt"), "C:\\projects").unwrap();
         fs::write(config.join("update-state.json"), "journal").unwrap();
 
@@ -624,8 +664,8 @@ mod tests {
         let second = backup_configuration(&config, "0.4.0-alpha.10").unwrap();
         assert!(!first.exists());
         assert_eq!(
-            fs::read_to_string(second.join("workspace-state.json")).unwrap(),
-            "before"
+            json(second.join("workspace-state.json")),
+            serde_json::from_str::<serde_json::Value>(BEFORE).unwrap()
         );
         assert!(second.join("scan-roots.txt").is_file());
         assert!(!second.join("update-state.json").exists());
@@ -637,8 +677,8 @@ mod tests {
         .unwrap();
         restore_configuration(&config, &second).unwrap();
         assert_eq!(
-            fs::read_to_string(config.join("workspace-state.json")).unwrap(),
-            "before"
+            json(config.join("workspace-state.json")),
+            serde_json::from_str::<serde_json::Value>(BEFORE).unwrap()
         );
 
         let outside = temporary_directory("config-outside");
@@ -650,13 +690,59 @@ mod tests {
     #[test]
     fn a_configuration_file_that_cannot_be_written_back_is_reported() {
         let config = temporary_directory("config-fail");
-        fs::write(config.join("workspace-state.json"), "before").unwrap();
+        fs::write(config.join("workspace-state.json"), BEFORE).unwrap();
         let backup = backup_configuration(&config, "0.4.0-alpha.9").unwrap();
         // A folder where the file should go makes the copy back fail.
         fs::remove_file(config.join("workspace-state.json")).unwrap();
         fs::create_dir(config.join("workspace-state.json")).unwrap();
 
         assert!(restore_configuration(&config, &backup).is_err());
+        fs::remove_dir_all(config).unwrap();
+    }
+
+    const BEFORE: &str = r#"{"last_page":"before"}"#;
+
+    #[test]
+    fn configuration_backup_leaves_saved_logs_out() {
+        let config = temporary_directory("config-logs");
+        let state = serde_json::json!({
+            "last_page": "projects",
+            "projects": [{
+                "path": "C:\\exemplo\\loja-web",
+                "services": [{
+                    "id": "loja-web:dev",
+                    "command": "npm run dev",
+                    "logs": ["API_TOKEN=valor-ficticio"],
+                }],
+            }],
+            "preparations": [{
+                "status": "concluído",
+                "steps": ["npm install"],
+                "logs": ["https://usuario:senha-ficticia@registro.exemplo"],
+            }],
+        });
+        fs::write(config.join("workspace-state.json"), state.to_string()).unwrap();
+
+        let backup = backup_configuration(&config, "0.4.0-alpha.9").unwrap();
+        let copied = fs::read_to_string(backup.join("workspace-state.json")).unwrap();
+        assert!(!copied.contains("valor-ficticio"));
+        assert!(!copied.contains("senha-ficticia"));
+        assert!(!copied.contains("\"logs\""));
+        let copied: serde_json::Value = serde_json::from_str(&copied).unwrap();
+        assert_eq!(
+            copied["projects"][0]["services"][0]["command"],
+            "npm run dev"
+        );
+        assert_eq!(copied["preparations"][0]["steps"][0], "npm install");
+
+        // A state that cannot be read as JSON is not copied unfiltered.
+        fs::write(
+            config.join("workspace-state.json"),
+            "API_TOKEN=valor-ficticio",
+        )
+        .unwrap();
+        let backup = backup_configuration(&config, "0.4.0-alpha.10").unwrap();
+        assert!(!backup.join("workspace-state.json").exists());
         fs::remove_dir_all(config).unwrap();
     }
 }
