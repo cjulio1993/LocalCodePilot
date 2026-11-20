@@ -64,6 +64,15 @@ pub fn process_descends_from(process_id: u32, ancestor: u32) -> bool {
     })
 }
 
+/// When `process_id` started, in seconds since the epoch. Together with the PID it tells a
+/// process apart from a later one that got the same PID.
+pub fn process_started_at(process_id: u32) -> Option<u64> {
+    let pid = Pid::from_u32(process_id);
+    let mut system = System::new().ok()?;
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
+    system.process(pid).map(|process| process.start_time())
+}
+
 /// What the process table says about one process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProcessLink {
