@@ -46,3 +46,6 @@ OPEN.md
 /desktop/src/journey_tests.rs
 /docs/END-TO-END.md
 /scripts/test-end-to-end.py
+
+# Despejo de falha do Erlang/Elixir (pode ser criado por elixir --version)
+erl_crash.dump

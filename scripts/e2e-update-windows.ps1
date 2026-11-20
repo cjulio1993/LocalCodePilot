@@ -339,7 +339,9 @@ function Invoke-Cenario([string]$Nome) {
     $paginaOficial = $false
     $copiarErro = $false
     try {
-        $app = Start-Process -FilePath $alvo -PassThru
+        # Pasta de trabalho dentro do cenário: o que o app ou as ferramentas que ele consulta
+        # gravarem na pasta atual (como um erl_crash.dump) não cai no repositório.
+        $app = Start-Process -FilePath $alvo -WorkingDirectory $raiz -PassThru
         $botao = Wait-Ate { Find-Botao $app.Id 'Atualizar agora' } $(if ($Nome -eq 'sem-conexao') { 20 } else { 60 })
         if ($Nome -eq 'sem-conexao') {
             $esperado = '(nenhum aviso de atualização)'
