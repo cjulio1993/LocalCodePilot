@@ -21,3 +21,6 @@ ring.workspace = true
 tokio = { version = "1.54", features = ["rt", "net", "time"] }
 tokio-postgres = "0.7.18"
 mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls-ring"] }
+# SQL Server (TDS) for the connection test and the container the app manages.
+tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls"] }
+tokio-util = { version = "0.7.20", features = ["compat"] }

@@ -237,7 +237,10 @@ pub fn test_connection(
     if requirement.compose_service.is_some()
         || !matches!(
             requirement.engine,
-            DatabaseEngine::PostgreSql | DatabaseEngine::MySql | DatabaseEngine::MariaDb
+            DatabaseEngine::PostgreSql
+                | DatabaseEngine::MySql
+                | DatabaseEngine::MariaDb
+                | DatabaseEngine::SqlServer
         )
     {
         return None;
@@ -277,6 +280,10 @@ pub fn test_connection(
             DatabaseEngine::PostgreSql => {
                 postgres_login(address, port, user, password, database).await
             }
+            // The certificate SQL Server generates for itself is accepted only on loopback.
+            DatabaseEngine::SqlServer => {
+                mssql_login(&address.to_string(), port, user, password, database, true).await
+            }
             _ => mysql_login(address, port, user, password, database).await,
         }
     };
@@ -305,7 +312,10 @@ pub fn test_remote_connection(
         || host.is_empty()
         || !matches!(
             requirement.engine,
-            DatabaseEngine::PostgreSql | DatabaseEngine::MySql | DatabaseEngine::MariaDb
+            DatabaseEngine::PostgreSql
+                | DatabaseEngine::MySql
+                | DatabaseEngine::MariaDb
+                | DatabaseEngine::SqlServer
         )
     {
         return None;
@@ -335,6 +345,10 @@ pub fn test_remote_connection(
     };
     let engine = requirement.engine;
     let attempt = async {
+        if engine == DatabaseEngine::SqlServer {
+            // A remote SQL Server must present a certificate this computer trusts.
+            return mssql_login(&host, port, user, password, database, false).await;
+        }
         if engine == DatabaseEngine::PostgreSql {
             let mut config = tokio_postgres::Config::new();
             config
@@ -385,6 +399,50 @@ pub fn test_remote_connection(
     }
     Some(test)
 }
+/// SQL Server: logs in with SQL authentication and selects the configured database. With
+/// `trust_own_certificate` (loopback only), the server's self-generated certificate is accepted.
+async fn mssql_login(
+    host: &str,
+    port: u16,
+    user: &str,
+    password: &str,
+    database: &str,
+    trust_own_certificate: bool,
+) -> ConnectionOutcome {
+    use tokio_util::compat::TokioAsyncWriteCompatExt;
+    let mut config = tiberius::Config::new();
+    config.host(host);
+    config.port(port);
+    config.authentication(tiberius::AuthMethod::sql_server(user, password));
+    config.database(database);
+    config.encryption(tiberius::EncryptionLevel::Required);
+    if trust_own_certificate {
+        config.trust_cert();
+    }
+    let tcp = match tokio::net::TcpStream::connect(config.get_addr()).await {
+        Ok(tcp) => tcp,
+        Err(error) => return classify_error_chain(&error),
+    };
+    let _ = tcp.set_nodelay(true);
+    match tiberius::Client::connect(config, tcp.compat_write()).await {
+        Ok(client) => {
+            drop(client);
+            ConnectionOutcome::Connected
+        }
+        Err(tiberius::error::Error::Server(token)) => classify_mssql(token.code(), token.message()),
+        Err(error) => classify_io(&error.to_string()),
+    }
+}
+
+/// SQL Server error numbers: 18456 login failed, 4060 the database cannot be opened.
+fn classify_mssql(code: u32, message: &str) -> ConnectionOutcome {
+    match code {
+        18456 => ConnectionOutcome::AccessDenied,
+        4060 => ConnectionOutcome::DatabaseMissing,
+        _ => ConnectionOutcome::Failed(format!("{code}: {message}")),
+    }
+}
+
 async fn postgres_login(
     address: IpAddr,
     port: u16,
@@ -650,16 +708,15 @@ mod tests {
             test_connection(&compose, &credentials, Duration::from_secs(1)),
             None
         );
-        for engine in [DatabaseEngine::Sqlite, DatabaseEngine::SqlServer] {
-            assert_eq!(
-                test_connection(
-                    &requirement(PathBuf::new(), engine, "localhost"),
-                    &credentials,
-                    Duration::from_secs(1)
-                ),
-                None
-            );
-        }
+        // SQLite is a file: nothing to log into.
+        assert_eq!(
+            test_connection(
+                &requirement(PathBuf::new(), DatabaseEngine::Sqlite, "localhost"),
+                &credentials,
+                Duration::from_secs(1)
+            ),
+            None
+        );
     }
 
     #[test]
@@ -721,6 +778,8 @@ mod tests {
         assert_eq!(classify_mysql(1045, ""), ConnectionOutcome::AccessDenied);
         assert_eq!(classify_mysql(1044, ""), ConnectionOutcome::AccessDenied);
         assert_eq!(classify_mysql(1049, ""), ConnectionOutcome::DatabaseMissing);
+        assert_eq!(classify_mssql(18456, ""), ConnectionOutcome::AccessDenied);
+        assert_eq!(classify_mssql(4060, ""), ConnectionOutcome::DatabaseMissing);
         assert_eq!(
             classify_io("connection refused (os error 10061)"),
             ConnectionOutcome::NotResponding
@@ -744,7 +803,11 @@ mod tests {
             user: Some("app".into()),
             ..Default::default()
         };
-        for engine in [DatabaseEngine::PostgreSql, DatabaseEngine::MySql] {
+        for engine in [
+            DatabaseEngine::PostgreSql,
+            DatabaseEngine::MySql,
+            DatabaseEngine::SqlServer,
+        ] {
             let mut target = requirement(PathBuf::new(), engine, "127.0.0.1");
             target.port = Some(port);
             let test = test_connection(&target, &credentials, Duration::from_secs(5)).unwrap();

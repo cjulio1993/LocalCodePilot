@@ -15,6 +15,7 @@ pub mod database_connection;
 pub mod database_packages;
 pub mod database_servers;
 pub mod databases;
+pub mod sql_server_container;
 
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",

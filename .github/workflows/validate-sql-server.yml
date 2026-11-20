@@ -1,0 +1,34 @@
+name: Validate SQL Server container
+
+# The SQL Server container the app manages (runtime/src/sql_server_container.rs), end to end
+# with the pinned image on a runner that has Docker: create, password change, project
+# database and login, login tests, stop and start. The license terms are accepted here only
+# for the test; the app never accepts them for the person.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-sql-server.yml"
+      - "runtime/src/sql_server_container.rs"
+      - "runtime/src/database_connection.rs"
+      - "runtime/examples/sql_server_check.rs"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sql-server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: SQL Server container end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run the container life cycle
+        run: cargo run --locked -p localcodepilot-runtime --example sql_server_check -- docker "$RUNNER_TEMP/lcp-sqlserver" 14333
