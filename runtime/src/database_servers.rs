@@ -514,8 +514,10 @@ pub fn prepare(
     // The programs never get the password on their command line, but a server may echo
     // part of a failed statement of its init file (MySQL writes "near '...'"). Whatever
     // happened, the log and the error carry no copy of it.
-    scrub_file(&server.log_file(), &password);
+    // A log that keeps the password and cannot be cleaned fails the operation, loudly.
+    let cleaned = scrub_file(&server.log_file(), &password);
     result.map_err(|error| error.scrubbed(&password))?;
+    cleaned?;
     Ok(server)
 }
 
@@ -560,18 +562,71 @@ fn scrub(text: &str, secret: &str) -> String {
     }
 }
 
-/// Rewrites `path` without any copy of `secret` (only when it has one).
-fn scrub_file(path: &Path, secret: &str) {
-    let Ok(bytes) = fs::read(path) else {
-        return;
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    if secret.is_empty() || !text.contains(secret) {
-        return;
+/// Whether `path` holds a copy of `secret`; `None` when it cannot be read.
+fn file_has_secret(path: &Path, secret: &str) -> Option<bool> {
+    match fs::read(path) {
+        Ok(bytes) => Some(
+            !secret.is_empty()
+                && bytes
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()),
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
     }
+}
+
+/// Leaves `path` without any copy of `secret`, and proves it by reading it again. Tries,
+/// in order: rewrite and replace, the same without the read-only attribute, rewrite in
+/// place (a server may keep its log open), and removing the file. If the secret is still
+/// there, or the file cannot be read to check, it fails: the caller must not go on as if
+/// the log were clean. The error never carries the secret.
+fn scrub_file(path: &Path, secret: &str) -> Result<(), ServerError> {
+    let unreadable = || {
+        ServerError::Io(format!(
+            "o log do banco não pôde ser conferido para remover a senha: {}",
+            path.display()
+        ))
+    };
+    match file_has_secret(path, secret) {
+        Some(false) => return Ok(()),
+        None => return Err(unreadable()),
+        Some(true) => {}
+    }
+    let clean = |path: &Path| file_has_secret(path, secret) == Some(false);
+    let text = fs::read(path)
+        .map(|bytes| scrub(&String::from_utf8_lossy(&bytes), secret))
+        .map_err(|_| unreadable())?;
     let partial = path.with_extension("log.part");
-    if fs::write(&partial, scrub(&text, secret)).is_ok() {
-        let _ = fs::rename(&partial, path);
+    let replace =
+        || fs::write(&partial, &text).is_ok() && fs::rename(&partial, path).is_ok() && clean(path);
+    let mut done = replace();
+    if !done && let Ok(metadata) = fs::metadata(path) {
+        let mut permissions = metadata.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        done = fs::set_permissions(path, permissions).is_ok() && replace();
+    }
+    if !done {
+        done = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()))
+            .is_ok()
+            && clean(path);
+    }
+    if !done {
+        done = fs::remove_file(path).is_ok() && clean(path);
+    }
+    let _ = fs::remove_file(&partial);
+    if done {
+        Ok(())
+    } else {
+        Err(ServerError::Io(format!(
+            "o log do banco ficou com a senha e não pôde ser limpo nem apagado; apague o arquivo {}",
+            path.display()
+        )))
     }
 }
 
@@ -1119,7 +1174,7 @@ mod tests {
             "[ERROR] 1064 You have an error in your SQL syntax ... near 'IDENTIFIED BY 'MARCA-SECRETA-123'' at line 1\n",
         )
         .unwrap();
-        scrub_file(&log, "MARCA-SECRETA-123");
+        scrub_file(&log, "MARCA-SECRETA-123").unwrap();
         let text = fs::read_to_string(&log).unwrap();
         assert!(!text.contains("MARCA-SECRETA-123"));
         assert!(text.contains("near 'IDENTIFIED BY '••••''"));
@@ -1132,6 +1187,45 @@ mod tests {
         let error =
             ServerError::Authentication("MARCA-SECRETA-123".into()).scrubbed("MARCA-SECRETA-123");
         assert_eq!(error, ServerError::Authentication("••••".into()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_read_only_log_with_the_secret_is_still_cleaned() {
+        let root = std::env::temp_dir().join(format!("lcp-scrub-ro-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("servidor.log");
+        fs::write(&log, "near 'MARCA-SECRETA-456'\n").unwrap();
+        let mut permissions = fs::metadata(&log).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&log, permissions).unwrap();
+        scrub_file(&log, "MARCA-SECRETA-456").unwrap();
+        assert_eq!(file_has_secret(&log, "MARCA-SECRETA-456"), Some(false));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Another process holds the log with no sharing: it can be neither read, changed nor
+    /// removed. The failure is reported, without the secret in the message.
+    #[cfg(windows)]
+    #[test]
+    fn a_log_that_cannot_be_cleaned_fails_without_showing_the_secret() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!("lcp-scrub-lock-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("servidor.log");
+        fs::write(&log, "near 'MARCA-SECRETA-789'\n").unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&log)
+            .unwrap();
+        let error = scrub_file(&log, "MARCA-SECRETA-789").unwrap_err();
+        assert!(matches!(error, ServerError::Io(_)), "{error:?}");
+        assert!(!error.to_string().contains("MARCA-SECRETA-789"));
+        drop(lock);
+        // Once released, the next attempt cleans it.
+        scrub_file(&log, "MARCA-SECRETA-789").unwrap();
+        assert_eq!(file_has_secret(&log, "MARCA-SECRETA-789"), Some(false));
         let _ = fs::remove_dir_all(&root);
     }
 
