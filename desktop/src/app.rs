@@ -2196,6 +2196,7 @@ impl LocalCodePilot {
 
     fn start_environment_plan(&mut self, plan: InstallationPlan, repaint: egui::Context) {
         let project_path = plan.project_path.clone();
+        let verb = PlanVerb::of(&plan);
         let cancel = Arc::new(AtomicBool::new(false));
         let runner_cancel = cancel.clone();
         let runner_plan = plan.clone();
@@ -2217,7 +2218,7 @@ impl LocalCodePilot {
         );
         self.record_environment_preparation(&project_path, "em andamento");
         self.dependency_terminal = Some(project_path);
-        self.notify("Preparando o ambiente em segundo plano...");
+        self.notify(verb.started());
     }
 
     fn poll_dependency_installs(&mut self, ctx: &egui::Context) {
@@ -2262,11 +2263,11 @@ impl LocalCodePilot {
                         }
                     }
                 };
-                completed.push((project_path.clone(), result));
+                completed.push((project_path.clone(), result, PlanVerb::of(&session.plan)));
             }
         }
 
-        for (project_path, result) in completed {
+        for (project_path, result, verb) in completed {
             self.record_environment_preparation(
                 &project_path,
                 if result.is_ok() {
@@ -2298,16 +2299,16 @@ impl LocalCodePilot {
                         let ready = environment.is_ready();
                         self.project_environments
                             .insert(project_path.clone(), environment);
-                        self.notify(if ready {
-                            "Preparação concluída. O ambiente está pronto."
-                        } else {
-                            "A preparação terminou, mas o ambiente ainda precisa de atenção."
-                        });
+                        self.notify(verb.finished(ready));
                     }
+                }
+                Err(error) if error == PLAN_CANCELLED => {
+                    self.dependency_terminal = Some(project_path);
+                    self.notify(verb.cancelled_while_running());
                 }
                 Err(error) => {
                     self.dependency_terminal = Some(project_path);
-                    self.notify(format!("Não foi possível instalar: {error}"));
+                    self.notify(verb.failed(&error));
                 }
             }
         }
@@ -2963,7 +2964,7 @@ impl LocalCodePilot {
             self.start_environment_plan(plan, root_ui.ctx().clone());
         } else if cancel || !open || escape {
             self.environment_plan_confirmation = None;
-            self.notify("Preparação cancelada antes da execução");
+            self.notify(PlanVerb::of(&plan).cancelled_before_running());
         }
     }
 
@@ -2984,6 +2985,7 @@ impl LocalCodePilot {
         let logs = session.logs.iter().cloned().collect::<Vec<_>>();
         let status = session.status.clone();
         let retry_plan = session.plan.clone();
+        let verb = PlanVerb::of(&session.plan);
         let offers_laravel_migration = matches!(&status, DependencyInstallStatus::Failed { .. })
             && composer_security_advisory(&logs.join("\n"))
             && project_path.join("composer.json").is_file();
@@ -2993,7 +2995,7 @@ impl LocalCodePilot {
         let mut cancel_installation = false;
         let mut prepare_migration = false;
 
-        egui::Window::new(format!("{TERMINAL}  Preparação · {project_name}"))
+        egui::Window::new(format!("{TERMINAL}  {} · {project_name}", verb.action()))
             .id(egui::Id::unique(("dependency-terminal", &project_path)))
             .open(&mut open)
             .default_size([860.0, 560.0])
@@ -3089,7 +3091,7 @@ impl LocalCodePilot {
                         clear_logs = true;
                     }
                     if matches!(&status, DependencyInstallStatus::Running)
-                        && ui.button("Cancelar preparação").clicked()
+                        && ui.button(verb.cancel_button()).clicked()
                     {
                         cancel_installation = true;
                     }
@@ -5504,24 +5506,102 @@ fn resolve_environment_plan_with_tools_directory(
 /// Source of the plan steps that install the project's own dependencies.
 const PROJECT_MANIFEST_SOURCE: &str = "Manifesto do projeto";
 
-/// The confirmation says what will happen (#101, LCP-SEC-001): installing the project's
-/// dependencies when every step comes from its manifest, preparing it when the machine
-/// changes too.
-fn plan_window_title(plan: &InstallationPlan) -> &'static str {
-    if installs_only_dependencies(plan) {
-        "Instalar dependências deste projeto?"
-    } else {
-        "Preparar este projeto?"
+/// Error returned when the person cancels a running plan.
+const PLAN_CANCELLED: &str = "A preparação foi cancelada";
+
+/// The verb of a preparation flow (T001): the card's action ("Instalar dependências" or
+/// "Preparar ambiente") names the confirmation, the progress window, the cancel button and
+/// every notice, from the first click to the result. It comes from the plan itself: only
+/// the project's manifest installs dependencies; anything that changes the machine prepares
+/// the environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanVerb {
+    InstallDependencies,
+    PrepareEnvironment,
+}
+
+impl PlanVerb {
+    fn of(plan: &InstallationPlan) -> Self {
+        if installs_only_dependencies(plan) {
+            Self::InstallDependencies
+        } else {
+            Self::PrepareEnvironment
+        }
+    }
+
+    /// Title of the confirmation (#101, LCP-SEC-001).
+    fn confirmation_title(self) -> &'static str {
+        match self {
+            Self::InstallDependencies => "Instalar dependências deste projeto?",
+            Self::PrepareEnvironment => "Preparar este projeto?",
+        }
+    }
+
+    /// The confirm button and the progress window use the card's action.
+    fn action(self) -> &'static str {
+        match self {
+            Self::InstallDependencies => "Instalar dependências",
+            Self::PrepareEnvironment => "Preparar ambiente",
+        }
+    }
+
+    fn started(self) -> &'static str {
+        match self {
+            Self::InstallDependencies => "Instalando dependências em segundo plano...",
+            Self::PrepareEnvironment => "Preparando o ambiente em segundo plano...",
+        }
+    }
+
+    fn cancel_button(self) -> &'static str {
+        match self {
+            Self::InstallDependencies => "Cancelar instalação de dependências",
+            Self::PrepareEnvironment => "Cancelar preparação do ambiente",
+        }
+    }
+
+    fn cancelled_before_running(self) -> &'static str {
+        match self {
+            Self::InstallDependencies => "Instalação de dependências cancelada antes da execução.",
+            Self::PrepareEnvironment => "Preparação do ambiente cancelada antes da execução.",
+        }
+    }
+
+    fn cancelled_while_running(self) -> &'static str {
+        match self {
+            Self::InstallDependencies => "Instalação de dependências cancelada.",
+            Self::PrepareEnvironment => "Preparação do ambiente cancelada.",
+        }
+    }
+
+    fn finished(self, ready: bool) -> &'static str {
+        match (self, ready) {
+            (Self::InstallDependencies, true) => "Dependências instaladas. O projeto está pronto.",
+            (Self::PrepareEnvironment, true) => "Ambiente preparado. O projeto está pronto.",
+            (Self::InstallDependencies, false) => {
+                "As dependências foram instaladas, mas o projeto ainda precisa de atenção."
+            }
+            (Self::PrepareEnvironment, false) => {
+                "O ambiente foi preparado, mas o projeto ainda precisa de atenção."
+            }
+        }
+    }
+
+    fn failed(self, error: &str) -> String {
+        match self {
+            Self::InstallDependencies => {
+                format!("Não foi possível instalar as dependências: {error}")
+            }
+            Self::PrepareEnvironment => format!("Não foi possível preparar o ambiente: {error}"),
+        }
     }
 }
 
-/// The confirm button uses the same verb as the title and the card.
+fn plan_window_title(plan: &InstallationPlan) -> &'static str {
+    PlanVerb::of(plan).confirmation_title()
+}
+
 fn plan_confirm_label(plan: &InstallationPlan) -> &'static str {
-    if installs_only_dependencies(plan) {
-        "Instalar dependências"
-    } else {
-        "Preparar"
-    }
+    PlanVerb::of(plan).action()
 }
 
 fn installs_only_dependencies(plan: &InstallationPlan) -> bool {
@@ -5583,7 +5663,7 @@ fn run_installation_plan(
     let mut environment_path = refreshed_environment_path().ok();
     for (index, step) in plan.steps.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
-            return Err("A preparação foi cancelada".into());
+            return Err(PLAN_CANCELLED.into());
         }
         let _ = sender.send(DependencyInstallEvent::Log(format!(
             "[etapa {}/{}] {}",
@@ -5665,7 +5745,7 @@ fn run_installation_plan(
                     if cancel.load(Ordering::Relaxed) {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Err("A preparação foi cancelada".into());
+                        return Err(PLAN_CANCELLED.into());
                     }
                     if step_started.elapsed() >= INSTALLATION_STEP_TIMEOUT {
                         let _ = child.kill();
@@ -5732,7 +5812,7 @@ fn install_composer(
     const SIGNATURE_URL: &str = "https://composer.github.io/installer.sig";
     const INSTALLER_URL: &str = "https://getcomposer.org/installer";
     if cancel.load(Ordering::Relaxed) {
-        return Err("A preparação foi cancelada".into());
+        return Err(PLAN_CANCELLED.into());
     }
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
@@ -7673,9 +7753,69 @@ mod tests {
         assert_eq!(plan_confirm_label(&plan), "Instalar dependências");
         plan.steps.insert(0, step(Some("winget")));
         assert_eq!(plan_window_title(&plan), "Preparar este projeto?");
-        assert_eq!(plan_confirm_label(&plan), "Preparar");
+        assert_eq!(plan_confirm_label(&plan), "Preparar ambiente");
         plan.steps = vec![step(None), step(Some(PROJECT_MANIFEST_SOURCE))];
         assert_eq!(plan_window_title(&plan), "Preparar este projeto?");
+    }
+
+    /// T001: the card's verb is kept from the confirmation to the last notice.
+    #[test]
+    fn each_flow_keeps_the_card_verb_until_the_end() {
+        use super::PlanVerb;
+        let install = PlanVerb::InstallDependencies;
+        let prepare = PlanVerb::PrepareEnvironment;
+        assert_eq!(install.action(), "Instalar dependências");
+        assert_eq!(prepare.action(), "Preparar ambiente");
+        assert_eq!(
+            install.cancel_button(),
+            "Cancelar instalação de dependências"
+        );
+        assert_eq!(prepare.cancel_button(), "Cancelar preparação do ambiente");
+        assert_eq!(
+            install.cancelled_before_running(),
+            "Instalação de dependências cancelada antes da execução."
+        );
+        assert_eq!(
+            prepare.cancelled_before_running(),
+            "Preparação do ambiente cancelada antes da execução."
+        );
+        assert_eq!(
+            install.finished(true),
+            "Dependências instaladas. O projeto está pronto."
+        );
+        assert_eq!(
+            prepare.finished(true),
+            "Ambiente preparado. O projeto está pronto."
+        );
+        assert_eq!(
+            install.finished(false),
+            "As dependências foram instaladas, mas o projeto ainda precisa de atenção."
+        );
+        assert_eq!(
+            prepare.finished(false),
+            "O ambiente foi preparado, mas o projeto ainda precisa de atenção."
+        );
+        for verb in [install, prepare] {
+            let texts = [
+                verb.action(),
+                verb.started(),
+                verb.cancel_button(),
+                verb.cancelled_before_running(),
+                verb.cancelled_while_running(),
+                verb.finished(true),
+                verb.finished(false),
+            ];
+            let (wanted, other) = match verb {
+                PlanVerb::InstallDependencies => ("depend", "prepar"),
+                PlanVerb::PrepareEnvironment => ("prepar", "depend"),
+            };
+            for text in texts {
+                let lower = text.to_lowercase();
+                assert!(lower.contains(wanted), "{text}");
+                assert!(!lower.contains(other), "{text}");
+            }
+            assert!(verb.failed("x").to_lowercase().contains(wanted));
+        }
     }
 
     #[test]

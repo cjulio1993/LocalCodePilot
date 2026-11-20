@@ -6,6 +6,16 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Alterado
+
+- **Instalar dependências** e **Preparar ambiente** mantêm o mesmo verbo do clique até o resultado. Antes, os dois fluxos terminavam com os mesmos textos genéricos de "preparação". Agora, conforme a ação escolhida, o app mostra:
+  - o botão de confirmação: **Instalar dependências** ou **Preparar ambiente** (antes, "Preparar");
+  - a janela de progresso: "Instalar dependências · projeto" ou "Preparar ambiente · projeto";
+  - o botão de cancelar: **Cancelar instalação de dependências** ou **Cancelar preparação do ambiente**;
+  - os avisos de início ("Instalando dependências em segundo plano..."), cancelamento, sucesso ("Dependências instaladas. O projeto está pronto." ou "Ambiente preparado. O projeto está pronto."), pendência e falha.
+
+  As etapas e os comandos executados não mudaram.
+
 ## [0.4.0-alpha.9] - 2026-11-19
 
 ### Segurança
