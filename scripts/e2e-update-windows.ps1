@@ -20,7 +20,9 @@
       rollback           a versão nova fecha ao iniciar: a anterior volta;
       confirmacao-lenta  a versão nova demora mais que a espera do atualizador;
       sem-conexao        o feed não responde: nenhum aviso de atualização;
-      assinatura-invalida  os checksums foram assinados com outra chave: nada é baixado nem trocado.
+      assinatura-invalida  os checksums foram assinados com outra chave: nada é baixado nem trocado;
+      processos-ativos   com um projeto rodando, pergunta antes de baixar; Agora não mantém tudo;
+      processo-durante-download  projeto iniciado no meio do download: pergunta de novo antes de fechar.
 
     As versões de teste confiam numa chave Ed25519 descartável, gerada na
     pasta do teste com o OpenSSL (o do Git for Windows serve), nunca na chave
@@ -31,7 +33,7 @@
     .\scripts\e2e-update-windows.ps1 -Cenario sucesso,rollback -Recompilar
 #>
 param(
-    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida')]
+    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download')]
     [string[]]$Cenario = @('todos'),
     [string]$Pasta = (Join-Path ([IO.Path]::GetTempPath()) 'lcp-e2e-update'),
     [switch]$Recompilar,
@@ -45,7 +47,7 @@ $ErrorActionPreference = 'Stop'
 $repositorio = Split-Path -Parent $PSScriptRoot
 $versaoAntiga = '0.4.0-alpha.90'
 $versaoNova = '0.4.0-alpha.91'
-$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida')
+$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download')
 if ($Cenario -contains 'todos') { $Cenario = $todos }
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
@@ -209,6 +211,34 @@ function Save-Janela([int]$ProcessId, [string]$Arquivo) {
     $grafico.Dispose(); $imagem.Dispose()
 }
 
+function Invoke-Botao($Elemento) {
+    if (-not $Elemento) { throw 'Botão não encontrado.' }
+    $padroes = $Elemento.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }
+    if ($padroes -contains 'InvokePatternIdentifiers.Pattern') {
+        $Elemento.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    }
+    else { $Elemento.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() }
+}
+
+# O servidor do projeto descartável (node <script>), identificado pelo nome do script.
+$scriptDoProjeto = 'lcp-e2e-servidor.js'
+function Get-ProcessoDoProjeto {
+    @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*$scriptDoProjeto*" })
+}
+
+# Inicia o projeto descartável pelo cartão e confirma o primeiro uso do comando.
+function Start-ProjetoDeTeste([int]$ProcessId) {
+    $janela = Get-Janela $ProcessId
+    $porNome = New-Object System.Windows.Automation.PropertyCondition($uia::NameProperty, 'Iniciar')
+    $iniciar = Wait-Ate { @($janela.FindAll([System.Windows.Automation.TreeScope]::Descendants, $porNome)) | Select-Object -First 1 } 30
+    Invoke-Botao $iniciar
+    Start-Sleep -Milliseconds 1500
+    $confirmar = @($janela.FindAll([System.Windows.Automation.TreeScope]::Descendants, $porNome)) | Select-Object -Last 1
+    if ($confirmar) { Invoke-Botao $confirmar }
+    [bool](Wait-Ate { if (@(Get-ProcessoDoProjeto).Count -gt 0 -and ((Get-TextosNaTela $ProcessId) -contains 'Rodando')) { $true } } 30)
+}
+
 function Wait-Ate([scriptblock]$Condicao, [int]$Segundos) {
     $limite = (Get-Date).AddSeconds($Segundos)
     while ((Get-Date) -lt $limite) {
@@ -233,6 +263,15 @@ function Invoke-Cenario([string]$Nome) {
     $configuracoes = New-Item -ItemType Directory -Force (Join-Path $appdata 'LocalCodePilot')
     # A varredura olha só uma pasta vazia, nunca os projetos reais.
     Set-Content -LiteralPath (Join-Path $configuracoes 'scan-roots.txt') -Value $projetos.FullName -Encoding ascii
+    $comProjeto = $Nome -in 'processos-ativos', 'processo-durante-download'
+    if ($comProjeto) {
+        # Projeto descartável, sem dependências: um servidor Node que fica rodando.
+        $projeto = New-Item -ItemType Directory -Force (Join-Path $projetos.FullName 'api-exemplo')
+        Set-Content -LiteralPath (Join-Path $projeto.FullName 'package.json') -Encoding ascii `
+            -Value "{`"name`":`"api-exemplo`",`"version`":`"1.0.0`",`"private`":true,`"scripts`":{`"dev`":`"node $scriptDoProjeto`"}}"
+        Set-Content -LiteralPath (Join-Path $projeto.FullName $scriptDoProjeto) -Encoding ascii `
+            -Value 'require("http").createServer((q, r) => r.end("ok")).listen(0, () => console.log("pronto"));'
+    }
 
     $antiga = Get-Variante 'antiga' $versaoAntiga ''
     $inicioDaNova = switch ($Nome) { 'rollback' { 'fail' } 'confirmacao-lenta' { 'slow' } default { '' } }
@@ -260,6 +299,8 @@ function Invoke-Cenario([string]$Nome) {
         $arquivoPorta = Join-Path $raiz 'porta.txt'
         $argumentos = @('--dir', "`"$($feed.FullName)`"", '--port', '0', '--port-file', "`"$arquivoPorta`"")
         if ($Nome -eq 'queda-no-meio') { $argumentos += @('--drop-after-bytes', '1048576') }
+        # Download lento, para dar tempo de iniciar um projeto no meio dele.
+        if ($Nome -eq 'processo-durante-download') { $argumentos += @('--bytes-per-second', '3000000') }
         $servidor = Start-Process -FilePath (Get-Servidor) -ArgumentList $argumentos -PassThru -WindowStyle Hidden `
             -RedirectStandardOutput (Join-Path $raiz 'servidor.log') -RedirectStandardError (Join-Path $raiz 'servidor-erros.log')
         if (-not (Wait-Ate { Test-Path -LiteralPath $arquivoPorta } 20)) { throw 'O feed local não começou a responder.' }
@@ -289,10 +330,18 @@ function Invoke-Cenario([string]$Nome) {
     $esperado = ''
     $tentarDeNovo = $false
     $atualizarAgora = $false
+    $projetoRodando = $false
+    $perguntaAntesDeBaixar = $false
+    $perguntaSemProcessos = $false
+    $listaComEstado = $false
+    $focoNoAgoraNao = $false
+    $agoraNaoManteve = $false
     $paginaOficial = $false
     $copiarErro = $false
     try {
-        $app = Start-Process -FilePath $alvo -PassThru
+        # Pasta de trabalho dentro do cenário: o que o app ou as ferramentas que ele consulta
+        # gravarem na pasta atual (como um erl_crash.dump) não cai no repositório.
+        $app = Start-Process -FilePath $alvo -WorkingDirectory $raiz -PassThru
         $botao = Wait-Ate { Find-Botao $app.Id 'Atualizar agora' } $(if ($Nome -eq 'sem-conexao') { 20 } else { 60 })
         if ($Nome -eq 'sem-conexao') {
             $esperado = '(nenhum aviso de atualização)'
@@ -303,9 +352,43 @@ function Invoke-Cenario([string]$Nome) {
             throw "O aviso de atualização não apareceu. Na tela: $na_tela"
         }
         else {
-            $botao.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            if ($Nome -eq 'processos-ativos') {
+                # CA-5: com um projeto rodando, "Atualizar agora" pergunta antes de baixar.
+                $projetoRodando = Start-ProjetoDeTeste $app.Id
+                Invoke-Botao $botao
+                $agoraNao = Wait-Ate { Find-Botao $app.Id 'Agora não' } 10
+                $textosDaPergunta = Get-TextosNaTela $app.Id
+                $perguntaAntesDeBaixar = [bool]$agoraNao -and ($textosDaPergunta -contains 'Há projetos em execução.') -and
+                    ($textosDaPergunta -contains 'Atualizar e encerrar processos')
+                $listaComEstado = ($textosDaPergunta -contains 'api-exemplo · dev') -and ($textosDaPergunta -contains 'Rodando')
+                $focoNoAgoraNao = [bool]$agoraNao -and $agoraNao.Current.HasKeyboardFocus
+                if ($Capturas) {
+                    New-Item -ItemType Directory -Force $Capturas | Out-Null
+                    Save-Janela $app.Id (Join-Path $Capturas 'confirmacao-processos-ativos.png')
+                }
+                if ($agoraNao) { Invoke-Botao $agoraNao }
+                Start-Sleep -Seconds 3
+                $agoraNaoManteve = (-not (Find-Botao $app.Id 'Agora não')) -and (@(Get-ProcessoDoProjeto).Count -gt 0) -and
+                    -not ((Get-Content -LiteralPath (Join-Path $raiz 'servidor.log') -ErrorAction SilentlyContinue) -match [regex]::Escape($nomeExe))
+                # Agora, sim: confirma e atualiza.
+                Invoke-Botao (Wait-Ate { Find-Botao $app.Id 'Atualizar agora' } 10)
+                $confirmar = Wait-Ate { Find-Botao $app.Id 'Atualizar e encerrar processos' } 10
+                if (-not $confirmar) { throw "A confirmação não reapareceu. Na tela: $((Get-TextosNaTela $app.Id) -join ' | ')" }
+                Invoke-Botao $confirmar
+            }
+            else {
+                Invoke-Botao $botao
+            }
+            if ($Nome -eq 'processo-durante-download') {
+                # Nada rodando no clique: baixa sem perguntar. Um projeto iniciado durante o
+                # download não foi coberto por nenhuma escolha, então a pergunta vem no fim.
+                $perguntaSemProcessos = [bool](Wait-Ate { Find-Botao $app.Id 'Agora não' } 2)
+                $projetoRodando = Start-ProjetoDeTeste $app.Id
+            }
             $esperado = switch ($Nome) {
                 'sucesso' { "LocalCodePilot atualizado para a versão $versaoNova." }
+                'processos-ativos' { "LocalCodePilot atualizado para a versão $versaoNova." }
+                'processo-durante-download' { 'Há projetos em execução.' }
                 'confirmacao-lenta' { "LocalCodePilot atualizado para a versão $versaoNova." }
                 'rollback' { "A versão $versaoAntiga foi restaurada e continua em uso" }
                 # Falhas aparecem em camadas (T002.07): o título simples fica na tela e o erro
@@ -315,17 +398,29 @@ function Invoke-Cenario([string]$Nome) {
                 'assinatura-invalida' { 'Atualização recusada por segurança' }
             }
             $falhaNoDownload = $Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida'
+            $naMesmaJanela = $falhaNoDownload -or $Nome -eq 'processo-durante-download'
             $na_tela = Wait-Ate {
-                $processos = if ($falhaNoDownload) { @($app) } else {
+                $processos = if ($naMesmaJanela) { @($app) } else {
                     @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo -and $_.Id -ne $app.Id } catch { $false } })
                 }
                 foreach ($processo in $processos) {
                     $texto = (Get-TextosNaTela $processo.Id) | Where-Object {
-                        if ($falhaNoDownload) { $_ -eq $esperado } else { $_.Contains($esperado) }
+                        if ($naMesmaJanela) { $_ -eq $esperado } else { $_.Contains($esperado) }
                     } | Select-Object -First 1
                     if ($texto) { return $texto }
                 }
             } 150
+            if ($Nome -eq 'processo-durante-download' -and $na_tela) {
+                $textosDaPergunta = Get-TextosNaTela $app.Id
+                $listaComEstado = ($textosDaPergunta -contains 'api-exemplo · dev') -and ($textosDaPergunta -contains 'Rodando')
+                if ($Capturas) {
+                    New-Item -ItemType Directory -Force $Capturas | Out-Null
+                    Save-Janela $app.Id (Join-Path $Capturas 'confirmacao-processo-durante-download.png')
+                }
+                Invoke-Botao (Find-Botao $app.Id 'Agora não')
+                Start-Sleep -Seconds 3
+                $agoraNaoManteve = (-not (Find-Botao $app.Id 'Agora não')) -and (@(Get-ProcessoDoProjeto).Count -gt 0)
+            }
             if ($falhaNoDownload -and $na_tela) {
                 $textosDaFalha = Get-TextosNaTela $app.Id
                 $tentarDeNovo = $textosDaFalha -contains 'Tentar de novo'
@@ -372,7 +467,7 @@ function Invoke-Cenario([string]$Nome) {
             app_aberto = [bool](Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo } catch { $false } })
         }
 
-        $exeEsperado = if ($Nome -in 'sucesso', 'confirmacao-lenta') { $versaoNova } else { $versaoAntiga }
+        $exeEsperado = if ($Nome -in 'sucesso', 'confirmacao-lenta', 'processos-ativos') { $versaoNova } else { $versaoAntiga }
         $checagens = [ordered]@{
             'texto esperado na tela' = [bool]$na_tela
             "executável final é $exeEsperado" = $resultado.exe_final -eq $exeEsperado
@@ -382,6 +477,22 @@ function Invoke-Cenario([string]$Nome) {
             'app aberto no fim' = $resultado.app_aberto
         }
         if ($Nome -eq 'sem-conexao') { $checagens['texto esperado na tela'] = -not $na_tela }
+        if ($Nome -eq 'processos-ativos') {
+            $checagens['projeto rodando antes de atualizar'] = [bool]$projetoRodando
+            $checagens['pergunta antes de baixar (aviso e botões aprovados)'] = $perguntaAntesDeBaixar
+            $checagens['lista o projeto com o estado'] = $listaComEstado
+            $checagens['foco inicial em Agora não'] = $focoNoAgoraNao
+            $checagens['Agora não: nada baixado e o projeto continua rodando'] = $agoraNaoManteve
+            $checagens['processo do projeto encerrado depois de atualizar'] = @(Get-ProcessoDoProjeto).Count -eq 0
+            $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
+        }
+        if ($Nome -eq 'processo-durante-download') {
+            $checagens['sem pergunta no clique (nada rodando)'] = -not $perguntaSemProcessos
+            $checagens['projeto iniciado durante o download'] = [bool]$projetoRodando
+            $checagens['lista o projeto com o estado'] = $listaComEstado
+            $checagens['Agora não: nada instalado e o projeto continua rodando'] = $agoraNaoManteve
+            $checagens['arquivo preparado descartado'] = $resultado.preparos_em_temp -eq 0
+        }
         if ($Nome -in 'sucesso', 'confirmacao-lenta') {
             $checagens["cópia das configurações em backups\antes-de-$versaoNova"] = $resultado.copia_das_configuracoes -eq "antes-de-$versaoNova"
             $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
@@ -403,6 +514,7 @@ function Invoke-Cenario([string]$Nome) {
     }
     finally {
         Stop-ProcessosDaPasta
+        Get-ProcessoDoProjeto | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         foreach ($nomeVariavel in $ambienteOriginal.Keys) {
             [Environment]::SetEnvironmentVariable($nomeVariavel, $ambienteOriginal[$nomeVariavel])
         }
