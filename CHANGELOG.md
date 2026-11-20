@@ -8,6 +8,13 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Os cards de Projetos agora têm todos a mesma altura, com **Iniciar** e **Detalhes técnicos** alinhados na base, em qualquer número de colunas. Antes, cada card tinha a altura do próprio conteúdo, e a grade ficava irregular. O motivo do estado aparece em até 3 linhas; se for maior, termina em "…", e o texto completo fica ao passar o mouse, em **Detalhes técnicos** e para o leitor de tela. As tecnologias ficam numa linha, e as que não cabem viram "+N", com a lista completa nos mesmos lugares. Um card com **Detalhes técnicos** aberto cresce sem mudar os outros.
+- Um teste automático abria `cmd.exe` sem janela oculta e o encerrava logo em seguida; sob carga, isso pode ter causado a janela "cmd.exe - Erro de aplicativo (0xc0000142)" vista uma vez durante os testes. O teste agora roda `ping` direto, oculto, como todos os programas que o app inicia. A verificação de linguagens do app, repetida 10 vezes numa instância isolada, não mostrou a janela.
+
+### Documentação
+
+- O README e a Ajuda (**Instalar no Windows com segurança**) explicam, passo a passo, como conferir o SHA-256 do instalador ou do zip no `SHA256SUMS.txt` da release antes de abrir o arquivo, e só então o que fazer no aviso do SmartScreen. Saiu a promessa de assinatura de código "a caminho": as versões atuais não têm assinatura de código.
+
 - No Windows, a porta de outro programa não é mais atribuída a um projeto por engano. Para saber se o processo que escuta a porta foi iniciado pelo projeto, o app sobe pela árvore de processos. O Windows pode reaproveitar o número (PID) de um processo que já terminou, e esse número podia ser tomado como "pai" de um processo mais antigo. Agora um "pai" que começou depois do filho encerra a busca, e a porta conta como de outro programa.
 - Avisos longos no canto da janela, como o resultado de uma atualização, quebram linha e aparecem inteiros. Antes, o começo da mensagem ficava fora da borda esquerda da janela.
 - A consulta de versões das linguagens (ao abrir o app e em **Verificar de novo**) não deixa mais um `erl_crash.dump` de cerca de 3 MB na pasta de onde o LocalCodePilot foi aberto. Quando a máquina virtual do Erlang falhava ao responder `elixir --version`, ela gravava esse arquivo na pasta atual. Agora as consultas rodam na pasta temporária do sistema e pedem à VM do Erlang que não grave o despejo. Se a pasta temporária não estiver disponível, a versão aparece como indisponível, e nada roda na pasta de abertura.
