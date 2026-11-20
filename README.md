@@ -38,7 +38,7 @@ Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e
 
 **Se você usa a Alpha 7:** baixe o instalador ou o zip. O botão **Atualizar agora** da Alpha 7 não conclui a atualização.
 
-Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows pode mostrar "O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**. Se quiser conferir o arquivo, compare o SHA-256 publicado na release. A assinatura digital está a caminho.
+Os arquivos desta versão ainda não têm assinatura digital, por isso o Windows pode mostrar "O Windows protegeu o computador". Clique em **Mais informações** e depois em **Executar assim mesmo**. Se quiser conferir o arquivo, compare o SHA-256 publicado na release. A assinatura digital está a caminho, pelo programa gratuito de assinatura para projetos open source do [SignPath.io](https://about.signpath.io), com certificado da [SignPath Foundation](https://signpath.org); veja a [Code signing policy](CODE_SIGNING_POLICY.md).
 
 **macOS (experimental).** Há um pacote universal (Intel e Apple Silicon) para testes; a validação em Mac real ainda está em andamento. Veja [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
@@ -138,7 +138,7 @@ Everything runs on your computer. The app does not send your projects anywhere, 
 
 **If you use Alpha 7:** download the installer or zip. Alpha 7's **Update now** button does not complete the update.
 
-The files in this version are not digitally signed yet, so Windows may show "Windows protected your PC". Click **More info** and then **Run anyway**. To check the file, compare the SHA-256 published on the release. Digital signing is on its way.
+The files in this version are not digitally signed yet, so Windows may show "Windows protected your PC". Click **More info** and then **Run anyway**. To check the file, compare the SHA-256 published on the release. Digital signing is on its way, through the free open-source code signing program of [SignPath.io](https://about.signpath.io), with a certificate by [SignPath Foundation](https://signpath.org); see the [Code signing policy](CODE_SIGNING_POLICY.md).
 
 **macOS (experimental).** A universal package (Intel and Apple Silicon) is available for testing; validation on a real Mac is still in progress. See [docs/README-MACOS.txt](docs/README-MACOS.txt).
 
@@ -215,3 +215,7 @@ CI checks Rust dependency security advisories (RustSec) and licenses with `cargo
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Code signing policy
+
+See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
