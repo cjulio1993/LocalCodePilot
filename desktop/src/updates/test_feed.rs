@@ -66,6 +66,12 @@ fn parse_key(hex: &str) -> Option<[u8; 32]> {
     Some(key)
 }
 
+/// The `AppId` of the throwaway test installer, set when the test build is
+/// compiled, so the E2E never reads the real installation's entry.
+pub(super) fn installer_app_id() -> Option<&'static str> {
+    option_env!("LOCALCODEPILOT_TEST_INNO_APPID")
+}
+
 /// Simulated startup problems of a "new" test version, set when it is
 /// compiled and applied only when the updater starts it:
 /// `fail` closes it at once, `slow` delays it past the updater's wait.

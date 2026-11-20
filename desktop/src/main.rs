@@ -35,8 +35,8 @@ fn main() -> eframe::Result {
         "LocalCodePilot",
         options,
         Box::new(|cc| {
-            let startup_notification = updates::complete_updated_startup();
-            Ok(Box::new(LocalCodePilot::new(cc, startup_notification)))
+            let startup_update = updates::complete_updated_startup();
+            Ok(Box::new(LocalCodePilot::new(cc, startup_update)))
         }),
     )
 }
