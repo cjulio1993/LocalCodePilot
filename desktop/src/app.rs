@@ -7992,6 +7992,14 @@ mod tests {
             port_listener(owner(99), None, 10, child_of_10),
             PortListener::Foreign(PortOwner { process_id: 99, .. })
         ));
+        // A listener whose relationship to the project was rejected (for example, its
+        // registered parent PID now belongs to the project but the project is newer) is
+        // another program's: no Rodando, no address, no Abrir site.
+        let relationship_rejected = |_: u32, _: u32| false;
+        assert!(matches!(
+            port_listener(owner(11), None, 10, relationship_rejected),
+            PortListener::Foreign(PortOwner { process_id: 11, .. })
+        ));
         assert_eq!(
             port_listener(PortAvailability::Available, Some(11), 10, child_of_10),
             PortListener::None
