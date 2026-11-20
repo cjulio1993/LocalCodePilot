@@ -1359,7 +1359,8 @@ fn install_with_installer(
 
 /// Runs the installer silently in `directory` and waits for it. The installer
 /// does not close other programs: another running copy of the app makes it fail
-/// instead of being closed with its projects.
+/// instead of being closed with its projects. `scripts/test-windows-installer-upgrade.ps1`
+/// runs the installer with the same switches in CI; keep both in sync.
 fn run_installer(installer: &Path, directory: &Path, log: &Path) -> Result<(), String> {
     let mut command = Command::new(installer);
     command
