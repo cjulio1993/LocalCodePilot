@@ -689,7 +689,7 @@ pub struct LocalCodePilot {
 }
 
 impl LocalCodePilot {
-    pub fn new(cc: &eframe::CreationContext<'_>, startup_notification: Option<String>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, startup_update: updates::StartupUpdate) -> Self {
         theme::configure(&cc.egui_ctx);
         let mut fonts = eframe::egui::FontDefinitions::default();
         let icon_font = "phosphor";
@@ -734,11 +734,20 @@ impl LocalCodePilot {
         let page = Page::from_key(&workspace_state.last_page);
         let focused_project = workspace_state.focused_project.clone();
         let now = unix_timestamp();
+        // When the installer did not finish, the notice with "Tentar de novo" comes back
+        // even if a reminder was postponed: the person had just asked to update.
+        let installer_failed = startup_update.failure.is_some();
         let available_update = workspace_state
             .cached_update
             .clone()
             .filter(updates::cached_update_is_newer)
-            .filter(|_| workspace_state.update_remind_after <= now);
+            .filter(|_| installer_failed || workspace_state.update_remind_after <= now);
+        let startup_notice = startup_update.notice.or_else(|| {
+            startup_update
+                .failure
+                .as_ref()
+                .map(|failure| format!("{}. {}", failure.title(), failure.message()))
+        });
         let update_check = (now.saturating_sub(workspace_state.last_update_check)
             >= updates::CHECK_INTERVAL_SECONDS)
             .then(|| updates::spawn_update_check(cc.egui_ctx.clone()));
@@ -765,7 +774,7 @@ impl LocalCodePilot {
             username,
             user_initials,
             search: String::new(),
-            notification: Some(match startup_notification {
+            notification: Some(match startup_notice {
                 Some(update_result) => Notification::update_result(update_result),
                 None => Notification::new("Procurando projetos na máquina..."),
             }),
@@ -784,7 +793,7 @@ impl LocalCodePilot {
             update_install_version: None,
             update_install_progress: None,
             update_install_phase: None,
-            update_install_error: None,
+            update_install_error: startup_update.failure,
             update_restart_at: None,
             update_confirmation: None,
             update_confirmation_focus: false,
@@ -960,7 +969,13 @@ impl LocalCodePilot {
                     });
                 // Uma consulta nova pode trazer arquivos corrigidos: a próxima instalação
                 // verifica tudo de novo, então o erro anterior deixa de valer.
-                if !self.update_in_progress() {
+                // O instalador que não concluiu é outro caso: o aviso fica até a pessoa tentar de novo.
+                if !self.update_in_progress()
+                    && self
+                        .update_install_error
+                        .as_ref()
+                        .is_none_or(|failure| failure.kind != UpdateFailureKind::Installer)
+                {
                     self.update_install_error = None;
                 }
                 self.manual_update_check = false;

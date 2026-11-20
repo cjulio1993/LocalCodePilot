@@ -31,7 +31,7 @@ Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e
 
 **Windows 10/11 (64 bits).** Na página de [releases](https://github.com/cjulio1993/LocalCodePilot/releases):
 
-- **Instalador (`LocalCodePilotSetup-<versão>-windows-x64.exe`; até a alpha 8, `...-windows-x64-setup.exe`), recomendado.** Instala o app e cria o atalho no Menu Iniciar. O outro `.exe` da release (`LocalCodePilot-<versão>-windows-x64.exe`) é o arquivo que o app usa para se atualizar.
+- **Instalador (`LocalCodePilotSetup-<versão>-windows-x64.exe`; até a alpha 8, `...-windows-x64-setup.exe`), recomendado.** Instala o app e cria o atalho no Menu Iniciar. Quando você usa **Atualizar agora**, o app roda o instalador da nova versão em segundo plano, e a lista de programas do Windows passa a mostrar a versão certa. O outro `.exe` da release (`LocalCodePilot-<versão>-windows-x64.exe`) é o arquivo que a cópia portátil usa para se atualizar.
 - **Zip (portátil).** Extraia e execute `LocalCodePilot.exe`, sem instalar.
 
 **Se você usa a Alpha 8:** o app avisa a nova versão; use **Atualizar agora**. Se a atualização não concluir, baixe o instalador ou o zip na [página de releases](https://github.com/cjulio1993/LocalCodePilot/releases).
@@ -131,7 +131,7 @@ Everything runs on your computer. The app does not send your projects anywhere, 
 
 **Windows 10/11 (64-bit).** On the [releases](https://github.com/cjulio1993/LocalCodePilot/releases) page:
 
-- **Installer (`LocalCodePilotSetup-<version>-windows-x64.exe`; up to alpha 8, `...-windows-x64-setup.exe`), recommended.** Installs the app and adds a Start menu shortcut. The other `.exe` on the release (`LocalCodePilot-<version>-windows-x64.exe`) is the file the app uses to update itself.
+- **Installer (`LocalCodePilotSetup-<version>-windows-x64.exe`; up to alpha 8, `...-windows-x64-setup.exe`), recommended.** Installs the app and adds a Start menu shortcut. When you use **Update now**, the app runs the new version's installer in the background, so the Windows program list shows the right version. The other `.exe` on the release (`LocalCodePilot-<version>-windows-x64.exe`) is the file the portable copy uses to update itself.
 - **Zip (portable).** Extract it and run `LocalCodePilot.exe`, no install needed.
 
 **If you use Alpha 8:** the app announces the new version; use **Update now**. If the update does not complete, download the installer or zip from the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases).

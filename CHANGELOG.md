@@ -12,6 +12,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Alterado
 
+- Quem instalou pelo instalador passa a ser atualizado pelo próprio instalador oficial. **Atualizar agora** baixa `LocalCodePilotSetup-<versão>-windows-x64.exe`, confere o SHA-256 nos checksums assinados e o roda em silêncio na mesma pasta, com o app fechado. Assim, a lista de programas do Windows mostra a versão nova, e o desinstalador recebe os arquivos novos. A cópia portátil (zip) continua trocando só o executável. O app só usa o instalador quando o desinstalador está ao lado do executável e a entrada de desinstalação aponta para a mesma pasta; nos outros casos, segue como portátil.
+- Se o instalador não concluir (bloqueado pelo antivírus ou com erro), o executável anterior é conferido pelo SHA-256 e, se mudou, restaurado. A versão anterior reabre com **A instalação não foi concluída**, a mensagem "Não foi possível instalar a versão {nova}. A versão {atual} foi reaberta e você pode continuar trabalhando...", **Tentar de novo**, **Ver página oficial da versão** e **Detalhes técnicos** (código de saída e o caminho do registro do instalador, guardado como `update-setup.log` nas configurações). O instalador não fecha outros programas: outra cópia aberta do app faz a instalação falhar em vez de ser encerrada.
+- Se o instalador concluir, mas a versão nova não abrir, o executável e as configurações anteriores voltam. A mensagem avisa que a lista de programas do Windows ainda pode mostrar a versão nova.
+
 - **Instalar dependências** e **Preparar ambiente** mantêm o mesmo verbo do clique até o resultado. Antes, os dois fluxos terminavam com os mesmos textos genéricos de "preparação". Agora, conforme a ação escolhida, o app mostra:
   - o botão de confirmação: **Instalar dependências** ou **Preparar ambiente** (antes, "Preparar");
   - a janela de progresso: "Instalar dependências · projeto" ou "Preparar ambiente · projeto";

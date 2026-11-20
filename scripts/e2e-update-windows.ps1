@@ -23,6 +23,13 @@
       assinatura-invalida  os checksums foram assinados com outra chave: nada é baixado nem trocado;
       processos-ativos   com um projeto rodando, pergunta antes de baixar; Agora não mantém tudo;
       processo-durante-download  projeto iniciado no meio do download: pergunta de novo antes de fechar.
+      instalador-sucesso   instalado pelo instalador (Inno): atualiza rodando o instalador novo em silêncio;
+      instalador-falha     o instalador novo não conclui: a versão anterior reabre com Tentar de novo e Detalhes técnicos;
+      instalador-nao-abriu a versão instalada não abre: a anterior volta, e a lista de programas mostra a nova.
+
+    Os cenários do instalador precisam do Inno Setup 6. O instalador de teste usa
+    outro AppId e não cria atalhos; a entrada dele em Aplicativos instalados é
+    removida no fim de cada cenário.
 
     As versões de teste confiam numa chave Ed25519 descartável, gerada na
     pasta do teste com o OpenSSL (o do Git for Windows serve), nunca na chave
@@ -33,7 +40,7 @@
     .\scripts\e2e-update-windows.ps1 -Cenario sucesso,rollback -Recompilar
 #>
 param(
-    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download')]
+    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download', 'instalador-sucesso', 'instalador-falha', 'instalador-nao-abriu')]
     [string[]]$Cenario = @('todos'),
     [string]$Pasta = (Join-Path ([IO.Path]::GetTempPath()) 'lcp-e2e-update'),
     [switch]$Recompilar,
@@ -47,7 +54,9 @@ $ErrorActionPreference = 'Stop'
 $repositorio = Split-Path -Parent $PSScriptRoot
 $versaoAntiga = '0.4.0-alpha.90'
 $versaoNova = '0.4.0-alpha.91'
-$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download')
+# AppId do instalador descartável: nunca o da instalação real.
+$appIdDoTeste = '{7D1E2E57-0A11-4C0D-8E2E-5E7E57A1B2C3}'
+$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download', 'instalador-sucesso', 'instalador-falha', 'instalador-nao-abriu')
 if ($Cenario -contains 'todos') { $Cenario = $todos }
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
@@ -131,26 +140,32 @@ $alvoCargo = (& cargo metadata --format-version 1 --no-deps --manifest-path (Joi
 # Com -Recompilar, cada binário é compilado uma vez por execução, não por cenário.
 $compiladosNestaExecucao = @{}
 
+function Test-Contem([string]$Arquivo, [string]$Texto) {
+    [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($Arquivo)).Contains($Texto)
+}
+
 function Test-Pronto([string]$Destino) {
     (Test-Path -LiteralPath $Destino) -and (-not $Recompilar -or $compiladosNestaExecucao.ContainsKey($Destino))
 }
 
 function Get-Variante([string]$Nome, [string]$Versao, [string]$Inicio) {
     $destino = Join-Path $binarios "$Nome.exe"
-    if (Test-Pronto $destino) { return $destino }
+    # Versões compiladas antes do teste do instalador não conhecem o AppId de teste.
+    if ((Test-Pronto $destino) -and (Test-Contem $destino $appIdDoTeste)) { return $destino }
     Write-Host "Compilando $Nome ($Versao$(if ($Inicio) { ", início: $Inicio" }))..."
     $env:LOCALCODEPILOT_TEST_VERSION = $Versao
     $env:LOCALCODEPILOT_TEST_SIGNING_KEY = $chaveDoTeste.Publica
+    $env:LOCALCODEPILOT_TEST_INNO_APPID = $appIdDoTeste
     if ($Inicio) { $env:LOCALCODEPILOT_TEST_STARTUP = $Inicio } else { Remove-Item Env:LOCALCODEPILOT_TEST_STARTUP -ErrorAction SilentlyContinue }
     try {
         Invoke-Cargo @('build', '-p', 'localcodepilot-desktop', '--locked', '--features', 'update-test-feed')
     }
     finally {
-        Remove-Item Env:LOCALCODEPILOT_TEST_VERSION, Env:LOCALCODEPILOT_TEST_STARTUP, Env:LOCALCODEPILOT_TEST_SIGNING_KEY -ErrorAction SilentlyContinue
+        Remove-Item Env:LOCALCODEPILOT_TEST_VERSION, Env:LOCALCODEPILOT_TEST_STARTUP, Env:LOCALCODEPILOT_TEST_SIGNING_KEY, Env:LOCALCODEPILOT_TEST_INNO_APPID -ErrorAction SilentlyContinue
     }
     $compilado = Join-Path $alvoCargo 'debug\localcodepilot-desktop.exe'
     $texto = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($compilado))
-    if (-not $texto.Contains($Versao) -or -not $texto.Contains('LOCALCODEPILOT_TEST_FEED')) {
+    if (-not $texto.Contains($Versao) -or -not $texto.Contains('LOCALCODEPILOT_TEST_FEED') -or -not $texto.Contains($appIdDoTeste)) {
         throw "O executável compilado não é a versão de teste $Versao com o feed local."
     }
     Copy-Item -LiteralPath $compilado -Destination $destino -Force
@@ -255,6 +270,7 @@ function Wait-Ate([scriptblock]$Condicao, [int]$Segundos) {
 # --- Um cenário --------------------------------------------------------------
 
 function Invoke-Cenario([string]$Nome) {
+    if ($Nome -like 'instalador-*') { return Invoke-CenarioInstalador $Nome }
     Stop-ProcessosDaPasta
     $raiz = Join-Path $Pasta $Nome
     if (Test-Path -LiteralPath $raiz) { Remove-Item -LiteralPath $raiz -Recurse -Force }
@@ -537,6 +553,234 @@ function Invoke-Cenario([string]$Nome) {
         foreach ($nomeVariavel in $ambienteOriginal.Keys) {
             [Environment]::SetEnvironmentVariable($nomeVariavel, $ambienteOriginal[$nomeVariavel])
         }
+    }
+}
+
+# --- Cenários do instalador (Inno Setup) -------------------------------------
+
+$iscc = @(
+    (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+    (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+# Só a entrada do AppId de teste; a da instalação real nunca é lida nem tocada.
+$chaveDoTesteNoRegistro = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($appIdDoTeste)_is1"
+$arquivosDoInstalador = @('LocalCodePilot.exe', 'LICENSE', 'README-WINDOWS.txt', 'RELEASE-NOTES.md', 'unins000.exe', 'unins000.dat')
+
+# Gera um instalador de teste com o script oficial, outro AppId, outro nome e sem atalhos.
+# -Falhar: o instalador recusa instalar no "Preparando para instalar" (como um bloqueio).
+function Get-Instalador([string]$Nome, [string]$Executavel, [string]$Versao, [switch]$Falhar) {
+    if (-not $iscc) { throw 'O Inno Setup 6 (ISCC.exe) não foi encontrado: winget install JRSoftware.InnoSetup.' }
+    $saida = New-Item -ItemType Directory -Force (Join-Path $binarios 'instaladores')
+    $conteudo = New-Item -ItemType Directory -Force (Join-Path $saida.FullName "$Nome-conteudo")
+    Copy-Item -LiteralPath $Executavel -Destination (Join-Path $conteudo.FullName 'LocalCodePilot.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $repositorio 'LICENSE') -Destination $conteudo.FullName -Force
+    Set-Content -LiteralPath (Join-Path $conteudo.FullName 'README-WINDOWS.txt') -Value 'teste' -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $conteudo.FullName 'RELEASE-NOTES.md') -Value "# $Versao (teste)" -Encoding ascii
+    $script = Join-Path $repositorio 'packaging\windows\LocalCodePilot.iss'
+    if ($Falhar) {
+        $oficial = $script
+        $script = Join-Path $saida.FullName "$Nome.iss"
+        Set-Content -LiteralPath $script -Encoding UTF8 -Value @(
+            "#include `"$oficial`"",
+            '[Code]',
+            'function PrepareToInstall(var NeedsRestart: Boolean): String;',
+            'begin',
+            "  Result := 'falha simulada pelo teste de atualização';",
+            'end;'
+        )
+    }
+    $preferencia = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $iscc /Qp "/DAppVersion=$Versao" "/DSourceDir=$($conteudo.FullName)" "/DRepositoryRoot=$repositorio" `
+            "/DOutputDir=$($saida.FullName)" "/DOutputBaseFilename=$Nome" "/DAppIdValue={$appIdDoTeste" `
+            '/DAppDisplayName=LocalCodePilot E2E (teste)' '/DSemAtalhos' $script | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "O Inno Setup falhou com código $LASTEXITCODE ao gerar $Nome." }
+    }
+    finally { $ErrorActionPreference = $preferencia }
+    Join-Path $saida.FullName "$Nome.exe"
+}
+
+# Desinstala a cópia de teste (só se estiver dentro da pasta do teste) e remove a entrada dela.
+function Remove-InstalacaoDeTeste {
+    $chave = Get-ItemProperty -LiteralPath $chaveDoTesteNoRegistro -ErrorAction SilentlyContinue
+    if (-not $chave) { return }
+    $local = [string]$chave.InstallLocation
+    $desinstalador = if ($local) { Join-Path $local 'unins000.exe' } else { '' }
+    if ($local -and (Test-DentroDaPasta $local) -and (Test-Path -LiteralPath $desinstalador)) {
+        Start-Process -FilePath $desinstalador -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+        Wait-Ate { -not (Test-Path -LiteralPath $chaveDoTesteNoRegistro) } 30 | Out-Null
+    }
+    if (Test-Path -LiteralPath $chaveDoTesteNoRegistro) { Remove-Item -LiteralPath $chaveDoTesteNoRegistro -Recurse -Force }
+}
+
+function Get-VersaoRegistrada {
+    $chave = Get-ItemProperty -LiteralPath $chaveDoTesteNoRegistro -ErrorAction SilentlyContinue
+    if ($chave -and $chave.PSObject.Properties['DisplayVersion']) { [string]$chave.DisplayVersion } else { '' }
+}
+
+function Invoke-CenarioInstalador([string]$Nome) {
+    Stop-ProcessosDaPasta
+    Remove-InstalacaoDeTeste
+    $raiz = Join-Path $Pasta $Nome
+    if (Test-Path -LiteralPath $raiz) { Remove-Item -LiteralPath $raiz -Recurse -Force }
+    # Pasta com espaço: o atualizador passa /DIR entre aspas ao instalador.
+    $instalacao = Join-Path $raiz 'instalacao com espaco'
+    $appdata = New-Item -ItemType Directory -Force (Join-Path $raiz 'appdata')
+    $localappdata = New-Item -ItemType Directory -Force (Join-Path $raiz 'localappdata')
+    $temp = New-Item -ItemType Directory -Force (Join-Path $raiz 'temp')
+    $projetos = New-Item -ItemType Directory -Force (Join-Path $raiz 'projetos-vazios')
+    $configuracoes = New-Item -ItemType Directory -Force (Join-Path $appdata 'LocalCodePilot')
+    Set-Content -LiteralPath (Join-Path $configuracoes 'scan-roots.txt') -Value $projetos.FullName -Encoding ascii
+
+    $antiga = Get-Variante 'antiga' $versaoAntiga ''
+    $inicioDaNova = if ($Nome -eq 'instalador-nao-abriu') { 'fail' } else { '' }
+    $nova = Get-Variante "nova$(if ($inicioDaNova) { "-$inicioDaNova" })" $versaoNova $inicioDaNova
+    $setupAntigo = Get-Instalador 'setup-antigo' $antiga $versaoAntiga
+    $sufixo = switch ($Nome) { 'instalador-falha' { '-falha' } 'instalador-nao-abriu' { '-nao-abre' } default { '' } }
+    $setupNovo = Get-Instalador "setup-novo$sufixo" $nova $versaoNova -Falhar:($Nome -eq 'instalador-falha')
+    $shaAntiga = (Get-FileHash -LiteralPath $antiga -Algorithm SHA256).Hash.ToLowerInvariant()
+    $shaNova = (Get-FileHash -LiteralPath $nova -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    $servidor = $null
+    $app = $null
+    $ambienteOriginal = @{}
+    foreach ($nomeVariavel in 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'LOCALCODEPILOT_TEST_FEED') {
+        $ambienteOriginal[$nomeVariavel] = [Environment]::GetEnvironmentVariable($nomeVariavel)
+    }
+    try {
+        # A versão antiga instalada pelo instalador, como na máquina de quem baixou o setup.
+        $instalouAntiga = Start-Process -FilePath $setupAntigo -PassThru -Wait -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "`"/DIR=$instalacao`"", "`"/LOG=$(Join-Path $raiz 'instalacao-antiga.log')`"")
+        if ($instalouAntiga.ExitCode -ne 0) { throw "O instalador antigo falhou com código $($instalouAntiga.ExitCode)." }
+        $alvo = Join-Path $instalacao 'LocalCodePilot.exe'
+        if ((Get-VersaoRegistrada) -ne $versaoAntiga) { throw 'A instalação antiga não registrou a versão esperada.' }
+
+        # Feed local com o executável, o instalador novo e os checksums dos dois.
+        $feed = New-Item -ItemType Directory -Force (Join-Path $raiz 'feed')
+        $tag = "v$versaoNova"
+        $assets = New-Item -ItemType Directory -Force (Join-Path $feed.FullName "download\$tag")
+        $nomeExe = "LocalCodePilot-$versaoNova-windows-x64.exe"
+        $nomeSetup = "LocalCodePilotSetup-$versaoNova-windows-x64.exe"
+        Copy-Item -LiteralPath $nova -Destination (Join-Path $assets.FullName $nomeExe)
+        Copy-Item -LiteralPath $setupNovo -Destination (Join-Path $assets.FullName $nomeSetup)
+        $shaSetup = (Get-FileHash -LiteralPath $setupNovo -Algorithm SHA256).Hash.ToLowerInvariant()
+        $checksums = Join-Path $assets.FullName 'SHA256SUMS.txt'
+        Set-Content -LiteralPath $checksums -Value @("$shaNova  $nomeExe", "$shaSetup  $nomeSetup") -Encoding ascii
+        Set-Assinatura $checksums $chaveDoTeste.Privada
+        $arquivoPorta = Join-Path $raiz 'porta.txt'
+        $servidor = Start-Process -FilePath (Get-Servidor) -PassThru -WindowStyle Hidden `
+            -ArgumentList @('--dir', "`"$($feed.FullName)`"", '--port', '0', '--port-file', "`"$arquivoPorta`"") `
+            -RedirectStandardOutput (Join-Path $raiz 'servidor.log') -RedirectStandardError (Join-Path $raiz 'servidor-erros.log')
+        if (-not (Wait-Ate { Test-Path -LiteralPath $arquivoPorta } 20)) { throw 'O feed local não começou a responder.' }
+        $base = "http://127.0.0.1:$((Get-Content -LiteralPath $arquivoPorta -Raw).Trim())"
+        $download = "$base/download/$tag"
+        $release = [ordered]@{
+            tag_name = $tag; name = "LocalCodePilot $versaoNova (teste)"; html_url = "$base/releases/$tag"
+            draft = $false; prerelease = $true; body = $null
+            assets = @(
+                [ordered]@{ name = "LocalCodePilot-$versaoNova-windows-x64.zip"; browser_download_url = "$download/LocalCodePilot-$versaoNova-windows-x64.zip" },
+                [ordered]@{ name = $nomeSetup; browser_download_url = "$download/$nomeSetup" },
+                [ordered]@{ name = $nomeExe; browser_download_url = "$download/$nomeExe" },
+                [ordered]@{ name = 'SHA256SUMS.txt'; browser_download_url = "$download/SHA256SUMS.txt" }
+            )
+        }
+        [IO.File]::WriteAllText((Join-Path $feed.FullName 'releases.json'), (ConvertTo-Json @($release) -Depth 5 -Compress))
+
+        $env:APPDATA = $appdata.FullName; $env:LOCALAPPDATA = $localappdata.FullName
+        $env:TEMP = $temp.FullName; $env:TMP = $temp.FullName; $env:LOCALCODEPILOT_TEST_FEED = $base
+        $app = Start-Process -FilePath $alvo -WorkingDirectory $raiz -PassThru
+        $botao = Wait-Ate { Find-Botao $app.Id 'Atualizar agora' } 60
+        if (-not $botao) { throw "O aviso de atualização não apareceu. Na tela: $((Get-TextosNaTela $app.Id) -join ' | ')" }
+        Invoke-Botao $botao
+
+        $esperado = switch ($Nome) {
+            'instalador-sucesso' { "LocalCodePilot atualizado para a versão $versaoNova." }
+            'instalador-falha' { 'A instalação não foi concluída' }
+            'instalador-nao-abriu' { "A versão $versaoNova não abriu. Restauramos o aplicativo e as configurações da versão $versaoAntiga; você pode continuar trabalhando. A lista de programas do Windows ainda pode mostrar a versão $versaoNova. Tente novamente mais tarde ou baixe o instalador na página oficial." }
+        }
+        $reaberto = $null
+        $na_tela = Wait-Ate {
+            foreach ($processo in @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo -and $_.Id -ne $app.Id } catch { $false } })) {
+                $texto = (Get-TextosNaTela $processo.Id) | Where-Object {
+                    if ($Nome -eq 'instalador-falha') { $_ -eq $esperado } else { $_.Contains($esperado) }
+                } | Select-Object -First 1
+                if ($texto) { $script:reabertoId = $processo.Id; return $texto }
+            }
+        } 180
+        if ($na_tela) { $reaberto = $script:reabertoId }
+
+        $mensagemAprovada = $false; $tentarDeNovo = $false; $paginaOficial = $false; $copiarErro = $false; $codigoNoDetalhe = $false
+        if ($Nome -eq 'instalador-falha' -and $reaberto) {
+            $textos = Get-TextosNaTela $reaberto
+            $mensagemAprovada = $textos -contains "Não foi possível instalar a versão $versaoNova. A versão $versaoAntiga foi reaberta e você pode continuar trabalhando. Tente novamente mais tarde ou baixe o instalador na página oficial."
+            $tentarDeNovo = $textos -contains 'Tentar de novo'
+            $paginaOficial = $textos -contains 'Ver página oficial da versão'
+            $detalhes = Find-Botao $reaberto 'Detalhes técnicos'
+            if ($detalhes) { try { Invoke-Botao $detalhes } catch {} }
+            $copiarErro = [bool](Wait-Ate { Find-Botao $reaberto 'Copiar erro técnico' } 5)
+            $codigoNoDetalhe = [bool]((Get-TextosNaTela $reaberto) | Where-Object { $_ -like 'o instalador terminou com o código *registro do instalador:*update-setup.log' })
+        }
+        if ($Capturas -and $reaberto) {
+            New-Item -ItemType Directory -Force $Capturas | Out-Null
+            Save-Janela $reaberto (Join-Path $Capturas "atualizacao-$Nome.png")
+        }
+
+        Wait-Ate {
+            -not (Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -like "$($temp.FullName)\*" } catch { $false } })
+        } 60 | Out-Null
+        Start-Sleep -Seconds 3
+
+        $atualizacoes = Join-Path $temp.FullName 'LocalCodePilot\updates'
+        $shaFinal = (Get-FileHash -LiteralPath $alvo -Algorithm SHA256).Hash.ToLowerInvariant()
+        $resultado = [ordered]@{
+            cenario = $Nome
+            na_tela = $(if ($na_tela) { $na_tela } else { '(texto esperado não apareceu)' })
+            exe_final = $(if ($shaFinal -eq $shaNova) { $versaoNova } elseif ($shaFinal -eq $shaAntiga) { $versaoAntiga } else { 'outro' })
+            versao_na_lista_de_programas = Get-VersaoRegistrada
+            sobras_na_instalacao = @(Get-ChildItem -LiteralPath $instalacao -File | Where-Object { $_.Name -notin $arquivosDoInstalador } | ForEach-Object Name) -join ', '
+            desinstalador = Test-Path -LiteralPath (Join-Path $instalacao 'unins000.exe')
+            registro_da_atualizacao = Test-Path -LiteralPath (Join-Path $configuracoes.FullName 'update-state.json')
+            preparos_em_temp = @(Get-ChildItem -LiteralPath $atualizacoes -Directory -ErrorAction SilentlyContinue).Count
+            app_aberto = [bool](Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo } catch { $false } })
+        }
+        $exeEsperado = if ($Nome -eq 'instalador-sucesso') { $versaoNova } else { $versaoAntiga }
+        # Quando a versão nova não abre, só o executável volta: a lista de programas continua na nova (texto aprovado).
+        $listaEsperada = if ($Nome -eq 'instalador-falha') { $versaoAntiga } else { $versaoNova }
+        $checagens = [ordered]@{
+            'texto esperado na tela' = [bool]$na_tela
+            "executável final é $exeEsperado" = $resultado.exe_final -eq $exeEsperado
+            "lista de programas mostra $listaEsperada" = $resultado.versao_na_lista_de_programas -eq $listaEsperada
+            'desinstalador continua na pasta' = $resultado.desinstalador
+            'nenhuma sobra ao lado do executável' = -not $resultado.sobras_na_instalacao
+            'registro da atualização removido' = -not $resultado.registro_da_atualizacao
+            'app aberto no fim' = $resultado.app_aberto
+        }
+        if ($Nome -eq 'instalador-sucesso') {
+            $checagens['instalador novo baixado (não o executável)'] = (Get-Content -LiteralPath (Join-Path $raiz 'servidor.log') -ErrorAction SilentlyContinue) -match [regex]::Escape($nomeSetup)
+            $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
+        }
+        if ($Nome -eq 'instalador-falha') {
+            $checagens['mensagem aprovada'] = $mensagemAprovada
+            $checagens['oferece Tentar de novo'] = $tentarDeNovo
+            $checagens['link para a página oficial da versão'] = $paginaOficial
+            $checagens['Detalhes técnicos com Copiar erro técnico'] = $copiarErro
+            $checagens['código de saída e registro do instalador nos detalhes'] = $codigoNoDetalhe
+            $checagens['registro do instalador guardado com as configurações'] = Test-Path -LiteralPath (Join-Path $configuracoes.FullName 'update-setup.log')
+        }
+        $resultado.checagens = $checagens
+        $resultado.aprovado = -not ($checagens.Values -contains $false)
+        [pscustomobject]$resultado
+    }
+    finally {
+        Stop-ProcessosDaPasta
+        if ($servidor) { Stop-Process -Id $servidor.Id -Force -ErrorAction SilentlyContinue }
+        foreach ($nomeVariavel in $ambienteOriginal.Keys) {
+            [Environment]::SetEnvironmentVariable($nomeVariavel, $ambienteOriginal[$nomeVariavel])
+        }
+        Remove-InstalacaoDeTeste
     }
 }
 

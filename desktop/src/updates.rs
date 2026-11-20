@@ -48,6 +48,18 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const STALE_STAGE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// File names of the downloaded update inside the preparation folder: the helper
+/// tells the two kinds of update apart by them.
+const EXECUTABLE_CANDIDATE_NAME: &str = "LocalCodePilot.exe";
+const INSTALLER_CANDIDATE_NAME: &str = "LocalCodePilotSetup.exe";
+/// `AppId` of `packaging/windows/LocalCodePilot.iss` (without the escaping brace).
+const INSTALLER_APP_ID: &str = "{8B3C2F1E-6D4A-4C8E-9A51-3F2B7C1D9E40}";
+/// Longest wait for the silent installer; it normally takes a few seconds.
+const INSTALLER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Copy of the last installer log, kept with the configuration for "Detalhes técnicos".
+const INSTALLER_LOG_FILE: &str = "update-setup.log";
+/// Structured result of an installer that did not finish, read by the reopened version.
+const INSTALLER_FAILURE_FILE: &str = "update-failure.json";
 pub const CHECK_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +76,10 @@ pub struct UpdateInfo {
     /// Caches saved by older versions have none and show the fallback text.
     #[serde(default)]
     pub summary: Option<String>,
+    /// The official installer (`LocalCodePilotSetup-<version>-windows-x64.exe`). An app
+    /// installed by it is updated by running it silently (T002 CA-8).
+    #[serde(default)]
+    pub installer_url: Option<String>,
 }
 
 /// Longest summary shown in the update notice. A longer sentence is not cut (a cut could
@@ -161,6 +177,9 @@ pub enum UpdateFailureKind {
     Verification,
     /// Something on this computer failed: folder, disk, permission, starting the updater.
     Local,
+    /// The official installer ran but did not finish (blocked, failed or interrupted);
+    /// the previous version was checked and reopened. Needs `versions`.
+    Installer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +187,8 @@ pub struct UpdateFailure {
     pub kind: UpdateFailureKind,
     /// The original error, in the words of the component that failed.
     pub technical: String,
+    /// `(current, new)` versions, for the messages that name them.
+    pub versions: Option<(String, String)>,
 }
 
 impl UpdateFailure {
@@ -175,6 +196,20 @@ impl UpdateFailure {
         Self {
             kind,
             technical: technical.into(),
+            versions: None,
+        }
+    }
+
+    /// The installer did not finish and the previous version reopened (T002 CA-8).
+    pub fn installer(
+        current: impl Into<String>,
+        new: impl Into<String>,
+        technical: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: UpdateFailureKind::Installer,
+            technical: technical.into(),
+            versions: Some((current.into(), new.into())),
         }
     }
 
@@ -186,10 +221,20 @@ impl UpdateFailure {
             UpdateFailureKind::Download => "O download foi interrompido",
             UpdateFailureKind::Verification => "Atualização recusada por segurança",
             UpdateFailureKind::Local => "Não foi possível preparar a atualização",
+            UpdateFailureKind::Installer => "A instalação não foi concluída",
         }
     }
 
-    pub fn message(&self) -> &'static str {
+    pub fn message(&self) -> String {
+        if self.kind == UpdateFailureKind::Installer {
+            let (current, new) = self
+                .versions
+                .clone()
+                .unwrap_or_else(|| ("atual".into(), "nova".into()));
+            return format!(
+                "Não foi possível instalar a versão {new}. A versão {current} foi reaberta e você pode continuar trabalhando. Tente novamente mais tarde ou baixe o instalador na página oficial."
+            );
+        }
         match self.kind {
             UpdateFailureKind::NoConnection => {
                 "Confira sua conexão e tente novamente. A versão atual continua funcionando."
@@ -203,10 +248,11 @@ impl UpdateFailure {
             UpdateFailureKind::Verification => {
                 "O arquivo não passou na verificação. Nada foi instalado e a versão atual continua funcionando. Não instale manualmente esta atualização."
             }
-            UpdateFailureKind::Local => {
+            UpdateFailureKind::Local | UpdateFailureKind::Installer => {
                 "Nada foi instalado e a versão atual continua funcionando. Consulte os detalhes técnicos ou tente novamente mais tarde."
             }
         }
+        .to_owned()
     }
 
     /// A refused file is never offered again as the main action.
@@ -219,9 +265,9 @@ impl UpdateFailure {
         match self.kind {
             UpdateFailureKind::NoConnection | UpdateFailureKind::InvalidResponse => None,
             UpdateFailureKind::Verification => Some("Consultar página oficial da versão"),
-            UpdateFailureKind::Download | UpdateFailureKind::Local => {
-                Some("Ver página oficial da versão")
-            }
+            UpdateFailureKind::Download
+            | UpdateFailureKind::Local
+            | UpdateFailureKind::Installer => Some("Ver página oficial da versão"),
         }
     }
 }
@@ -287,6 +333,8 @@ struct UpdatePreparation {
     /// The key that must have signed the checksums.
     signing_key: [u8; 32],
     asset_name: String,
+    /// `EXECUTABLE_CANDIDATE_NAME` or `INSTALLER_CANDIDATE_NAME`.
+    candidate_name: &'static str,
     version: String,
     target_path: PathBuf,
     stage_directory: PathBuf,
@@ -351,14 +399,101 @@ fn cached_update_matches_os(update: &UpdateInfo, operating_system: &str) -> bool
 pub fn automatic_update_available(update: &UpdateInfo) -> bool {
     cfg!(target_os = "windows")
         && packaged_executable_path().is_ok()
-        && update
+        && (update
             .executable_url
             .as_deref()
             .is_some_and(trusted_release_asset_url)
+            || installer_update_url(update).is_some())
         && update
             .checksum_url
             .as_deref()
             .is_some_and(trusted_release_asset_url)
+}
+
+/// The installer to run when this copy was installed by it and the release offers it.
+fn installer_update_url(update: &UpdateInfo) -> Option<String> {
+    if !installed_by_installer() {
+        return None;
+    }
+    let asset_name = windows_installer_asset_name(&update.version);
+    update
+        .installer_url
+        .clone()
+        .filter(|url| trusted_release_asset_url(url) && url.ends_with(&format!("/{asset_name}")))
+}
+
+/// Whether the running executable was installed by the official installer: its
+/// uninstaller sits next to it and the installer's uninstall entry points to this
+/// folder. Without both, the copy is treated as portable. Checked once per run.
+fn installed_by_installer() -> bool {
+    static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INSTALLED.get_or_init(|| {
+        let Ok(executable) = packaged_executable_path() else {
+            return false;
+        };
+        let Some(directory) = executable.parent() else {
+            return false;
+        };
+        directory.join("unins000.exe").is_file()
+            && installer_install_location()
+                .is_some_and(|location| same_directory(Path::new(&location), directory))
+    })
+}
+
+fn installer_app_id() -> String {
+    #[cfg(feature = "update-test-feed")]
+    if let Some(app_id) = test_feed::installer_app_id() {
+        return app_id.to_owned();
+    }
+    INSTALLER_APP_ID.to_owned()
+}
+
+/// `InstallLocation` of the per-user uninstall entry written by the installer.
+#[cfg(windows)]
+fn installer_install_location() -> Option<String> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |value: &str| value.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let key = wide(&format!(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{}_is1",
+        installer_app_id()
+    ));
+    let value = wide("InstallLocation");
+    let mut buffer = vec![0_u16; 1024];
+    let mut size = (buffer.len() * 2) as u32;
+    // SAFETY: both names are NUL-terminated, and `size` is the byte length of `buffer`.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let length = buffer.iter().position(|unit| *unit == 0)?;
+    Some(String::from_utf16_lossy(&buffer[..length]))
+}
+
+#[cfg(not(windows))]
+fn installer_install_location() -> Option<String> {
+    let _ = installer_app_id();
+    None
+}
+
+/// Compares two folders the way Windows does: ignoring a trailing separator and case.
+fn same_directory(left: &Path, right: &Path) -> bool {
+    let normalize = |path: &Path| {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        path.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    normalize(left) == normalize(right)
 }
 
 pub fn spawn_update_check(
@@ -384,13 +519,6 @@ pub fn spawn_update_download(
     }
     let target_path = packaged_executable_path().map_err(local_failure)?;
     verify_target_directory_writable(&target_path).map_err(local_failure)?;
-    let executable_url = update
-        .executable_url
-        .clone()
-        .filter(|url| trusted_release_asset_url(url))
-        .ok_or_else(|| {
-            verification_failure("a release não oferece um executável confiável para atualização")
-        })?;
     let checksum_url = update
         .checksum_url
         .clone()
@@ -398,17 +526,39 @@ pub fn spawn_update_download(
         .ok_or_else(|| {
             verification_failure("a release não oferece o arquivo oficial de checksums")
         })?;
-    let asset_name = windows_update_asset_name(&update.version);
-    if !executable_url.ends_with(&format!("/{asset_name}")) {
-        return Err(verification_failure(
-            "o nome do executável da release não corresponde à versão selecionada",
-        ));
-    }
+    // An installed copy runs the official installer, so the Windows program list
+    // shows the new version; a portable copy swaps the executable.
+    let (executable_url, asset_name, candidate_name) =
+        if let Some(installer_url) = installer_update_url(update) {
+            (
+                installer_url,
+                windows_installer_asset_name(&update.version),
+                INSTALLER_CANDIDATE_NAME,
+            )
+        } else {
+            let executable_url = update
+                .executable_url
+                .clone()
+                .filter(|url| trusted_release_asset_url(url))
+                .ok_or_else(|| {
+                    verification_failure(
+                        "a release não oferece um executável confiável para atualização",
+                    )
+                })?;
+            let asset_name = windows_update_asset_name(&update.version);
+            if !executable_url.ends_with(&format!("/{asset_name}")) {
+                return Err(verification_failure(
+                    "o nome do executável da release não corresponde à versão selecionada",
+                ));
+            }
+            (executable_url, asset_name, EXECUTABLE_CANDIDATE_NAME)
+        };
     let preparation = UpdatePreparation {
         executable_url,
         checksum_url,
         signing_key: signing_public_key(),
         asset_name,
+        candidate_name,
         version: update.version.clone(),
         target_path,
         stage_directory: new_stage_directory(&update.version).map_err(local_failure)?,
@@ -470,7 +620,11 @@ pub fn try_run_update_helper() -> Option<i32> {
         Err(failure) => {
             // The message is saved before the previous version reopens, so
             // that version is the one that shows it.
-            write_persistent_update_error(&failure.message);
+            match &failure.report {
+                HelperReport::Error => write_persistent_update_error(&failure.message),
+                HelperReport::Plain => write_persistent_update_text(&failure.message),
+                HelperReport::Installer(installer) => write_installer_failure(installer),
+            }
             if failure.relaunch_previous {
                 relaunch_after_failure(&arguments.target_path);
             }
@@ -484,6 +638,27 @@ struct HelperFailure {
     message: String,
     /// The previous executable is in place and should be reopened.
     relaunch_previous: bool,
+    report: HelperReport,
+}
+
+/// How the reopened version presents the failure.
+#[derive(Debug)]
+enum HelperReport {
+    /// A notice prefixed with "A atualização automática falhou:".
+    Error,
+    /// A notice with the message as is.
+    Plain,
+    /// The installer did not finish: the update error with its actions and details.
+    Installer(InstallerFailure),
+}
+
+/// Saved by the helper when the installer did not finish and the previous
+/// version was checked; read once by that version when it reopens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct InstallerFailure {
+    from_version: String,
+    to_version: String,
+    technical: String,
 }
 
 impl HelperFailure {
@@ -491,6 +666,7 @@ impl HelperFailure {
         Self {
             message,
             relaunch_previous: false,
+            report: HelperReport::Error,
         }
     }
 
@@ -498,11 +674,37 @@ impl HelperFailure {
         Self {
             message,
             relaunch_previous: true,
+            report: HelperReport::Error,
+        }
+    }
+
+    fn installer_not_completed(failure: InstallerFailure) -> Self {
+        Self {
+            message: failure.technical.clone(),
+            relaunch_previous: true,
+            report: HelperReport::Installer(failure),
         }
     }
 }
 
-pub fn complete_updated_startup() -> Option<String> {
+/// What the app shows about an update when it opens.
+#[derive(Debug, Default)]
+pub struct StartupUpdate {
+    /// A notice about the outcome (updated, restored, not completed).
+    pub notice: Option<String>,
+    /// The installer did not finish: shown as an update error, with "Tentar de novo".
+    pub failure: Option<UpdateFailure>,
+}
+
+pub fn complete_updated_startup() -> StartupUpdate {
+    let notice = updated_startup_notice();
+    let failure = read_installer_failure().map(|failure| {
+        UpdateFailure::installer(failure.from_version, failure.to_version, failure.technical)
+    });
+    StartupUpdate { notice, failure }
+}
+
+fn updated_startup_notice() -> Option<String> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next();
     if first.as_deref() == Some(UPDATED_STARTUP_FLAG.as_ref()) {
@@ -517,6 +719,7 @@ pub fn complete_updated_startup() -> Option<String> {
             && fs::write(&marker_path, b"ok").is_ok()
         {
             let _ = fs::remove_file(persistent_update_error_path());
+            let _ = fs::remove_file(installer_failure_path());
             spawn_update_cleanup(helper_path, stage_directory);
             spawn_confirmed_update_cleanup();
             return Some(updated_message(&version));
@@ -636,6 +839,15 @@ fn select_update_for_os(
                         && asset.name.eq_ignore_ascii_case(&update_asset_name)
                 })
                 .map(|asset| asset.browser_download_url.clone());
+            let installer_asset_name = windows_installer_asset_name(&version);
+            let installer_url = release
+                .assets
+                .iter()
+                .find(|asset| {
+                    operating_system == "windows"
+                        && asset.name.eq_ignore_ascii_case(&installer_asset_name)
+                })
+                .map(|asset| asset.browser_download_url.clone());
             let checksum_url = release
                 .assets
                 .iter()
@@ -655,6 +867,7 @@ fn select_update_for_os(
                     executable_url,
                     checksum_url,
                     summary: release.body.as_deref().and_then(release_summary),
+                    installer_url,
                 },
             ))
         })
@@ -690,7 +903,7 @@ fn prepare_update(
                 preparation.asset_name
             ))
         })?;
-    let candidate_path = preparation.stage_directory.join("LocalCodePilot.exe");
+    let candidate_path = preparation.stage_directory.join(preparation.candidate_name);
     send_phase(sender, repaint, UpdatePhase::Downloading);
     download_executable(
         &agent,
@@ -894,8 +1107,17 @@ fn rollback_failure(
     to_version: &str,
     configuration_restored: Option<std::io::Result<()>>,
     config_backup: &Path,
+    by_installer: bool,
 ) -> HelperFailure {
     match configuration_restored {
+        // The installer already registered the new version: the Windows program
+        // list may keep showing it (approved text, T002 CA-8).
+        Some(Ok(())) if by_installer => HelperFailure {
+            report: HelperReport::Plain,
+            ..HelperFailure::reopen_previous(format!(
+                "A versão {to_version} não abriu. Restauramos o aplicativo e as configurações da versão {from_version}; você pode continuar trabalhando. A lista de programas do Windows ainda pode mostrar a versão {to_version}. Tente novamente mais tarde ou baixe o instalador na página oficial."
+            ))
+        },
         Some(Ok(())) => HelperFailure::reopen_previous(format!(
             "{failure}. A versão {from_version} foi restaurada e continua em uso: você pode continuar trabalhando normalmente. Para instalar a versão {to_version}, tente de novo mais tarde ou baixe-a na página oficial"
         )),
@@ -981,14 +1203,27 @@ fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailur
             "não foi possível registrar o início da atualização: {error}"
         ));
     }
-    let swapped = recovery::swap_in_candidate(
+    let by_installer = is_installer_candidate(&arguments.candidate_path);
+    if by_installer {
+        let installed = install_with_installer(
+            arguments,
+            install_directory,
+            &config_directory,
+            &from_version,
+        );
+        if let Err(failure) = installed {
+            if failure.relaunch_previous {
+                let _ = fs::remove_file(&journal_path);
+            }
+            return Err(failure);
+        }
+    } else if let Err(error) = recovery::swap_in_candidate(
         &arguments.target_path,
         &arguments.candidate_path,
         &arguments.expected_sha256,
         sha256_file,
         |from, to| recovery::rename_with_retry(from, to, REPLACEMENT_TIMEOUT),
-    );
-    if let Err(error) = swapped {
+    ) {
         return match error {
             recovery::SwapError::NotApplied(reason) | recovery::SwapError::RolledBack(reason) => {
                 let _ = fs::remove_file(&journal_path);
@@ -1054,7 +1289,123 @@ fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailur
         to_version,
         configuration_restored,
         &config_backup,
+        by_installer,
     ))
+}
+
+fn is_installer_candidate(candidate: &Path) -> bool {
+    candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(INSTALLER_CANDIDATE_NAME))
+}
+
+/// Runs the official installer over the current installation. The previous
+/// executable is copied to the backup name first: if the installer does not
+/// finish, the executable in the folder is checked against the previous one and
+/// put back when it differs; if it finishes, the backup is what the usual
+/// startup check restores when the new version does not open.
+fn install_with_installer(
+    arguments: &HelperArguments,
+    install_directory: &Path,
+    config_directory: &Path,
+    from_version: &str,
+) -> Result<(), HelperFailure> {
+    let to_version = &arguments.version;
+    let target = &arguments.target_path;
+    let not_applied = |reason: String| {
+        HelperFailure::reopen_previous(format!(
+            "{reason}. A versão {from_version} continua instalada e pode ser usada normalmente. Tente de novo mais tarde ou baixe a atualização na página oficial"
+        ))
+    };
+    let previous_sha256 = sha256_file(target).map_err(not_applied)?;
+    let backup = install_directory.join(recovery::BACKUP_FILE_NAME);
+    let _ = fs::remove_file(&backup);
+    fs::copy(target, &backup).map_err(|error| {
+        let _ = fs::remove_file(&backup);
+        not_applied(format!(
+            "não foi possível guardar uma cópia da versão atual: {error}"
+        ))
+    })?;
+    let log = arguments.stage_directory.join("setup.log");
+    let outcome = run_installer(&arguments.candidate_path, install_directory, &log);
+    let saved_log = config_directory.join(INSTALLER_LOG_FILE);
+    let log_note = match fs::copy(&log, &saved_log) {
+        Ok(_) => format!("registro do instalador: {}", saved_log.display()),
+        Err(_) => "o instalador não gravou registro".to_owned(),
+    };
+    let Err(reason) = outcome else {
+        return Ok(());
+    };
+    let technical = format!("{reason}; {log_note}");
+    let is_previous = |path: &Path| {
+        sha256_file(path).is_ok_and(|hash| hash.eq_ignore_ascii_case(&previous_sha256))
+    };
+    let previous_in_place = is_previous(target)
+        || (recovery::restore_previous_executable(target, REPLACEMENT_TIMEOUT)
+            && is_previous(target));
+    if !previous_in_place {
+        return Err(HelperFailure::keep_closed(format!(
+            "{technical}. Baixe o LocalCodePilot {from_version} ou {to_version} na página oficial"
+        )));
+    }
+    recovery::remove_swap_leftovers(target);
+    Err(HelperFailure::installer_not_completed(InstallerFailure {
+        from_version: from_version.to_owned(),
+        to_version: to_version.clone(),
+        technical,
+    }))
+}
+
+/// Runs the installer silently in `directory` and waits for it. The installer
+/// does not close other programs: another running copy of the app makes it fail
+/// instead of being closed with its projects.
+fn run_installer(installer: &Path, directory: &Path, log: &Path) -> Result<(), String> {
+    let mut command = Command::new(installer);
+    command
+        .args([
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SP-",
+            "/NOCANCEL",
+            "/NOCLOSEAPPLICATIONS",
+            "/NORESTARTAPPLICATIONS",
+        ])
+        .arg(format!("/DIR={}", directory.display()))
+        .arg(format!("/LOG={}", log.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(parent) = installer.parent() {
+        command.current_dir(parent);
+    }
+    configure_background_command(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("não foi possível iniciar o instalador: {error}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(match status.code() {
+                    Some(code) => format!("o instalador terminou com o código {code}"),
+                    None => format!("o instalador terminou sem código de saída ({status})"),
+                });
+            }
+            Ok(None) if started.elapsed() >= INSTALLER_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "o instalador não terminou em {} minutos e foi interrompido",
+                    INSTALLER_TIMEOUT.as_secs() / 60
+                ));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(200)),
+            Err(error) => return Err(format!("não foi possível acompanhar o instalador: {error}")),
+        }
+    }
 }
 
 fn parse_helper_arguments() -> Result<Option<HelperArguments>, String> {
@@ -1100,6 +1451,14 @@ fn validate_helper_arguments(arguments: &HelperArguments) -> Result<(), String> 
     }
     if !valid_sha256(&arguments.expected_sha256) {
         return Err("o SHA-256 preparado é inválido".into());
+    }
+    let candidate_name = arguments
+        .candidate_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if candidate_name != EXECUTABLE_CANDIDATE_NAME && candidate_name != INSTALLER_CANDIDATE_NAME {
+        return Err("o arquivo preparado não é uma atualização reconhecida".into());
     }
     let stage = arguments
         .stage_directory
@@ -1373,11 +1732,36 @@ fn persistent_update_error_path() -> PathBuf {
 }
 
 fn write_persistent_update_error(error: &str) {
+    write_persistent_update_text(&format!("A atualização automática falhou: {error}"));
+}
+
+fn write_persistent_update_text(text: &str) {
     let path = persistent_update_error_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let _ = fs::write(path, format!("A atualização automática falhou: {error}"));
+    let _ = fs::write(path, text);
+}
+
+fn installer_failure_path() -> PathBuf {
+    persistent_update_error_path().with_file_name(INSTALLER_FAILURE_FILE)
+}
+
+fn write_installer_failure(failure: &InstallerFailure) {
+    let path = installer_failure_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(contents) = serde_json::to_vec_pretty(failure) {
+        let _ = fs::write(path, contents);
+    }
+}
+
+fn read_installer_failure() -> Option<InstallerFailure> {
+    let path = installer_failure_path();
+    let contents = fs::read(&path).ok()?;
+    let _ = fs::remove_file(path);
+    serde_json::from_slice(&contents).ok()
 }
 
 fn read_persistent_update_error() -> Option<String> {
@@ -1427,6 +1811,12 @@ fn windows_update_asset(name: &str) -> bool {
 
 fn windows_update_asset_name(version: impl std::fmt::Display) -> String {
     format!("LocalCodePilot-{version}-windows-x64.exe")
+}
+
+/// The official installer. Its name must not start with `LocalCodePilot-`, or older
+/// clients would take it for the update executable (#97).
+fn windows_installer_asset_name(version: impl std::fmt::Display) -> String {
+    format!("LocalCodePilotSetup-{version}-windows-x64.exe")
 }
 
 #[cfg(test)]
@@ -1737,6 +2127,7 @@ mod tests {
             executable_url: None,
             checksum_url: None,
             summary: None,
+            installer_url: None,
         };
         assert!(!cached_update_is_newer(&update));
         update.download_url = "https://example.com/LocalCodePilot-windows-x64.zip".into();
@@ -2059,6 +2450,7 @@ mod tests {
             checksum_url: format!("{server}/SHA256SUMS.txt"),
             signing_key,
             asset_name: "LocalCodePilot-9.9.9-windows-x64.exe".into(),
+            candidate_name: EXECUTABLE_CANDIDATE_NAME,
             version: "9.9.9".into(),
             target_path: target,
             stage_directory: directory.join("stage"),
@@ -2164,6 +2556,7 @@ mod tests {
             checksum_url: format!("{server}/SHA256SUMS.txt"),
             signing_key: public,
             asset_name: asset.into(),
+            candidate_name: EXECUTABLE_CANDIDATE_NAME,
             version: "9.9.9".into(),
             target_path: target,
             stage_directory: directory.join("stage"),
@@ -2459,6 +2852,7 @@ mod tests {
             "0.4.0-alpha.9",
             Some(Ok(())),
             backup,
+            false,
         );
         assert!(restored.relaunch_previous);
         assert!(
@@ -2478,6 +2872,7 @@ mod tests {
             "0.4.0-alpha.9",
             Some(Err(std::io::Error::other("acesso negado"))),
             backup,
+            true,
         );
         assert!(configuration_lost.relaunch_previous);
         assert!(
@@ -2492,8 +2887,14 @@ mod tests {
         );
         assert!(!configuration_lost.message.contains("continua em uso"));
 
-        let not_restored =
-            rollback_failure(failure, "0.4.0-alpha.8", "0.4.0-alpha.9", None, backup);
+        let not_restored = rollback_failure(
+            failure,
+            "0.4.0-alpha.8",
+            "0.4.0-alpha.9",
+            None,
+            backup,
+            false,
+        );
         assert!(!not_restored.relaunch_previous);
         assert!(
             not_restored
@@ -2510,5 +2911,79 @@ mod tests {
         let interrupted = not_completed_message("0.4.0-alpha.8", "0.4.0-alpha.9");
         assert!(interrupted.contains("A versão 0.4.0-alpha.8 continua instalada"));
         assert!(interrupted.contains("use Atualizar agora em Configurações"));
+    }
+
+    #[test]
+    fn installed_copy_that_did_not_open_uses_the_approved_text() {
+        let backup = Path::new("C:\\config\\backups\\antes-de-0.4.0-beta.2");
+        let restored = rollback_failure(
+            "a versão 0.4.0-beta.2 fechou ao iniciar (exit code: 3)",
+            "0.4.0-beta.1",
+            "0.4.0-beta.2",
+            Some(Ok(())),
+            backup,
+            true,
+        );
+        assert!(restored.relaunch_previous);
+        assert!(matches!(restored.report, HelperReport::Plain));
+        assert_eq!(
+            restored.message,
+            "A versão 0.4.0-beta.2 não abriu. Restauramos o aplicativo e as configurações da versão 0.4.0-beta.1; você pode continuar trabalhando. A lista de programas do Windows ainda pode mostrar a versão 0.4.0-beta.2. Tente novamente mais tarde ou baixe o instalador na página oficial."
+        );
+    }
+
+    #[test]
+    fn installer_failure_has_the_approved_title_message_and_actions() {
+        let failure = UpdateFailure::installer(
+            "0.4.0-beta.1",
+            "0.4.0-beta.2",
+            "o instalador terminou com o código 5; registro do instalador: C:\\x\\update-setup.log",
+        );
+        assert_eq!(failure.title(), "A instalação não foi concluída");
+        assert_eq!(
+            failure.message(),
+            "Não foi possível instalar a versão 0.4.0-beta.2. A versão 0.4.0-beta.1 foi reaberta e você pode continuar trabalhando. Tente novamente mais tarde ou baixe o instalador na página oficial."
+        );
+        assert!(failure.can_retry());
+        assert_eq!(
+            failure.release_page_label(),
+            Some("Ver página oficial da versão")
+        );
+        assert!(failure.technical.contains("código 5"));
+    }
+
+    #[test]
+    fn installer_failure_survives_the_reopen_once() {
+        let saved = InstallerFailure {
+            from_version: "0.4.0-beta.1".into(),
+            to_version: "0.4.0-beta.2".into(),
+            technical: "o instalador terminou com o código 1".into(),
+        };
+        let json = serde_json::to_vec(&saved).unwrap();
+        let read: InstallerFailure = serde_json::from_slice(&json).unwrap();
+        assert_eq!(read, saved);
+    }
+
+    #[test]
+    fn helper_accepts_only_the_two_candidate_names() {
+        assert!(is_installer_candidate(Path::new(
+            "C:\\t\\LocalCodePilotSetup.exe"
+        )));
+        assert!(!is_installer_candidate(Path::new(
+            "C:\\t\\LocalCodePilot.exe"
+        )));
+        assert!(!is_installer_candidate(Path::new("C:\\t\\setup.exe")));
+    }
+
+    #[test]
+    fn same_directory_ignores_case_and_trailing_separator() {
+        assert!(same_directory(
+            Path::new("C:\\Users\\Dev\\AppData\\Local\\Programs\\LocalCodePilot\\"),
+            Path::new("c:\\users\\dev\\appdata\\local\\programs\\localcodepilot"),
+        ));
+        assert!(!same_directory(
+            Path::new("C:\\Programs\\LocalCodePilot"),
+            Path::new("C:\\Programs\\LocalCodePilot-portatil"),
+        ));
     }
 }
