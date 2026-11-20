@@ -383,6 +383,15 @@ pub fn simulate_test_startup() {
     }
 }
 
+/// Extra time the app takes to close after starting the updater: only test
+/// builds ever wait, so the E2E can see the updater window waiting for it.
+pub fn test_close_delay() -> Duration {
+    #[cfg(feature = "update-test-feed")]
+    return test_feed::close_delay();
+    #[cfg(not(feature = "update-test-feed"))]
+    Duration::ZERO
+}
+
 pub fn cached_update_is_newer(update: &UpdateInfo) -> bool {
     cached_update_matches_os(update, env::consts::OS)
         && parse_version(&update.version).is_some_and(|version| version > current_version())
@@ -606,7 +615,56 @@ pub fn launch_prepared_update(update: &PreparedUpdate) -> Result<(), String> {
         .map_err(|error| format!("não foi possível iniciar o atualizador: {error}"))
 }
 
-pub fn try_run_update_helper() -> Option<i32> {
+/// Where the updater is, for its window. The window only shows it: the update
+/// runs on its own thread and goes on when the window cannot open or is closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperStage {
+    /// The app that started the updater has not closed yet.
+    WaitingForApp { since: Instant },
+    /// Replacing the executable or running the official installer.
+    Installing,
+    /// Opening the new version (or the previous one, after a failure).
+    Restarting,
+    /// Nothing left to show: the version that opened shows the outcome.
+    Finished,
+}
+
+/// The wait for the app to close usually takes a second or two; past this the
+/// window says it is waiting instead of installing.
+pub const HELPER_SLOW_CLOSE: Duration = Duration::from_secs(3);
+
+#[derive(Debug)]
+pub struct HelperProgress(std::sync::Mutex<HelperStage>);
+
+impl HelperProgress {
+    fn new() -> Self {
+        Self(std::sync::Mutex::new(HelperStage::WaitingForApp {
+            since: Instant::now(),
+        }))
+    }
+
+    pub fn stage(&self) -> HelperStage {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set(&self, stage: HelperStage) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = stage;
+    }
+}
+
+/// Runs the updater when this process was started as one. `show_window` runs
+/// on the main thread while the update goes on in the background and may
+/// return at any time (window closed, or it could not open): the update is
+/// never interrupted because of the window.
+pub fn try_run_update_helper(
+    show_window: impl FnOnce(std::sync::Arc<HelperProgress>),
+) -> Option<i32> {
     let arguments = match parse_helper_arguments() {
         Ok(Some(arguments)) => arguments,
         Ok(None) => return None,
@@ -615,8 +673,25 @@ pub fn try_run_update_helper() -> Option<i32> {
             return Some(2);
         }
     };
-    match apply_prepared_update(&arguments) {
-        Ok(()) => Some(0),
+    let progress = std::sync::Arc::new(HelperProgress::new());
+    let worker = {
+        let progress = progress.clone();
+        thread::spawn(move || {
+            let exit_code = run_update_helper(&arguments, &progress);
+            progress.set(HelperStage::Finished);
+            exit_code
+        })
+    };
+    // A panic in the window must not end the process while the update runs.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        show_window(progress.clone())
+    }));
+    Some(worker.join().unwrap_or(1))
+}
+
+fn run_update_helper(arguments: &HelperArguments, progress: &HelperProgress) -> i32 {
+    match apply_prepared_update(arguments, progress) {
+        Ok(()) => 0,
         Err(failure) => {
             // The message is saved before the previous version reopens, so
             // that version is the one that shows it.
@@ -626,9 +701,10 @@ pub fn try_run_update_helper() -> Option<i32> {
                 HelperReport::Installer(installer) => write_installer_failure(installer),
             }
             if failure.relaunch_previous {
+                progress.set(HelperStage::Restarting);
                 relaunch_after_failure(&arguments.target_path);
             }
-            Some(1)
+            1
         }
     }
 }
@@ -1138,7 +1214,10 @@ fn not_completed_message(from: &str, to: &str) -> String {
     )
 }
 
-fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailure> {
+fn apply_prepared_update(
+    arguments: &HelperArguments,
+    progress: &HelperProgress,
+) -> Result<(), HelperFailure> {
     let to_version = &arguments.version;
     // Nothing is touched while the app that started the helper still runs;
     // relaunching it here would open a second instance.
@@ -1147,6 +1226,7 @@ fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailur
             "o LocalCodePilot não fechou a tempo, e a atualização para a versão {to_version} não foi aplicada. Nada foi alterado: feche o LocalCodePilot e tente atualizar de novo"
         )));
     }
+    progress.set(HelperStage::Installing);
     let from_version = current_version().to_string();
     let not_applied = |reason: String| {
         Err(HelperFailure::reopen_previous(format!(
@@ -1238,6 +1318,7 @@ fn apply_prepared_update(arguments: &HelperArguments) -> Result<(), HelperFailur
     }
     journal.phase = recovery::JournalPhase::Starting;
     let _ = recovery::write_journal(&journal_path, &journal);
+    progress.set(HelperStage::Restarting);
 
     let marker_path = arguments.stage_directory.join("startup-ok");
     let mut command = Command::new(&arguments.target_path);

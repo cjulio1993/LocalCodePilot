@@ -72,6 +72,18 @@ pub(super) fn installer_app_id() -> Option<&'static str> {
     option_env!("LOCALCODEPILOT_TEST_INNO_APPID")
 }
 
+/// Runtime variable with extra seconds the app takes to close after starting
+/// the updater, so the E2E sees the updater window waiting for it.
+const CLOSE_DELAY_VARIABLE: &str = "LOCALCODEPILOT_TEST_CLOSE_DELAY";
+
+pub(super) fn close_delay() -> Duration {
+    env::var(CLOSE_DELAY_VARIABLE)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| Duration::from_secs(seconds.min(60)))
+        .unwrap_or_default()
+}
+
 /// Simulated startup problems of a "new" test version, set when it is
 /// compiled and applied only when the updater starts it:
 /// `fail` closes it at once, `slow` delays it past the updater's wait.
