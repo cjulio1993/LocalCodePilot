@@ -81,6 +81,21 @@ jobs:
       - name: Run Clippy with the local update test feed
         run: cargo clippy -p localcodepilot-desktop --all-targets --features update-test-feed -- -D warnings
 
+  dependency-audit:
+    name: Segurança e licenças das dependências
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # Pinned release (cargo-deny 0.20.2); the policy lives in deny.toml.
+      # The advisory database is fetched on every run, so a new RustSec
+      # advisory can fail a PR that did not touch the dependencies.
+      - name: Check advisories and licenses
+        uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check advisories licenses
+          arguments: --locked
+
   tests:
     name: Tests (${{ matrix.os }})
     strategy:

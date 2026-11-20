@@ -1,0 +1,38 @@
+# cargo-deny policy for the dependencies (advisories and licenses).
+# CI runs `cargo deny check advisories licenses` in the "Segurança e
+# licenças das dependências" job (.github/workflows/ci.yml).
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+# Known vulnerabilities always fail. Unmaintained crates fail only when they
+# are direct dependencies, which this project can replace; transitive ones
+# (inside egui, ureq...) are not actionable here.
+unmaintained = "workspace"
+yanked = "deny"
+# Each ignored advisory needs its ID, the reason and a date to revisit it.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only, so the app can be distributed under any terms.
+# Every entry is used by a current dependency (inventory of 2026-11-19).
+# Copyleft licenses (GPL, LGPL) appear only as an "OR" alternative and are
+# not needed.
+allow = [
+    "0BSD",                          # adler2 (with MIT/Apache)
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # rustix, wasi (with MIT/Apache)
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",                       # Boost (e.g. clipboard-win, error-code)
+    "CDLA-Permissive-2.0",           # webpki-roots (Mozilla CA list)
+    "ISC",                           # ring, untrusted
+    "MIT",
+    "OFL-1.1",                       # fonts bundled by egui (epaint)
+    "Ubuntu-font-1.0",               # font bundled by egui (epaint)
+    "Unicode-3.0",                   # ICU / unicode data crates
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
