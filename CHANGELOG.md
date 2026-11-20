@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.9] - 2026-11-19
+
 ### Segurança
 
 - Os logs salvos no computador (`workspace-state.json`) têm prazo e máscara. Ao abrir, o app apaga os logs de serviços e de preparação com mais de 30 dias; nomes, comandos, estados e etapas continuam. **Limpar histórico**, em **Configurações**, apaga todos os logs salvos depois de confirmar, sem parar projetos. Antes de gravar, e em **Copiar logs** dos containers, valores de `NOME=valor` ou `NOME: valor` com `PASSWORD`, `PASSWD`, `TOKEN`, `SECRET` ou `KEY` no nome, de `Authorization: Bearer valor` e a senha de `esquema://usuario:senha@` viram `••••`; os logs salvos por versões anteriores são mascarados ao abrir. A saída ao vivo de **Ver logs** continua completa, para diagnóstico. A cópia de configurações feita antes de uma atualização não leva mais os logs. Antes, os logs ficavam salvos sem prazo, sem máscara, e eram copiados para `backups`.
