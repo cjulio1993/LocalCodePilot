@@ -1175,6 +1175,12 @@ impl LocalCodePilot {
                                 .color(theme::MUTED)
                                 .size(10.0),
                         );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(updates::summary_line(&update)).size(11.0),
+                            )
+                            .wrap(),
+                        );
                         if !automatic_update {
                             ui.label(
                                 RichText::new(
@@ -4735,6 +4741,10 @@ impl LocalCodePilot {
                         RichText::new(update_versions_line(&update.version))
                             .color(theme::MUTED)
                             .size(11.0),
+                    );
+                    ui.add(
+                        egui::Label::new(RichText::new(updates::summary_line(update)).size(11.0))
+                            .wrap(),
                     );
                 }
                 ui.add_space(6.0);

@@ -34,6 +34,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
   Se um projeto for iniciado durante o download, a mesma pergunta aparece antes de fechar. Nesse caso, **Agora não** descarta o arquivo baixado e a versão atual continua. Containers iniciados pelo Compose continuam rodando depois que o app fecha.
 
+- O aviso de nova versão, e também **Configurações > Atualizações**, mostra o que mudou numa linha: "O que há de novo: ..." com a frase de abertura das notas da versão oficial (a frase em negrito logo depois do título, com até 140 caracteres, em texto puro). Sem essa frase, ou se ela for mais longa, a linha diz "Confira as novidades na página da versão.". **Ver novidades** continua abrindo a página oficial da versão.
+
 ## [0.4.0-alpha.9] - 2026-11-19
 
 ### Segurança
