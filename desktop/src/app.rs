@@ -125,6 +125,36 @@ impl Page {
     }
 }
 
+/// One run of a managed process that closing the app would end. A restart of the same
+/// process gets a new operating-system id, so it counts as a new run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveRun {
+    id: String,
+    pid: Option<u32>,
+}
+
+/// Runs that the last confirmation did not cover. A run confirmed while it was still
+/// starting (no process id yet) stays covered once it gets one.
+fn runs_not_confirmed(active: &[ActiveRun], confirmed: &[ActiveRun]) -> Vec<ActiveRun> {
+    active
+        .iter()
+        .filter(|run| {
+            !confirmed
+                .iter()
+                .any(|done| done.id == run.id && (done.pid == run.pid || done.pid.is_none()))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Where the update stopped to ask before ending managed processes.
+enum UpdateConfirmation {
+    /// "Atualizar agora" was clicked with projects running: nothing downloaded yet.
+    BeforeDownload(UpdateInfo),
+    /// The file is ready, but a project started after the last confirmation.
+    BeforeRestart(updates::PreparedUpdate),
+}
+
 struct RunningProcess {
     child: Child,
     output: Receiver<String>,
@@ -643,6 +673,12 @@ pub struct LocalCodePilot {
     update_install_error: Option<UpdateFailure>,
     /// The updater was launched; the app shows "Reiniciando" until it closes.
     update_restart_at: Option<Instant>,
+    /// Updating would end managed processes: waiting for the person's choice (CA-5).
+    update_confirmation: Option<UpdateConfirmation>,
+    /// Gives the safe choice ("Agora não") the keyboard focus when the confirmation opens.
+    update_confirmation_focus: bool,
+    /// Runs the person agreed to end; anything started later is asked about again.
+    update_confirmed_runs: Vec<ActiveRun>,
     container_state: container_ui::ContainerState,
     project_ui: project_ui::ProjectUiState,
     help: help_ui::HelpState,
@@ -750,6 +786,9 @@ impl LocalCodePilot {
             update_install_phase: None,
             update_install_error: None,
             update_restart_at: None,
+            update_confirmation: None,
+            update_confirmation_focus: false,
+            update_confirmed_runs: Vec::new(),
             container_state: container_ui::ContainerState::default(),
             project_ui: project_ui::ProjectUiState::default(),
             help: help_ui::HelpState::default(),
@@ -946,7 +985,60 @@ impl LocalCodePilot {
     }
 
     fn update_in_progress(&self) -> bool {
-        self.update_install.is_some() || self.update_restart_at.is_some()
+        self.update_install.is_some()
+            || self.update_restart_at.is_some()
+            || matches!(
+                self.update_confirmation,
+                Some(UpdateConfirmation::BeforeRestart(_))
+            )
+    }
+
+    /// Managed processes that would end if the app closed now.
+    fn active_runs(&self) -> Vec<ActiveRun> {
+        self.processes
+            .iter()
+            .filter(|process| {
+                matches!(
+                    process.state,
+                    ProcessState::Starting | ProcessState::Running
+                )
+            })
+            .map(|process| ActiveRun {
+                id: process.id.clone(),
+                pid: process.process_id,
+            })
+            .collect()
+    }
+
+    /// "Atualizar agora": with projects running, ask first (CA-5); otherwise download.
+    fn request_update_install(&mut self, update: &UpdateInfo, ctx: egui::Context) {
+        if self.update_in_progress() || self.update_confirmation.is_some() {
+            return;
+        }
+        if self.active_runs().is_empty() {
+            self.update_confirmed_runs.clear();
+            self.start_update_install(update, ctx);
+        } else {
+            self.update_confirmation = Some(UpdateConfirmation::BeforeDownload(update.clone()));
+            self.update_confirmation_focus = true;
+        }
+    }
+
+    fn launch_update(&mut self, prepared: &updates::PreparedUpdate, ctx: &egui::Context) {
+        self.persist_workspace_state(true);
+        match updates::launch_prepared_update(prepared) {
+            Ok(()) => {
+                // The updater waits for this process to exit; a short pause
+                // lets the person read "Reiniciando" before the window closes.
+                self.update_restart_at = Some(Instant::now() + Duration::from_millis(1200));
+                ctx.request_repaint();
+            }
+            Err(error) => {
+                self.update_install_version = None;
+                self.update_install_error =
+                    Some(UpdateFailure::new(UpdateFailureKind::Local, error));
+            }
+        }
     }
 
     /// A última tentativa foi recusada por segurança (checksum, assinatura ou arquivo inválido).
@@ -1022,20 +1114,17 @@ impl LocalCodePilot {
                 UpdateInstallEvent::Prepared(prepared) => {
                     self.update_install = None;
                     self.update_install_progress = None;
-                    self.persist_workspace_state(true);
-                    match updates::launch_prepared_update(&prepared) {
-                        Ok(()) => {
-                            // The updater waits for this process to exit; a short pause
-                            // lets the person read "Reiniciando" before the window closes.
-                            self.update_restart_at =
-                                Some(Instant::now() + Duration::from_millis(1200));
-                            ctx.request_repaint();
-                        }
-                        Err(error) => {
-                            self.update_install_version = None;
-                            self.update_install_error =
-                                Some(UpdateFailure::new(UpdateFailureKind::Local, error));
-                        }
+                    // A project started during the download was not part of the choice:
+                    // ask again before closing.
+                    if runs_not_confirmed(&self.active_runs(), &self.update_confirmed_runs)
+                        .is_empty()
+                    {
+                        self.launch_update(&prepared, ctx);
+                    } else {
+                        self.update_confirmation =
+                            Some(UpdateConfirmation::BeforeRestart(prepared));
+                        self.update_confirmation_focus = true;
+                        ctx.request_repaint();
                     }
                 }
                 UpdateInstallEvent::Failed(error) => {
@@ -1146,7 +1235,7 @@ impl LocalCodePilot {
             });
         ui.add_space(14.0);
         if start_install {
-            self.start_update_install(&update, ui.ctx().clone());
+            self.request_update_install(&update, ui.ctx().clone());
         }
         if remind_later {
             self.workspace_state.update_remind_after =
@@ -2610,6 +2699,112 @@ impl LocalCodePilot {
             self.terminate_port_owner_and_retry(&request);
         } else if cancel || !open {
             self.port_termination = None;
+        }
+    }
+
+    /// CA-5: updating closes the app and ends the processes it manages. Containers started
+    /// by Compose run detached and keep running, so the text speaks only of processes.
+    fn show_update_confirmation(&mut self, root_ui: &mut egui::Ui) {
+        if self.update_confirmation.is_none() {
+            return;
+        }
+        let runs: Vec<(String, &'static str)> = self
+            .processes
+            .iter()
+            .filter(|process| {
+                matches!(
+                    process.state,
+                    ProcessState::Starting | ProcessState::Running
+                )
+            })
+            .map(|process| {
+                let label = if process.name.is_empty() || process.name == process.project_name {
+                    process.project_name.clone()
+                } else {
+                    format!("{} · {}", process.project_name, process.name)
+                };
+                let state = if process.state == ProcessState::Starting {
+                    "Iniciando"
+                } else {
+                    "Rodando"
+                };
+                (label, state)
+            })
+            .collect();
+        let focus = std::mem::take(&mut self.update_confirmation_focus);
+        let mut later = false;
+        let mut confirm = false;
+        egui::Window::new("update-confirmation")
+            .id(egui::Id::unique("update-confirmation"))
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .default_width(480.0)
+            .show(root_ui, |ui| {
+                ui.label(RichText::new("Há projetos em execução.").strong().size(15.0));
+                ui.add_space(6.0);
+                ui.label(
+                    "Para instalar a atualização, o LocalCodePilot precisará fechar e encerrar os processos que gerencia. Salve seu trabalho antes de continuar.",
+                );
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical()
+                    .max_height(140.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (label, state) in &runs {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(label).strong().size(12.0));
+                                ui.label(RichText::new(*state).color(theme::MUTED).size(11.0));
+                            });
+                        }
+                    });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let not_now = ui.button("Agora não");
+                    if focus {
+                        not_now.request_focus();
+                    }
+                    if not_now.clicked() {
+                        later = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new("Atualizar e encerrar processos")
+                                .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.22)),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                });
+            });
+        let escape = root_ui.input(|input| input.key_pressed(egui::Key::Escape));
+        if confirm {
+            let active = self.active_runs();
+            match self.update_confirmation.take() {
+                Some(UpdateConfirmation::BeforeDownload(update)) => {
+                    self.update_confirmed_runs = active;
+                    self.start_update_install(&update, root_ui.ctx().clone());
+                }
+                Some(UpdateConfirmation::BeforeRestart(prepared)) => {
+                    self.update_confirmed_runs = active;
+                    self.launch_update(&prepared, &root_ui.ctx().clone());
+                }
+                None => {}
+            }
+        } else if later || escape {
+            // "Agora não": nothing is downloaded or installed; the app and its processes
+            // keep running. A file already prepared is discarded.
+            if let Some(UpdateConfirmation::BeforeRestart(prepared)) =
+                self.update_confirmation.take()
+            {
+                updates::discard_prepared_update(prepared);
+                self.update_install_version = None;
+                self.update_install_phase = None;
+            }
+            self.update_confirmation = None;
+            self.update_confirmed_runs.clear();
         }
     }
 
@@ -4579,7 +4774,7 @@ impl LocalCodePilot {
             self.update_check = Some(updates::spawn_update_check(ui.ctx().clone()));
         }
         if start_install && let Some(update) = available_update {
-            self.start_update_install(&update, ui.ctx().clone());
+            self.request_update_install(&update, ui.ctx().clone());
         }
         ui.add_space(24.0);
         self.languages_section(ui);
@@ -4726,6 +4921,7 @@ impl eframe::App for LocalCodePilot {
         self.show_laravel_migration(ui);
         self.show_port_termination_confirmation(ui);
         self.show_clear_history_confirmation(ui);
+        self.show_update_confirmation(ui);
         self.show_notification(ui);
     }
 }
@@ -7609,6 +7805,7 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
 
 #[cfg(test)]
 mod tests {
+    use super::{ActiveRun, runs_not_confirmed};
     use super::{
         DependencyInstall, DependencyInstallEvent, HttpHealthStatus, Page, ProjectEnvironment,
         classify_http_health, dependency_error_suggestion, find_executable, initials_from_username,
@@ -7621,6 +7818,45 @@ mod tests {
     };
     use super::{Notification, UPDATE_RESULT_NOTIFICATION_DURATION};
     use super::{PROJECT_MANIFEST_SOURCE, plan_confirm_label, plan_window_title};
+
+    fn run(id: &str, pid: Option<u32>) -> ActiveRun {
+        ActiveRun {
+            id: id.to_owned(),
+            pid,
+        }
+    }
+
+    #[test]
+    fn a_project_started_after_the_confirmation_is_asked_about_again() {
+        let confirmed = vec![run("loja", Some(10))];
+        // Nothing new: the update goes on.
+        assert!(runs_not_confirmed(&[run("loja", Some(10))], &confirmed).is_empty());
+        // Nothing running any more: also fine.
+        assert!(runs_not_confirmed(&[], &confirmed).is_empty());
+        // Another project started during the download.
+        assert_eq!(
+            runs_not_confirmed(&[run("loja", Some(10)), run("blog", Some(20))], &confirmed),
+            vec![run("blog", Some(20))]
+        );
+        // The same project stopped and started again: a new run, so it is asked again.
+        assert_eq!(
+            runs_not_confirmed(&[run("loja", Some(11))], &confirmed),
+            vec![run("loja", Some(11))]
+        );
+        // Without any confirmation (nothing was running at the click), every run is new.
+        assert_eq!(
+            runs_not_confirmed(&[run("blog", None)], &[]),
+            vec![run("blog", None)]
+        );
+    }
+
+    #[test]
+    fn a_run_confirmed_while_starting_stays_covered_once_it_runs() {
+        // Confirmed in "Iniciando", before the operating system gave it an id.
+        let confirmed = vec![run("loja", None)];
+        assert!(runs_not_confirmed(&[run("loja", Some(42))], &confirmed).is_empty());
+    }
+
     use localcodepilot_core::{
         environments::{
             InstallationPlan, InstallationStep, InstallationStepKind, RequirementSource,

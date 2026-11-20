@@ -384,6 +384,12 @@ pub fn spawn_update_download(
     Ok(receiver)
 }
 
+/// The person chose "Agora não" after the file was ready: remove the prepared copy so
+/// nothing is left behind. The current version is untouched.
+pub fn discard_prepared_update(update: PreparedUpdate) {
+    let _ = fs::remove_dir_all(&update.stage_directory);
+}
+
 pub fn launch_prepared_update(update: &PreparedUpdate) -> Result<(), String> {
     let mut command = Command::new(&update.helper_path);
     command

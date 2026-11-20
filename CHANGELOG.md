@@ -24,6 +24,12 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
   O erro original continua em **Detalhes técnicos**, com **Copiar erro técnico**.
 
+- **Atualizar agora** pergunta antes de encerrar projetos em execução. Antes, a atualização fechava o app e encerrava os processos dos projetos sem avisar. Agora, se houver projetos **Rodando** ou **Iniciando**, uma janela diz "Há projetos em execução.", explica que o LocalCodePilot precisará fechar e encerrar os processos que gerencia, lista os projetos com o estado de cada um e oferece:
+  - **Agora não** (foco inicial; Escape tem o mesmo efeito): nada é baixado nem instalado, e os projetos continuam rodando;
+  - **Atualizar e encerrar processos**: segue com a atualização.
+
+  Se um projeto for iniciado durante o download, a mesma pergunta aparece antes de fechar. Nesse caso, **Agora não** descarta o arquivo baixado e a versão atual continua. Containers iniciados pelo Compose continuam rodando depois que o app fecha.
+
 ## [0.4.0-alpha.9] - 2026-11-19
 
 ### Segurança
