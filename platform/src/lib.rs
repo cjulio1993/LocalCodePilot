@@ -72,3 +72,13 @@ impl Platform for NativePlatform {
     }
 }
 pub mod containers;
+
+// TEMPORARIO (T015): aviso de proposito so no Windows, para provar que o CI bloqueia. Sera revertido.
+#[cfg(windows)]
+#[allow(dead_code)]
+fn ci_lint_probe(value: bool) -> bool {
+    if !value {
+        return false;
+    }
+    true
+}
