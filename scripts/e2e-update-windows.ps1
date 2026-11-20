@@ -220,6 +220,9 @@ function Invoke-Botao($Elemento) {
     else { $Elemento.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() }
 }
 
+# Frase de abertura das notas de release do cenário de sucesso (vira o resumo do aviso).
+$resumoDoTeste = '**Atualização de teste com resumo das novidades.**'
+
 # O servidor do projeto descartável (node <script>), identificado pelo nome do script.
 $scriptDoProjeto = 'lcp-e2e-servidor.js'
 function Get-ProcessoDoProjeto {
@@ -310,6 +313,9 @@ function Invoke-Cenario([string]$Nome) {
     $release = [ordered]@{
         tag_name = $tag; name = "LocalCodePilot $versaoNova (teste)"; html_url = "$base/releases/$tag"
         draft = $false; prerelease = $true
+        # Notas com frase de abertura em negrito só no cenário de sucesso: os demais conferem
+        # o texto alternativo (T002 CA-2).
+        body = $(if ($Nome -eq 'sucesso') { "# LocalCodePilot $versaoNova`n`n$resumoDoTeste Versão de teste.`n`n## Novidades`n`n- **Outro destaque.** Não vira resumo." } else { $null })
         assets = @(
             [ordered]@{ name = "LocalCodePilot-$versaoNova-windows-x64.zip"; browser_download_url = "$download/LocalCodePilot-$versaoNova-windows-x64.zip" },
             [ordered]@{ name = $nomeExe; browser_download_url = "$download/$nomeExe" },
@@ -338,6 +344,8 @@ function Invoke-Cenario([string]$Nome) {
     $agoraNaoManteve = $false
     $paginaOficial = $false
     $copiarErro = $false
+    $novidadesNoAviso = $false
+    $linhaDeNovidades = ''
     try {
         # Pasta de trabalho dentro do cenário: o que o app ou as ferramentas que ele consulta
         # gravarem na pasta atual (como um erl_crash.dump) não cai no repositório.
@@ -352,6 +360,13 @@ function Invoke-Cenario([string]$Nome) {
             throw "O aviso de atualização não apareceu. Na tela: $na_tela"
         }
         else {
+            $textosDoAviso = Get-TextosNaTela $app.Id
+            $linhaDeNovidades = if ($Nome -eq 'sucesso') { "O que há de novo: $($resumoDoTeste.Trim('*'))" } else { 'Confira as novidades na página da versão.' }
+            $novidadesNoAviso = $textosDoAviso -contains $linhaDeNovidades
+            if ($Capturas -and $Nome -in 'sucesso', 'sha-errado') {
+                New-Item -ItemType Directory -Force $Capturas | Out-Null
+                Save-Janela $app.Id (Join-Path $Capturas "aviso-novidades-$Nome.png")
+            }
             if ($Nome -eq 'processos-ativos') {
                 # CA-5: com um projeto rodando, "Atualizar agora" pergunta antes de baixar.
                 $projetoRodando = Start-ProjetoDeTeste $app.Id
@@ -504,6 +519,10 @@ function Invoke-Cenario([string]$Nome) {
             # Recusa por segurança não oferece "Tentar de novo" nem "Atualizar agora"; queda no download oferece.
             if ($Nome -eq 'queda-no-meio') { $checagens['oferece Tentar de novo'] = $tentarDeNovo }
             else { $checagens['sem Tentar de novo nem Atualizar agora na recusa por segurança'] = -not ($tentarDeNovo -or $atualizarAgora) }
+        }
+        if ($Nome -in 'sucesso', 'sha-errado') {
+            # Com notas: o resumo; sem notas: o texto alternativo (T002 CA-2).
+            $checagens["aviso mostra '$linhaDeNovidades'"] = $novidadesNoAviso
         }
         if ($Nome -eq 'assinatura-invalida') {
             $checagens['executável nem chegou a ser baixado'] = -not ((Get-Content -LiteralPath (Join-Path $raiz 'servidor.log') -ErrorAction SilentlyContinue) -match [regex]::Escape($nomeExe))

@@ -60,6 +60,50 @@ pub struct UpdateInfo {
     pub executable_url: Option<String>,
     #[serde(default)]
     pub checksum_url: Option<String>,
+    /// The short "what's new" sentence from the release notes (see `release_summary`).
+    /// Caches saved by older versions have none and show the fallback text.
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+/// Longest summary shown in the update notice. A longer sentence is not cut (a cut could
+/// change its meaning): the notice shows the fallback text instead.
+pub const SUMMARY_MAX_CHARS: usize = 140;
+
+/// The "what's new" line of the update notice (T002 CA-2).
+pub fn summary_line(update: &UpdateInfo) -> String {
+    match &update.summary {
+        Some(summary) => format!("O que há de novo: {summary}"),
+        None => "Confira as novidades na página da versão.".to_owned(),
+    }
+}
+
+/// The summary of an official release: the bold sentence that opens the first paragraph
+/// after the title, as in "**Mais seguro para abrir projetos.** Versão alpha para...".
+/// Only that position counts, so bold text elsewhere never becomes a summary by chance.
+/// The result is plain text (no Markdown, links or control characters) of at most
+/// `SUMMARY_MAX_CHARS` characters; anything else gives no summary.
+fn release_summary(body: &str) -> Option<String> {
+    let mut lines = body
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| line.is_empty());
+    let mut first = lines.next()?;
+    if first.starts_with("# ") {
+        first = lines.find(|line| !line.is_empty())?;
+    }
+    let inner = first.strip_prefix("**")?;
+    let (sentence, _) = inner.split_once("**")?;
+    if sentence.contains(['[', ']', '<', '>', '*', '_']) {
+        return None;
+    }
+    let plain = sentence
+        .replace('`', "")
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    let plain = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!plain.is_empty() && plain.chars().count() <= SUMMARY_MAX_CHARS).then_some(plain)
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +111,8 @@ struct GithubRelease {
     tag_name: String,
     name: Option<String>,
     html_url: String,
+    #[serde(default)]
+    body: Option<String>,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
@@ -608,6 +654,7 @@ fn select_update_for_os(
                     download_url,
                     executable_url,
                     checksum_url,
+                    summary: release.body.as_deref().and_then(release_summary),
                 },
             ))
         })
@@ -1606,6 +1653,81 @@ mod tests {
     }
 
     #[test]
+    fn the_summary_is_the_bold_sentence_that_opens_the_release_notes() {
+        let alpha9 = "# LocalCodePilot 0.4.0-alpha.9\n\n**Mais seguro para abrir projetos de terceiros e para atualizar.** Versão alpha para Windows 10/11 x64.\n\n## Novidades\n\n- **Confirmação antes de executar.** ...";
+        assert_eq!(
+            release_summary(alpha9).as_deref(),
+            Some("Mais seguro para abrir projetos de terceiros e para atualizar.")
+        );
+        // Without a title, the first paragraph still counts; CRLF and extra spaces are fine.
+        assert_eq!(
+            release_summary("\r\n**Atualização  com `etapas` na tela.**\r\nMais texto").as_deref(),
+            Some("Atualização com etapas na tela.")
+        );
+    }
+
+    #[test]
+    fn without_an_opening_bold_sentence_there_is_no_summary() {
+        for body in [
+            "",
+            "# LocalCodePilot 1.0",
+            // The first paragraph does not start in bold; bold text later never counts.
+            "# LocalCodePilot 1.0\n\nVersão para Windows.\n\n- **Novidade.** Algo",
+            "Texto **em negrito no meio.**",
+            // Unclosed bold, empty bold.
+            "**Sem fechamento",
+            "****",
+            // Links, HTML or nested emphasis are not turned into plain text by guessing.
+            "**Veja [a página](https://example.com).**",
+            "**<b>Novo</b>**",
+            "**Novo _recurso_.**",
+        ] {
+            assert_eq!(release_summary(body), None, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn a_summary_longer_than_the_limit_is_not_cut() {
+        let exact = "a".repeat(SUMMARY_MAX_CHARS);
+        assert_eq!(
+            release_summary(&format!("**{exact}**")),
+            Some(exact.clone())
+        );
+        let longer = "é".repeat(SUMMARY_MAX_CHARS + 1);
+        assert_eq!(release_summary(&format!("**{longer}**")), None);
+    }
+
+    #[test]
+    fn the_notice_line_falls_back_to_the_release_page_and_old_caches_still_load() {
+        // A cache written before the summary existed has no "summary" field.
+        let cached: UpdateInfo = serde_json::from_str(
+            r#"{"version":"0.4.0","title":"T","release_url":"https://example.com/r","download_url":"https://example.com/d"}"#,
+        )
+        .unwrap();
+        assert_eq!(cached.summary, None);
+        assert_eq!(
+            summary_line(&cached),
+            "Confira as novidades na página da versão."
+        );
+        let with_summary = UpdateInfo {
+            summary: Some("Mais seguro.".into()),
+            ..cached
+        };
+        assert_eq!(
+            summary_line(&with_summary),
+            "O que há de novo: Mais seguro."
+        );
+    }
+
+    #[test]
+    fn the_release_notes_body_reaches_the_update_summary() {
+        let json = r##"[{"tag_name":"v99.0.0","name":"LocalCodePilot 99","html_url":"https://github.com/cjulio1993/LocalCodePilot/releases/tag/v99.0.0","body":"# LocalCodePilot 99\n\n**Tudo mais rápido.** Detalhes.","assets":[{"name":"LocalCodePilot-99.0.0-windows-x64.zip","browser_download_url":"https://github.com/cjulio1993/LocalCodePilot/releases/download/v99.0.0/LocalCodePilot-99.0.0-windows-x64.zip"}]},{"tag_name":"v98.0.0","html_url":"https://github.com/cjulio1993/LocalCodePilot/releases/tag/v98.0.0","body":null,"assets":[]}]"##;
+        let current = Version::parse("1.0.0").unwrap();
+        let update = select_update_for_os(releases(json), &current, "windows").unwrap();
+        assert_eq!(update.summary.as_deref(), Some("Tudo mais rápido."));
+    }
+
+    #[test]
     fn rejects_incompatible_and_release_page_cached_notifications() {
         let mut update = UpdateInfo {
             version: "99.0.0".into(),
@@ -1614,6 +1736,7 @@ mod tests {
             download_url: "https://example.com/release".into(),
             executable_url: None,
             checksum_url: None,
+            summary: None,
         };
         assert!(!cached_update_is_newer(&update));
         update.download_url = "https://example.com/LocalCodePilot-windows-x64.zip".into();
