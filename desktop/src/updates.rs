@@ -2966,13 +2966,12 @@ mod tests {
 
     #[test]
     fn helper_accepts_only_the_two_candidate_names() {
-        assert!(is_installer_candidate(Path::new(
-            "C:\\t\\LocalCodePilotSetup.exe"
-        )));
-        assert!(!is_installer_candidate(Path::new(
-            "C:\\t\\LocalCodePilot.exe"
-        )));
-        assert!(!is_installer_candidate(Path::new("C:\\t\\setup.exe")));
+        let stage = Path::new("stage");
+        assert!(is_installer_candidate(
+            &stage.join("LocalCodePilotSetup.exe")
+        ));
+        assert!(!is_installer_candidate(&stage.join("LocalCodePilot.exe")));
+        assert!(!is_installer_candidate(&stage.join("setup.exe")));
     }
 
     #[test]
