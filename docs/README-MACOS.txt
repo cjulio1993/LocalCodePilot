@@ -16,7 +16,7 @@ Os artefatos de validação usam assinatura ad hoc. Se o macOS bloquear a primei
 abertura, abra Ajustes do Sistema > Privacidade e Segurança e escolha
 "Abrir mesmo assim" para o LocalCodePilot (macOS 15 ou mais recente). No macOS 14
 ou anterior, clique com o botão direito no aplicativo, escolha Abrir e confirme.
-O DMG da Alpha 8 é experimental, não é notarizado pela Apple e ainda depende de
+O DMG da Alpha 9 é experimental, não é notarizado pela Apple e ainda depende de
 validação em Macs reais; ele não representa suporte estável ao macOS.
 
 Atualizações
