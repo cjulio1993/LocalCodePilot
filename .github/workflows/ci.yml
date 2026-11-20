@@ -67,7 +67,9 @@ jobs:
           podman build --file Dockerfile .
 
   quality:
-    name: Formatting and Clippy
+    # Required check in the "Protect main" ruleset: keep the ruleset in sync
+    # when renaming.
+    name: Formatting and Clippy (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -117,7 +119,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
       # Code under cfg(windows) / cfg(macos) is only linted on its own system.
-      # Linux is covered by the "Formatting and Clippy" job. Same command as
+      # Linux is covered by the "Formatting and Clippy (ubuntu-latest)" job. Same command as
       # the "Run Clippy" step of release-windows.yml.
       - name: Run Clippy on this system
         if: runner.os != 'Linux'
