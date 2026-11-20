@@ -41,6 +41,8 @@ pub struct DatabasePackage {
     pub url: String,
     pub sha256: String,
     pub size_bytes: u64,
+    /// Disk space after preparing: the extracted package plus the data of a new server.
+    pub space_bytes: u64,
     /// The single top folder inside the zip, removed on extraction.
     pub archive_root: String,
     /// The server program, relative to the prepared folder.
@@ -406,6 +408,7 @@ mod tests {
             url: "https://example.invalid/teste.zip".into(),
             sha256: hash,
             size_bytes: bytes.len() as u64,
+            space_bytes: 1,
             archive_root: "pacote".into(),
             server_program: "bin/servidor.exe".into(),
             provenance: "teste".into(),

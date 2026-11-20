@@ -201,7 +201,7 @@ const SECTIONS: &[HelpSection] = &[
         title: "Bancos de dados",
         blocks: &[
             Block::Text(
-                "O LocalCodePilot testa a conexão com os dados de acesso do projeto (banco, usuário e senha do .env ou do wp-config.php) quando o banco roda neste computador. Banco de dados conectado só aparece depois desse teste; uma porta aberta ou um container ativo não bastam. Em Detalhes técnicos, confira onde a configuração está, o endereço testado e o resultado. A senha nunca é mostrada.",
+                "O LocalCodePilot testa a conexão com os dados de acesso do projeto (banco, usuário e senha do .env ou do wp-config.php) quando o banco roda neste computador. Banco de dados conectado só aparece depois desse teste; uma porta aberta ou um container ativo não bastam. No Windows, com PostgreSQL, MySQL ou MariaDB neste computador, Iniciar pode preparar um servidor do LocalCodePilot: na primeira vez, uma confirmação mostra o download, o espaço necessário, o banco e o usuário que serão criados. O servidor só escuta neste computador, a senha de administração fica no Gerenciador de Credenciais do Windows, e o projeto só inicia depois que o banco aceita os dados de acesso dele. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar o servidor; os dados permanecem. Em Detalhes técnicos, confira onde a configuração está, o endereço testado e o resultado. A senha nunca é mostrada.",
             ),
             Block::Text(
                 "Confira a configuração do projeto e os logs do serviço de banco. Nomes como db podem funcionar somente dentro da rede Compose.",

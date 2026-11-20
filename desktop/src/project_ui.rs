@@ -148,6 +148,10 @@ pub(super) struct ProjectFacts<'a> {
     pub container_url: Option<&'a str>,
     /// Languages found in the project files.
     pub languages: &'a [RuntimeKind],
+    /// The project's database is being prepared or started: the step to show.
+    pub database_step: Option<String>,
+    /// The last start stopped at the project's database, and why.
+    pub database_failure: Option<&'a str>,
 }
 
 /// Why there is nothing to start: a language the app does not start yet is named, so the
@@ -239,11 +243,25 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         }
         _ => {}
     }
+    if let Some(step) = &facts.database_step {
+        return summary(
+            ProjectState::Starting,
+            Some(step.clone()),
+            PrimaryAction::Wait,
+        );
+    }
     if facts.starting {
         return summary(
             ProjectState::Starting,
             Some("Iniciando os serviços".into()),
             PrimaryAction::ViewLogs,
+        );
+    }
+    if let Some(reason) = facts.database_failure {
+        return summary(
+            ProjectState::Problem,
+            Some(reason.to_owned()),
+            PrimaryAction::Details,
         );
     }
     if facts.resolving_plan {
@@ -328,10 +346,21 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             .iter()
             .any(DatabaseStatus::not_running)
     {
+        // "Iniciar" prepares or starts the database when the app can (with a confirmation the
+        // first time); otherwise the person reads why in "Detalhes".
+        let can_prepare = environment
+            .databases
+            .iter()
+            .filter(|database| database.not_running())
+            .all(DatabaseStatus::app_can_prepare);
         return summary(
             ProjectState::Stopped,
             Some("O banco de dados deste projeto não está rodando.".into()),
-            PrimaryAction::Details,
+            if can_prepare {
+                PrimaryAction::Start
+            } else {
+                PrimaryAction::Details
+            },
         );
     }
     let reason = environment
@@ -548,6 +577,16 @@ impl LocalCodePilot {
                 && self.card_container_stop(&project.path).is_some(),
             container_url: container_url.as_deref(),
             languages: &project.runtimes,
+            database_step: self
+                .database
+                .jobs
+                .get(&project.path)
+                .map(|job| job.step.text(job.engine)),
+            database_failure: self
+                .database
+                .failures
+                .get(&project.path)
+                .map(String::as_str),
         })
     }
 
@@ -939,6 +978,12 @@ impl LocalCodePilot {
                                 .hidden_recent_projects
                                 .contains(&project.path),
                             has_install_logs: self.dependency_installs.contains_key(&project.path),
+                            database_actions: self
+                                .database
+                                .actions
+                                .get(&project.path)
+                                .cloned()
+                                .unwrap_or_default(),
                         };
                         ui.allocate_ui_with_layout(
                             egui::vec2(card_width, 0.0),
@@ -1381,6 +1426,8 @@ struct ProjectCard<'a> {
     expanded: bool,
     hidden_from_recent: bool,
     has_install_logs: bool,
+    /// What the app created on its database server for this project.
+    database_actions: Vec<String>,
 }
 
 impl ProjectCard<'_> {
@@ -1578,6 +1625,16 @@ impl ProjectCard<'_> {
                 ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
             }
         }
+        if !self.database_actions.is_empty() {
+            ui.label(
+                RichText::new(format!(
+                    "No servidor do LocalCodePilot: {}",
+                    self.database_actions.join(", ")
+                ))
+                .color(theme::MUTED)
+                .size(12.0),
+            );
+        }
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(format!(
@@ -1747,6 +1804,8 @@ mod tests {
             container_stop_here: false,
             container_url: None,
             languages: &[],
+            database_step: None,
+            database_failure: None,
         }
     }
 
@@ -1814,7 +1873,13 @@ mod tests {
                 summary.reason.as_deref(),
                 Some("O banco de dados deste projeto não está rodando.")
             );
-            assert_ne!(summary.primary, PrimaryAction::Start);
+            // Windows prepares the server through Iniciar; elsewhere the person reads why.
+            let expected = if cfg!(windows) {
+                PrimaryAction::Start
+            } else {
+                PrimaryAction::Details
+            };
+            assert_eq!(summary.primary, expected);
         }
     }
 
