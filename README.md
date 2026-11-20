@@ -104,6 +104,8 @@ cargo test --workspace                      # testes
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+O CI verifica advisories de segurança (RustSec) e licenças das dependências Rust com `cargo deny check advisories licenses`, conforme a política em [deny.toml](deny.toml). Para reproduzir localmente, instale `cargo-deny` e execute esse comando na raiz do repositório. Se a verificação falhar, consulte o pacote e o motivo no log do CI. Ela só aponta problemas já publicados no RustSec e não garante que as dependências estejam livres de falhas.
+
 - **Como o app decide as coisas** (classificação, comandos, portas, containers, preparação do ambiente e atualização): [docs/DETALHES-TECNICOS.md](docs/DETALHES-TECNICOS.md).
 - **Containers e conflitos de nome do Compose:** [docs/CONTAINERS.md](docs/CONTAINERS.md).
 - **Bancos de dados:** [docs/DATABASES.md](docs/DATABASES.md).
@@ -201,6 +203,8 @@ cargo run -p localcodepilot-cli -- scan     # lists projects from the CLI
 cargo test --workspace                      # tests
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+CI checks Rust dependency security advisories (RustSec) and licenses with `cargo deny check advisories licenses`, following the policy in [deny.toml](deny.toml). To reproduce locally, install `cargo-deny` and run that command from the repository root. If the check fails, see the CI log for the package and reason. It only reports issues already published in RustSec and does not guarantee the dependencies are free of flaws.
 
 - **How the app decides** (classification, commands, ports, containers, environment setup, and updates): [docs/DETALHES-TECNICOS.md](docs/DETALHES-TECNICOS.md).
 - **Containers and Compose name conflicts:** [docs/CONTAINERS.md](docs/CONTAINERS.md).
