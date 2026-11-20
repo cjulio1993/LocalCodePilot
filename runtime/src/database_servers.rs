@@ -1,0 +1,1026 @@
+//! Database servers the app prepares and runs for the user on Windows: PostgreSQL, MySQL
+//! and MariaDB from the pinned packages (`database_packages`). Each server has its own
+//! data folder under `<root>\servidores\<id>`, listens only on 127.0.0.1, and keeps its
+//! administrator password in the Windows Credential Manager (`platform::credentials`).
+//!
+//! Decisions agreed with the product side are in
+//! `.internal/conversas/2026-11-20-t019-02-servidor-gerenciado.md`:
+//! - the password is saved and read back from the vault before anything is initialized;
+//!   a temporary file passes it to `initdb`/`mysqld` and is removed as soon as the server
+//!   has consumed it; it never goes on a command line;
+//! - a server is "managed" only when PID, start time, executable, data folder and the
+//!   server's own PID file all match; any doubt makes it an existing server, never stopped;
+//! - stopping is the server's own clean shutdown; one that does not stop in time is
+//!   reported and left running, never killed (the only exception is a server created in
+//!   this very operation that never accepted a connection).
+
+use crate::database_packages::DatabasePackage;
+use localcodepilot_core::ports::Port;
+use localcodepilot_platform::{credentials, installations::configure_background_command, ports};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    net::{SocketAddr, TcpListener, TcpStream},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+/// The administrator account of a managed server. Its name is not a secret.
+pub const POSTGRES_ADMIN: &str = "localcodepilot_admin";
+pub const MYSQL_ADMIN: &str = "root";
+
+const START_TIMEOUT: Duration = Duration::from_secs(90);
+const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+const REGISTRY_FILE: &str = "servidores.json";
+const IDENTITY_FILE: &str = ".localcodepilot-servidor";
+const TEMP_FOLDER: &str = ".temp";
+
+/// What the app remembers about a server it prepared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedServer {
+    /// Random, chosen at initialization; names the credential and the folder.
+    pub id: String,
+    /// `postgresql`, `mysql` or `mariadb`.
+    pub engine: String,
+    pub version: String,
+    pub port: u16,
+    /// The prepared package (`<root>\<engine>-<version>`).
+    pub program_folder: PathBuf,
+    /// `<root>\servidores\<id>`: data, configuration and log.
+    pub folder: PathBuf,
+    /// The running process, as started by the app.
+    pub process_id: Option<u32>,
+    pub started_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerError {
+    /// The port is used by another program: nothing was started.
+    PortInUse(u16),
+    /// The vault could not keep the password: nothing was prepared.
+    Vault(String),
+    /// The administrator password is not in the vault: nothing is changed on the server.
+    CredentialMissing,
+    /// The Visual C++ runtime the server needs is missing or old.
+    MissingRuntime(Vec<String>),
+    /// The server did not start; the log tail explains why.
+    StartFailed {
+        detail: String,
+        log: String,
+    },
+    /// The clean shutdown did not finish in time; the server may still be running.
+    StopTimedOut,
+    /// The server answered but did not accept the administrator password.
+    Authentication(String),
+    Io(String),
+}
+
+impl std::fmt::Display for ServerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PortInUse(port) => write!(
+                formatter,
+                "a porta {port} já está em uso; nenhum banco foi iniciado"
+            ),
+            Self::Vault(detail) => write!(
+                formatter,
+                "Não foi possível guardar a senha do banco no Gerenciador de Credenciais do Windows. Nenhum servidor foi preparado. ({detail})"
+            ),
+            Self::CredentialMissing => write!(
+                formatter,
+                "A senha de administração deste banco não está disponível. O LocalCodePilot não fará alterações nele."
+            ),
+            Self::MissingRuntime(missing) => write!(
+                formatter,
+                "falta o Microsoft Visual C++ Redistributable: {}",
+                missing.join("; ")
+            ),
+            Self::StartFailed { detail, .. } => write!(formatter, "o banco não iniciou: {detail}"),
+            Self::StopTimedOut => write!(
+                formatter,
+                "Não foi possível parar o banco de dados. Ele pode continuar rodando."
+            ),
+            Self::Authentication(detail) => write!(
+                formatter,
+                "o banco não aceitou a senha de administração: {detail}"
+            ),
+            Self::Io(detail) => write!(formatter, "{detail}"),
+        }
+    }
+}
+
+fn io(context: &str) -> impl Fn(std::io::Error) -> ServerError + '_ {
+    move |error| ServerError::Io(format!("{context}: {error}"))
+}
+
+/// The vault, injected so tests never touch the user's real Credential Manager.
+pub trait Vault {
+    fn save_new(&self, target: &str, user: &str, secret: &str) -> Result<(), String>;
+    fn read(&self, target: &str) -> Result<Option<String>, String>;
+}
+
+/// The Windows Credential Manager.
+pub struct SystemVault;
+
+impl Vault for SystemVault {
+    fn save_new(&self, target: &str, user: &str, secret: &str) -> Result<(), String> {
+        credentials::save_new(target, user, secret)
+    }
+
+    fn read(&self, target: &str) -> Result<Option<String>, String> {
+        credentials::read(target)
+    }
+}
+
+pub fn credential_target(id: &str) -> String {
+    format!("LocalCodePilot/banco/{id}")
+}
+
+/// The Visual C++ DLLs each server imports and its package does not bring (checked on the
+/// pinned executables: MariaDB ships them in `bin`).
+fn runtime_dlls(engine: &str) -> &'static [&'static str] {
+    match engine {
+        "postgresql" => &["vcruntime140.dll"],
+        "mysql" => &["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"],
+        _ => &[],
+    }
+}
+
+impl ManagedServer {
+    pub fn data_folder(&self) -> PathBuf {
+        self.folder.join("dados")
+    }
+
+    pub fn log_file(&self) -> PathBuf {
+        self.folder.join("servidor.log")
+    }
+
+    fn config_file(&self) -> PathBuf {
+        self.folder.join("my.ini")
+    }
+
+    fn pid_file(&self) -> PathBuf {
+        match self.engine.as_str() {
+            "postgresql" => self.data_folder().join("postmaster.pid"),
+            _ => self.folder.join("servidor.pid"),
+        }
+    }
+
+    fn program(&self, name: &str) -> PathBuf {
+        self.program_folder.join("bin").join(name)
+    }
+
+    fn server_program(&self) -> PathBuf {
+        self.program(match self.engine.as_str() {
+            "postgresql" => "postgres.exe",
+            "mysql" => "mysqld.exe",
+            _ => "mariadbd.exe",
+        })
+    }
+
+    pub fn admin_user(&self) -> &'static str {
+        if self.engine == "postgresql" {
+            POSTGRES_ADMIN
+        } else {
+            MYSQL_ADMIN
+        }
+    }
+
+    pub fn admin_password(&self, vault: &dyn Vault) -> Result<String, ServerError> {
+        vault
+            .read(&credential_target(&self.id))
+            .map_err(ServerError::Vault)?
+            .ok_or(ServerError::CredentialMissing)
+    }
+}
+
+/// `my.ini` for MySQL and MariaDB: paths, port and loopback only, no secret.
+fn mysql_config(server: &ManagedServer) -> String {
+    let slash = |path: &Path| path.display().to_string().replace('\\', "/");
+    let mut config = format!(
+        "[mysqld]\nbasedir={}\ndatadir={}\nport={}\nbind-address=127.0.0.1\nlog-error={}\npid-file={}\n",
+        slash(&server.program_folder),
+        slash(&server.data_folder()),
+        server.port,
+        slash(&server.log_file()),
+        slash(&server.pid_file()),
+    );
+    if server.engine == "mysql" {
+        // No X Protocol: no second port (33060) next to the one the project uses.
+        config.push_str("mysqlx=OFF\n");
+    }
+    config
+}
+
+/// SQL run by the server at its first start, before it accepts connections: protects every
+/// root account and removes the anonymous ones. Only quote-free passwords are generated.
+fn mysql_init_sql(password: &str) -> String {
+    debug_assert!(!password.contains(['\'', '\\']));
+    let mut sql = String::new();
+    for host in ["localhost", "127.0.0.1", "::1"] {
+        sql.push_str(&format!(
+            "ALTER USER IF EXISTS 'root'@'{host}' IDENTIFIED BY '{password}';\n"
+        ));
+    }
+    sql.push_str("DROP USER IF EXISTS ''@'localhost';\nFLUSH PRIVILEGES;\n");
+    sql
+}
+
+/// A random administrator password: 32 bytes in URL-safe base64, without quotes or
+/// backslashes, so it is safe inside the init SQL.
+fn new_password() -> Result<String, ServerError> {
+    let mut bytes = [0_u8; 32];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
+        .map_err(|_| ServerError::Io("não foi possível gerar uma senha aleatória".into()))?;
+    Ok(base64_url(&bytes))
+}
+
+fn new_id() -> Result<String, ServerError> {
+    let mut bytes = [0_u8; 9];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
+        .map_err(|_| ServerError::Io("não foi possível gerar um identificador".into()))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn base64_url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut text = String::new();
+    for chunk in bytes.chunks(3) {
+        let value = chunk
+            .iter()
+            .enumerate()
+            .fold(0_u32, |value, (index, byte)| {
+                value | u32::from(*byte) << (16 - 8 * index)
+            });
+        for index in 0..=chunk.len() {
+            text.push(ALPHABET[(value >> (18 - 6 * index) & 63) as usize] as char);
+        }
+    }
+    text
+}
+
+// --- Temporary password files ---------------------------------------------------------
+
+/// A file with the password for `initdb --pwfile` or `mysqld --init-file`. Its name carries
+/// the owner (PID and process start time), so a sweep only removes files whose owner is
+/// gone; it is removed when dropped, even on error.
+struct SecretFile {
+    path: PathBuf,
+}
+
+impl SecretFile {
+    fn create(root: &Path, contents: &str) -> Result<Self, ServerError> {
+        use std::io::Write;
+        let folder = root.join(TEMP_FOLDER);
+        fs::create_dir_all(&folder).map_err(io("não foi possível criar a pasta temporária"))?;
+        let pid = std::process::id();
+        let started = ports::process_started_at(pid).unwrap_or_default();
+        let path = folder.join(format!("{pid}-{started}-{}.tmp", new_id()?));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(io("não foi possível criar o arquivo temporário"))?;
+        let written = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all());
+        let secret = Self { path };
+        written.map_err(io("não foi possível gravar o arquivo temporário"))?;
+        Ok(secret)
+    }
+
+    /// Removes the file now, reporting a failure (the caller must not go on).
+    fn remove(&self) -> Result<(), ServerError> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(ServerError::Io(format!(
+                "o arquivo temporário com a senha não pôde ser apagado: {error}"
+            ))),
+        }
+    }
+}
+
+impl Drop for SecretFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Removes temporary password files left by an app that is no longer running. A file
+/// whose owner (same PID and same start time) still runs belongs to an operation in
+/// progress and stays.
+pub fn sweep_abandoned_secrets(root: &Path) {
+    sweep_abandoned_secrets_with(root, ports::process_started_at);
+}
+
+fn sweep_abandoned_secrets_with(root: &Path, started_at: impl Fn(u32) -> Option<u64>) {
+    let Ok(entries) = fs::read_dir(root.join(TEMP_FOLDER)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let mut parts = name.splitn(3, '-');
+        let owner = parts.next().and_then(|pid| pid.parse::<u32>().ok());
+        let start = parts.next().and_then(|start| start.parse::<u64>().ok());
+        let alive = match (owner, start) {
+            (Some(pid), Some(start)) => started_at(pid) == Some(start),
+            _ => false,
+        };
+        if !alive {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+// --- Registry ---------------------------------------------------------------------------
+
+pub fn load_registry(root: &Path) -> Vec<ManagedServer> {
+    fs::read_to_string(root.join(REGISTRY_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_server(root: &Path, server: &ManagedServer) -> Result<(), ServerError> {
+    let mut servers = load_registry(root);
+    servers.retain(|known| known.id != server.id);
+    servers.push(server.clone());
+    let text = serde_json::to_string_pretty(&servers)
+        .map_err(|error| ServerError::Io(error.to_string()))?;
+    let path = root.join(REGISTRY_FILE);
+    let partial = path.with_extension("json.part");
+    fs::write(&partial, text).map_err(io("não foi possível gravar o registro dos bancos"))?;
+    fs::rename(&partial, &path).map_err(io("não foi possível gravar o registro dos bancos"))
+}
+
+// --- Recognition ------------------------------------------------------------------------
+
+/// Who is listening on a managed server's port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recognition {
+    /// The server the app started, with every identity check passing.
+    Managed,
+    /// Nothing listens on the port.
+    NotRunning,
+    /// Something else, or the app cannot be sure: never stopped or changed by the app.
+    Existing { reason: String },
+}
+
+/// What the recognition needs from the system, injected for tests.
+pub struct ProcessView<'a> {
+    pub listener: &'a dyn Fn(u16) -> Option<u32>,
+    pub details: &'a dyn Fn(u32) -> Option<ports::ProcessDetails>,
+}
+
+pub fn recognize(server: &ManagedServer) -> Recognition {
+    let listener = |port: u16| Port::new(port).and_then(ports::listener_process_id);
+    recognize_with(
+        server,
+        &ProcessView {
+            listener: &listener,
+            details: &ports::process_details,
+        },
+        fs::read_to_string(server.pid_file()).ok().as_deref(),
+    )
+}
+
+fn recognize_with(
+    server: &ManagedServer,
+    view: &ProcessView<'_>,
+    pid_file: Option<&str>,
+) -> Recognition {
+    let existing = |reason: &str| Recognition::Existing {
+        reason: reason.to_owned(),
+    };
+    let Some(owner) = (view.listener)(server.port) else {
+        return if port_is_free(server.port) {
+            Recognition::NotRunning
+        } else {
+            existing("a porta está ocupada e o processo não pôde ser identificado")
+        };
+    };
+    if server.process_id != Some(owner) {
+        return existing("o processo na porta não é o que o LocalCodePilot iniciou");
+    }
+    let Some(details) = (view.details)(owner) else {
+        return existing("o processo na porta não pôde ser consultado");
+    };
+    if server.started_at != Some(details.started_at) {
+        return existing("o número do processo foi reaproveitado por outro programa");
+    }
+    let program = server.server_program();
+    let same_program = details
+        .executable
+        .as_deref()
+        .is_some_and(|executable| same_path(executable, &program));
+    if !same_program {
+        return existing("o programa na porta não é o servidor preparado pelo LocalCodePilot");
+    }
+    let data = server
+        .data_folder()
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let config = server
+        .config_file()
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let mentions_ours = details.command_line.iter().any(|part| {
+        let part = part.replace('\\', "/").to_ascii_lowercase();
+        part.contains(&data.to_ascii_lowercase()) || part.contains(&config.to_ascii_lowercase())
+    });
+    if !mentions_ours {
+        return existing("o servidor na porta usa outra pasta de dados");
+    }
+    let pid_matches = pid_file
+        .and_then(|text| text.lines().next())
+        .and_then(|line| line.trim().parse::<u32>().ok())
+        == Some(owner);
+    if !pid_matches {
+        return existing("o arquivo de PID do servidor não confere");
+    }
+    Recognition::Managed
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    let normalize = |path: &Path| {
+        fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display()
+            .to_string()
+            .trim_start_matches(r"\\?\")
+            .to_ascii_lowercase()
+    };
+    normalize(a) == normalize(b)
+}
+
+fn port_is_free(port: u16) -> bool {
+    TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).is_ok()
+        && Port::new(port).is_none_or(|port| ports::listener_process_id(port).is_none())
+}
+
+// --- Life cycle -------------------------------------------------------------------------
+
+/// Prepares a new server of `package` on `port`: saves the password in the vault, creates
+/// the data folder, starts the server and confirms the administrator login. The server is
+/// left running.
+pub fn prepare(
+    package: &DatabasePackage,
+    root: &Path,
+    port: u16,
+    vault: &dyn Vault,
+) -> Result<ManagedServer, ServerError> {
+    sweep_abandoned_secrets(root);
+    let program_folder = package.folder(root);
+    let missing = localcodepilot_platform::vc_runtime::missing_runtime(
+        &program_folder.join(&package.server_program),
+        runtime_dlls(&package.engine),
+    );
+    if !missing.is_empty() {
+        return Err(ServerError::MissingRuntime(missing));
+    }
+    if !port_is_free(port) {
+        return Err(ServerError::PortInUse(port));
+    }
+    let id = new_id()?;
+    let mut server = ManagedServer {
+        engine: package.engine.clone(),
+        version: package.version.clone(),
+        port,
+        program_folder,
+        folder: root.join("servidores").join(&id),
+        id,
+        process_id: None,
+        started_at: None,
+    };
+    let password = new_password()?;
+    vault
+        .save_new(
+            &credential_target(&server.id),
+            server.admin_user(),
+            &password,
+        )
+        .map_err(ServerError::Vault)?;
+    // Read back what was saved: the server is initialized with the vault's copy.
+    let password = server.admin_password(vault)?;
+    fs::create_dir_all(&server.folder).map_err(io("não foi possível criar a pasta do banco"))?;
+    fs::write(server.folder.join(IDENTITY_FILE), &server.id)
+        .map_err(io("não foi possível marcar a pasta do banco"))?;
+    save_server(root, &server)?;
+    match server.engine.as_str() {
+        "postgresql" => {
+            initialize_postgres(&server, root, &password)?;
+            start(&mut server, root)?;
+        }
+        _ => {
+            initialize_mysql(&server)?;
+            let init = SecretFile::create(root, &mysql_init_sql(&password))?;
+            let started = start_with(&mut server, root, Some(&init));
+            // The init file runs before the server opens its port: once the port answers,
+            // it was consumed. It goes now, whatever happened.
+            let removed = init.remove();
+            started?;
+            if let Err(error) = removed {
+                // A server created in this operation that never accepted a connection: the
+                // only case where the app ends a server itself. The folder is kept.
+                abandon_fresh_server(&server);
+                return Err(error);
+            }
+        }
+    }
+    save_server(root, &server)?;
+    admin_check(&server, &password)?;
+    Ok(server)
+}
+
+fn initialize_postgres(
+    server: &ManagedServer,
+    root: &Path,
+    password: &str,
+) -> Result<(), ServerError> {
+    let password_file = SecretFile::create(root, password)?;
+    let mut command = Command::new(server.program("initdb.exe"));
+    command
+        .arg("-D")
+        .arg(server.data_folder())
+        .args([
+            "-U",
+            POSTGRES_ADMIN,
+            "-E",
+            "UTF8",
+            "--locale=C",
+            "--auth=scram-sha-256",
+        ])
+        .arg(format!("--pwfile={}", password_file.path.display()));
+    let result = run_to_end(command, &server.log_file(), "initdb");
+    // initdb has exited: nothing reads the file any more.
+    let removed = password_file.remove();
+    result?;
+    removed
+}
+
+fn initialize_mysql(server: &ManagedServer) -> Result<(), ServerError> {
+    fs::write(server.config_file(), mysql_config(server))
+        .map_err(io("não foi possível gravar a configuração do banco"))?;
+    let mut command = if server.engine == "mysql" {
+        let mut command = Command::new(server.program("mysqld.exe"));
+        command
+            .arg(format!(
+                "--defaults-file={}",
+                server.config_file().display()
+            ))
+            .arg("--initialize-insecure");
+        command
+    } else {
+        let mut command = Command::new(server.program("mariadb-install-db.exe"));
+        command.arg(format!("--datadir={}", server.data_folder().display()));
+        command
+    };
+    command.current_dir(&server.folder);
+    run_to_end(command, &server.log_file(), "inicialização")
+}
+
+fn run_to_end(mut command: Command, log: &Path, name: &str) -> Result<(), ServerError> {
+    let output = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .map_err(io("não foi possível abrir o log do banco"))?;
+    let errors = output
+        .try_clone()
+        .map_err(io("não foi possível abrir o log do banco"))?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output))
+        .stderr(Stdio::from(errors));
+    configure_background_command(&mut command);
+    let status = command
+        .status()
+        .map_err(io("não foi possível iniciar o programa do banco"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ServerError::StartFailed {
+            detail: format!("{name} terminou com {status}"),
+            log: log_tail(log),
+        })
+    }
+}
+
+/// Starts a prepared server and waits until its port answers.
+pub fn start(server: &mut ManagedServer, root: &Path) -> Result<(), ServerError> {
+    start_with(server, root, None)
+}
+
+/// `init` is MySQL's first-start SQL file.
+fn start_with(
+    server: &mut ManagedServer,
+    root: &Path,
+    init: Option<&SecretFile>,
+) -> Result<(), ServerError> {
+    if !port_is_free(server.port) {
+        return Err(ServerError::PortInUse(server.port));
+    }
+    let mut command = Command::new(server.server_program());
+    if server.engine == "postgresql" {
+        command
+            .arg("-D")
+            .arg(server.data_folder())
+            .arg("-p")
+            .arg(server.port.to_string())
+            .args(["-c", "listen_addresses=127.0.0.1"]);
+    } else {
+        // `--defaults-file` must be the first option.
+        command.arg(format!(
+            "--defaults-file={}",
+            server.config_file().display()
+        ));
+        if server.engine == "mysql" {
+            // On Windows MySQL otherwise starts a monitor process that runs the real server
+            // as a child: the port would belong to a PID the app did not start, and the
+            // server would never be recognized as the app's (nor stopped by it).
+            command.arg("--no-monitor");
+        }
+        if let Some(init) = init {
+            command.arg(format!("--init-file={}", init.path.display()));
+        }
+    }
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(server.log_file())
+        .map_err(io("não foi possível abrir o log do banco"))?;
+    let errors = log
+        .try_clone()
+        .map_err(io("não foi possível abrir o log do banco"))?;
+    command
+        .current_dir(&server.folder)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(errors));
+    configure_background_command(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(io("não foi possível iniciar o banco"))?;
+    server.process_id = Some(child.id());
+    server.started_at = ports::process_started_at(child.id());
+    let waited = wait_for_port(&mut child, server.port, START_TIMEOUT);
+    save_server(root, server)?;
+    waited.map_err(|detail| ServerError::StartFailed {
+        detail,
+        log: log_tail(&server.log_file()),
+    })
+}
+
+fn wait_for_port(child: &mut Child, port: u16, timeout: Duration) -> Result<(), String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let started = Instant::now();
+    loop {
+        if TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_ok() {
+            return Ok(());
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("o servidor terminou ao iniciar ({status})"));
+        }
+        if started.elapsed() >= timeout {
+            return Err(format!(
+                "o servidor não abriu a porta {port} em {} segundos",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Stops a managed server with its own clean shutdown. Only a server recognized as the
+/// app's is touched; one that does not stop in time is left running and reported.
+pub fn stop(server: &mut ManagedServer, root: &Path, vault: &dyn Vault) -> Result<(), ServerError> {
+    match recognize(server) {
+        Recognition::NotRunning => return Ok(()),
+        Recognition::Existing { reason } => {
+            return Err(ServerError::Io(format!(
+                "o LocalCodePilot não para este banco: {reason}"
+            )));
+        }
+        Recognition::Managed => {}
+    }
+    match server.engine.as_str() {
+        "postgresql" => {
+            let mut command = Command::new(server.program("pg_ctl.exe"));
+            command
+                .arg("stop")
+                .arg("-D")
+                .arg(server.data_folder())
+                .args([
+                    "-m",
+                    "fast",
+                    "-w",
+                    "-t",
+                    &STOP_TIMEOUT.as_secs().to_string(),
+                ]);
+            // pg_ctl reports the timeout as a failure; the port check below decides.
+            let _ = run_to_end(command, &server.log_file(), "pg_ctl stop");
+        }
+        _ => {
+            let password = server.admin_password(vault)?;
+            mysql_admin(server, &password, "SHUTDOWN")?;
+        }
+    }
+    // Stopped means the process has ended, not only that the port closed: MySQL closes the
+    // port first and keeps its files open while it finishes writing them.
+    let process_gone = |server: &ManagedServer| {
+        server.process_id.is_none_or(|pid| {
+            server.started_at.is_none() || ports::process_started_at(pid) != server.started_at
+        })
+    };
+    let started = Instant::now();
+    while started.elapsed() < STOP_TIMEOUT {
+        if port_is_free(server.port) && process_gone(server) {
+            server.process_id = None;
+            server.started_at = None;
+            return save_server(root, server);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Err(ServerError::StopTimedOut)
+}
+
+/// The one exception to "never kill": a server created in this very operation that never
+/// accepted a connection, whose password file could not be removed. Its folder stays.
+fn abandon_fresh_server(server: &ManagedServer) {
+    if let Some(pid) = server.process_id
+        && ports::process_started_at(pid) == server.started_at
+    {
+        let _ = ports::terminate_process_tree(pid);
+    }
+}
+
+fn log_tail(log: &Path) -> String {
+    let text = fs::read_to_string(log).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(20)..].join("\n")
+}
+
+// --- Administrator connection -----------------------------------------------------------
+
+fn runtime() -> Result<tokio::runtime::Runtime, ServerError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| ServerError::Io(format!("não foi possível preparar a conexão: {error}")))
+}
+
+/// Logs in as the administrator, proving the password in the vault is the server's.
+pub fn admin_check(server: &ManagedServer, password: &str) -> Result<(), ServerError> {
+    match server.engine.as_str() {
+        "postgresql" => postgres_admin(server, password, "SELECT 1"),
+        _ => mysql_admin(server, password, "SELECT 1"),
+    }
+}
+
+fn postgres_admin(server: &ManagedServer, password: &str, sql: &str) -> Result<(), ServerError> {
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host("127.0.0.1")
+        .port(server.port)
+        .user(POSTGRES_ADMIN)
+        .password(password)
+        .dbname("postgres")
+        .connect_timeout(Duration::from_secs(10));
+    runtime()?.block_on(async {
+        let (client, connection) = config
+            .connect(tokio_postgres::NoTls)
+            .await
+            .map_err(|error| ServerError::Authentication(error.to_string()))?;
+        let driver = tokio::spawn(connection);
+        let result = client
+            .batch_execute(sql)
+            .await
+            .map_err(|error| ServerError::Authentication(error.to_string()));
+        drop(client);
+        let _ = driver.await;
+        result
+    })
+}
+
+fn mysql_admin(server: &ManagedServer, password: &str, sql: &str) -> Result<(), ServerError> {
+    use mysql_async::prelude::Queryable;
+    // MySQL 9 authenticates with caching_sha2_password, which needs TLS on the first login.
+    // The server generates its own certificate; on 127.0.0.1, to the app's own server,
+    // accepting it is safe.
+    let ssl = mysql_async::SslOpts::default().with_danger_accept_invalid_certs(true);
+    let options = mysql_async::OptsBuilder::default()
+        .ip_or_hostname("127.0.0.1")
+        .tcp_port(server.port)
+        .user(Some(MYSQL_ADMIN))
+        .pass(Some(password))
+        .ssl_opts(ssl);
+    runtime()?.block_on(async {
+        let mut connection = mysql_async::Conn::new(options)
+            .await
+            .map_err(|error| ServerError::Authentication(error.to_string()))?;
+        let result = connection.query_drop(sql).await;
+        // SHUTDOWN closes the connection from the server side.
+        let _ = connection.disconnect().await;
+        result.or_else(|error| {
+            if sql == "SHUTDOWN" {
+                Ok(())
+            } else {
+                Err(ServerError::Authentication(error.to_string()))
+            }
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    fn server() -> ManagedServer {
+        ManagedServer {
+            id: "abc".into(),
+            engine: "mysql".into(),
+            version: "9.7.4".into(),
+            port: 1,
+            program_folder: PathBuf::from(r"C:\lcp\bancos\mysql-9.7.4"),
+            folder: PathBuf::from(r"C:\lcp\bancos\servidores\abc"),
+            process_id: Some(4242),
+            started_at: Some(1000),
+        }
+    }
+
+    fn details(started_at: u64, executable: &str, data: &str) -> ports::ProcessDetails {
+        ports::ProcessDetails {
+            started_at,
+            executable: Some(PathBuf::from(executable)),
+            command_line: vec![executable.to_owned(), format!("--defaults-file={data}")],
+        }
+    }
+
+    fn check(
+        listener: Option<u32>,
+        found: Option<ports::ProcessDetails>,
+        pid_file: Option<&str>,
+    ) -> Recognition {
+        let listener_fn = move |_: u16| listener;
+        let details_fn = move |_: u32| found.clone();
+        recognize_with(
+            &server(),
+            &ProcessView {
+                listener: &listener_fn,
+                details: &details_fn,
+            },
+            pid_file,
+        )
+    }
+
+    const EXE: &str = r"C:\lcp\bancos\mysql-9.7.4\bin\mysqld.exe";
+    const CONFIG: &str = r"C:\lcp\bancos\servidores\abc\my.ini";
+
+    #[test]
+    fn the_app_server_is_recognized_only_when_every_check_passes() {
+        assert_eq!(
+            check(Some(4242), Some(details(1000, EXE, CONFIG)), Some("4242\n")),
+            Recognition::Managed
+        );
+    }
+
+    #[test]
+    fn any_doubt_makes_it_an_existing_server() {
+        let cases = [
+            // Another process on the port.
+            (Some(7), Some(details(1000, EXE, CONFIG)), Some("7")),
+            // Same PID, later start: the PID was reused.
+            (Some(4242), Some(details(2000, EXE, CONFIG)), Some("4242")),
+            // Another program with our PID and start time.
+            (
+                Some(4242),
+                Some(details(1000, r"C:\outro\mysqld.exe", CONFIG)),
+                Some("4242"),
+            ),
+            // Our program, but another data folder.
+            (
+                Some(4242),
+                Some(details(1000, EXE, r"C:\outros\my.ini")),
+                Some("4242"),
+            ),
+            // The server's own PID file disagrees, or is missing.
+            (Some(4242), Some(details(1000, EXE, CONFIG)), Some("99")),
+            (Some(4242), Some(details(1000, EXE, CONFIG)), None),
+            // The process could not be read.
+            (Some(4242), None, Some("4242")),
+        ];
+        for (listener, found, pid_file) in cases {
+            assert!(
+                matches!(
+                    check(listener, found.clone(), pid_file),
+                    Recognition::Existing { .. }
+                ),
+                "{listener:?} {found:?} {pid_file:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mysql_config_listens_on_loopback_without_secrets_or_x_protocol() {
+        let config = mysql_config(&server());
+        assert!(config.contains("bind-address=127.0.0.1"));
+        assert!(config.contains("datadir=C:/lcp/bancos/servidores/abc/dados"));
+        assert!(config.contains("mysqlx=OFF"));
+        assert!(!config.to_ascii_lowercase().contains("password"));
+        let mut mariadb = server();
+        mariadb.engine = "mariadb".into();
+        assert!(!mysql_config(&mariadb).contains("mysqlx"));
+    }
+
+    #[test]
+    fn the_init_sql_protects_every_root_account() {
+        let sql = mysql_init_sql("SenhaForte_123-abc");
+        for host in ["localhost", "127.0.0.1", "::1"] {
+            assert!(sql.contains(&format!(
+                "ALTER USER IF EXISTS 'root'@'{host}' IDENTIFIED BY 'SenhaForte_123-abc';"
+            )));
+        }
+        assert!(sql.contains("DROP USER IF EXISTS ''@'localhost';"));
+    }
+
+    #[test]
+    fn passwords_are_long_random_and_safe_in_sql() {
+        let first = new_password().unwrap();
+        let second = new_password().unwrap();
+        assert_ne!(first, second);
+        assert!(first.len() >= 43);
+        assert!(
+            first
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        );
+        assert_eq!(base64_url(b"Man"), "TWFu");
+        assert_eq!(base64_url(b"Ma"), "TWE");
+    }
+
+    #[test]
+    fn only_secret_files_of_finished_owners_are_swept() {
+        let root = std::env::temp_dir().join(format!("lcp-secrets-{}", std::process::id()));
+        let temp = root.join(TEMP_FOLDER);
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("10-500-aaa.tmp"), "x").unwrap(); // owner alive
+        fs::write(temp.join("11-600-bbb.tmp"), "x").unwrap(); // owner gone
+        fs::write(temp.join("10-999-ccc.tmp"), "x").unwrap(); // PID reused
+        fs::write(temp.join("lixo.tmp"), "x").unwrap(); // no owner
+        sweep_abandoned_secrets_with(&root, |pid| (pid == 10).then_some(500));
+        let left: Vec<_> = fs::read_dir(&temp)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["10-500-aaa.tmp"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_secret_file_is_removed_even_when_the_operation_fails() {
+        let root = std::env::temp_dir().join(format!("lcp-secret-drop-{}", std::process::id()));
+        let path = {
+            let secret = SecretFile::create(&root, "segredo").unwrap();
+            assert_eq!(fs::read_to_string(&secret.path).unwrap(), "segredo");
+            secret.path.clone()
+        };
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    struct MemoryVault(RefCell<HashMap<String, String>>);
+
+    impl Vault for MemoryVault {
+        fn save_new(&self, target: &str, _: &str, secret: &str) -> Result<(), String> {
+            let mut map = self.0.borrow_mut();
+            if map.contains_key(target) {
+                return Err("existe".into());
+            }
+            map.insert(target.into(), secret.into());
+            Ok(())
+        }
+
+        fn read(&self, target: &str) -> Result<Option<String>, String> {
+            Ok(self.0.borrow().get(target).cloned())
+        }
+    }
+
+    #[test]
+    fn a_missing_credential_changes_nothing() {
+        let vault = MemoryVault(RefCell::default());
+        assert_eq!(
+            server().admin_password(&vault),
+            Err(ServerError::CredentialMissing)
+        );
+        vault
+            .save_new(&credential_target("abc"), "root", "x")
+            .unwrap();
+        assert_eq!(server().admin_password(&vault).as_deref(), Ok("x"));
+    }
+}
