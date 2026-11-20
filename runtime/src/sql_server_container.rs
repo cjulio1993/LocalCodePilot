@@ -25,11 +25,13 @@ use std::{
 };
 
 /// The pinned image: version, digest and license terms go together.
-pub const IMAGE: &str = "mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04@sha256:e10cd49443c94dbdcb7a050987db22ff4d8c87052ac53768abe1ed848d3fcef6";
+pub const IMAGE: &str = "mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04@sha256:4525e3efac9f3e241cb003bb2ff2a82818b502f37e12049d788b1a9fa7e13b7f";
 pub const VERSION_LABEL: &str = "SQL Server 2022 (CU28), edição Developer";
 pub const TERMS_URL: &str = "https://www.microsoft.com/en-us/Useterms/Retail/SQLServer2022/SQLServer2022DeveloperExpressEvaluation/Useterms_Retail_SQLServer2022_SQLServer2022DeveloperExpressEvaluation_English.htm";
 /// The image download, for the confirmation.
-pub const APPROXIMATE_DOWNLOAD: &str = "cerca de 1,5 GB";
+pub const APPROXIMATE_DOWNLOAD: &str = "cerca de 500 MB";
+/// The image once extracted by the engine (checked by `examples/sql_server_check.rs`).
+pub const APPROXIMATE_SPACE: &str = "cerca de 1,6 GB";
 const LABEL: &str = "localcodepilot.servidor";
 const REGISTRY_FILE: &str = "sqlserver.json";
 const READY_TIMEOUT: Duration = Duration::from_secs(180);

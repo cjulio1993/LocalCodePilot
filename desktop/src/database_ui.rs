@@ -1503,6 +1503,13 @@ fn sql_server_confirmation_window(
                     old.volume()
                 ));
             }
+            ui.label(
+                RichText::new(format!(
+                    "Espaço em disco depois do preparo: {}",
+                    sql_server_container::APPROXIMATE_SPACE
+                ))
+                .color(theme::MUTED),
+            );
             ui.add_space(6.0);
             ui.label(
                 RichText::new(format!(
@@ -2117,7 +2124,7 @@ mod tests {
         // What is downloaded and where the data stays, before any choice.
         find(
             &nodes,
-            "baixar a imagem oficial do SQL Server (cerca de 1,5 GB)",
+            "baixar a imagem oficial do SQL Server (cerca de 500 MB)",
         );
         find(&nodes, "Os dados ficarão num volume do Docker");
         find(

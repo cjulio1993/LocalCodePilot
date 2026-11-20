@@ -106,6 +106,26 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Ok(output) = std::process::Command::new(&engine)
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            "{{.Size}}",
+            sql_server_container::IMAGE,
+        ])
+        .output()
+    {
+        let bytes: u64 = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        println!(
+            "imagem extraída: {} MB (o app diz {})",
+            bytes / 1_000_000,
+            sql_server_container::APPROXIMATE_SPACE
+        );
+    }
     check(
         "preparado e rodando",
         sql_server_container::state(&server, None) == Ok(ContainerState::Running),
