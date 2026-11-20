@@ -510,30 +510,84 @@ pub fn prepare(
     fs::write(server.folder.join(IDENTITY_FILE), &server.id)
         .map_err(io("não foi possível marcar a pasta do banco"))?;
     save_server(root, &server)?;
+    let result = initialize_and_start(&mut server, root, &password);
+    // The programs never get the password on their command line, but a server may echo
+    // part of a failed statement of its init file (MySQL writes "near '...'"). Whatever
+    // happened, the log and the error carry no copy of it.
+    scrub_file(&server.log_file(), &password);
+    result.map_err(|error| error.scrubbed(&password))?;
+    Ok(server)
+}
+
+fn initialize_and_start(
+    server: &mut ManagedServer,
+    root: &Path,
+    password: &str,
+) -> Result<(), ServerError> {
     match server.engine.as_str() {
         "postgresql" => {
-            initialize_postgres(&server, root, &password)?;
-            start(&mut server, root)?;
+            initialize_postgres(server, root, password)?;
+            start(server, root)?;
         }
         _ => {
-            initialize_mysql(&server)?;
-            let init = SecretFile::create(root, &mysql_init_sql(&password))?;
-            let started = start_with(&mut server, root, Some(&init));
-            // The init file runs before the server opens its port: once the port answers,
-            // it was consumed. It goes now, whatever happened.
+            initialize_mysql(server)?;
+            let init = SecretFile::create(root, &mysql_init_sql(password))?;
+            let started = start_with(server, root, Some(&init));
+            // The server writes "ready for connections" only after running its init file:
+            // once the start returns, the file was consumed. It goes now, whatever happened.
             let removed = init.remove();
             started?;
             if let Err(error) = removed {
                 // A server created in this operation that never accepted a connection: the
                 // only case where the app ends a server itself. The folder is kept.
-                abandon_fresh_server(&server);
+                abandon_fresh_server(server);
                 return Err(error);
             }
         }
     }
-    save_server(root, &server)?;
-    admin_check(&server, &password)?;
-    Ok(server)
+    save_server(root, server)?;
+    admin_check(server, password)
+}
+
+const MASK: &str = "••••";
+
+/// `text` with every copy of `secret` replaced by the mask.
+fn scrub(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_owned()
+    } else {
+        text.replace(secret, MASK)
+    }
+}
+
+/// Rewrites `path` without any copy of `secret` (only when it has one).
+fn scrub_file(path: &Path, secret: &str) {
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    if secret.is_empty() || !text.contains(secret) {
+        return;
+    }
+    let partial = path.with_extension("log.part");
+    if fs::write(&partial, scrub(&text, secret)).is_ok() {
+        let _ = fs::rename(&partial, path);
+    }
+}
+
+impl ServerError {
+    fn scrubbed(self, secret: &str) -> Self {
+        match self {
+            Self::StartFailed { detail, log } => Self::StartFailed {
+                detail: scrub(&detail, secret),
+                log: scrub(&log, secret),
+            },
+            Self::Authentication(detail) => Self::Authentication(scrub(&detail, secret)),
+            Self::Io(detail) => Self::Io(scrub(&detail, secret)),
+            Self::Vault(detail) => Self::Vault(scrub(&detail, secret)),
+            other => other,
+        }
+    }
 }
 
 fn initialize_postgres(
@@ -653,6 +707,8 @@ fn start_with(
         .append(true)
         .open(server.log_file())
         .map_err(io("não foi possível abrir o log do banco"))?;
+    // Only what this start writes counts as its readiness.
+    let log_start = log.metadata().map(|meta| meta.len()).unwrap_or(0);
     let errors = log
         .try_clone()
         .map_err(io("não foi possível abrir o log do banco"))?;
@@ -667,7 +723,10 @@ fn start_with(
         .map_err(io("não foi possível iniciar o banco"))?;
     server.process_id = Some(child.id());
     server.started_at = ports::process_started_at(child.id());
-    let waited = wait_for_port(&mut child, server.port, START_TIMEOUT);
+    // MySQL and MariaDB are ready, and have run their init file, only when they write
+    // "ready for connections": MariaDB opens its port before it reads the init file.
+    let ready_line = (server.engine != "postgresql").then(|| (server.log_file(), log_start));
+    let waited = wait_until_ready(&mut child, server.port, ready_line, START_TIMEOUT);
     save_server(root, server)?;
     waited.map_err(|detail| ServerError::StartFailed {
         detail,
@@ -675,11 +734,27 @@ fn start_with(
     })
 }
 
-fn wait_for_port(child: &mut Child, port: u16, timeout: Duration) -> Result<(), String> {
+/// Whether the log, from byte `from`, has the server's "ready for connections" line.
+fn log_says_ready(log: &Path, from: u64) -> bool {
+    fs::read(log).is_ok_and(|bytes| {
+        let start = usize::try_from(from).unwrap_or(usize::MAX).min(bytes.len());
+        String::from_utf8_lossy(&bytes[start..]).contains("ready for connections")
+    })
+}
+
+fn wait_until_ready(
+    child: &mut Child,
+    port: u16,
+    ready_line: Option<(PathBuf, u64)>,
+    timeout: Duration,
+) -> Result<(), String> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let started = Instant::now();
     loop {
-        if TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_ok() {
+        let ready = ready_line
+            .as_ref()
+            .is_none_or(|(log, from)| log_says_ready(log, *from));
+        if ready && TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_ok() {
             return Ok(());
         }
         if let Ok(Some(status)) = child.try_wait() {
@@ -726,7 +801,8 @@ pub fn stop(server: &mut ManagedServer, root: &Path, vault: &dyn Vault) -> Resul
         }
         _ => {
             let password = server.admin_password(vault)?;
-            mysql_admin(server, &password, "SHUTDOWN")?;
+            mysql_admin(server, &password, "SHUTDOWN")
+                .map_err(|error| error.scrubbed(&password))?;
         }
     }
     // Stopped means the process has ended, not only that the port closed: MySQL closes the
@@ -779,6 +855,7 @@ pub fn admin_check(server: &ManagedServer, password: &str) -> Result<(), ServerE
         "postgresql" => postgres_admin(server, password, "SELECT 1"),
         _ => mysql_admin(server, password, "SELECT 1"),
     }
+    .map_err(|error| error.scrubbed(password))
 }
 
 fn postgres_admin(server: &ManagedServer, password: &str, sql: &str) -> Result<(), ServerError> {
@@ -1009,6 +1086,53 @@ mod tests {
         fn read(&self, target: &str) -> Result<Option<String>, String> {
             Ok(self.0.borrow().get(target).cloned())
         }
+    }
+
+    #[test]
+    fn only_a_ready_line_written_by_this_start_counts() {
+        let root = std::env::temp_dir().join(format!("lcp-ready-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("servidor.log");
+        // A previous start already wrote it: it does not count for the next one.
+        let old = "mysqld.exe: ready for connections. Version: '9.7.4'\n";
+        fs::write(&log, old).unwrap();
+        assert!(!log_says_ready(&log, old.len() as u64));
+        // MariaDB opens its socket before running the init file: not ready yet.
+        let mut text = old.to_owned();
+        text.push_str("Server socket created on IP: '127.0.0.1', port: '53377'.\n");
+        fs::write(&log, &text).unwrap();
+        assert!(!log_says_ready(&log, old.len() as u64));
+        text.push_str("mariadbd.exe: ready for connections.\n");
+        fs::write(&log, &text).unwrap();
+        assert!(log_says_ready(&log, old.len() as u64));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_secret_echoed_by_the_server_never_reaches_the_log_or_the_error() {
+        let root = std::env::temp_dir().join(format!("lcp-scrub-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("servidor.log");
+        // What MySQL writes for a failed init statement: "near '...'" with the rest of it.
+        fs::write(
+            &log,
+            "[ERROR] 1064 You have an error in your SQL syntax ... near 'IDENTIFIED BY 'MARCA-SECRETA-123'' at line 1\n",
+        )
+        .unwrap();
+        scrub_file(&log, "MARCA-SECRETA-123");
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(!text.contains("MARCA-SECRETA-123"));
+        assert!(text.contains("near 'IDENTIFIED BY '••••''"));
+        let error = ServerError::StartFailed {
+            detail: "falhou com MARCA-SECRETA-123".into(),
+            log: text.clone(),
+        }
+        .scrubbed("MARCA-SECRETA-123");
+        assert!(!format!("{error:?}").contains("MARCA-SECRETA-123"));
+        let error =
+            ServerError::Authentication("MARCA-SECRETA-123".into()).scrubbed("MARCA-SECRETA-123");
+        assert_eq!(error, ServerError::Authentication("••••".into()));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
