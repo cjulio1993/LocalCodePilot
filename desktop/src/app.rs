@@ -12,11 +12,9 @@ mod language_ui;
 mod notice;
 #[path = "project_ui.rs"]
 mod project_ui;
-#[path = "update_progress_ui.rs"]
-mod update_progress_ui;
 
 use crate::{
-    config, theme,
+    config, theme, update_progress_ui,
     updates::{
         self, UpdateFailure, UpdateFailureKind, UpdateInfo, UpdateInstallEvent, UpdatePhase,
     },
@@ -693,16 +691,7 @@ pub struct LocalCodePilot {
 impl LocalCodePilot {
     pub fn new(cc: &eframe::CreationContext<'_>, startup_update: updates::StartupUpdate) -> Self {
         theme::configure(&cc.egui_ctx);
-        let mut fonts = eframe::egui::FontDefinitions::default();
-        let icon_font = "phosphor";
-        fonts.font_data.insert(
-            icon_font.into(),
-            egui::FontData::from_static(egui_phosphor::Variant::Regular.font_bytes()).into(),
-        );
-        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-            family.insert(family.len().min(1), icon_font.into());
-        }
-        cc.egui_ctx.set_fonts(fonts);
+        theme::install_fonts(&cc.egui_ctx);
         let default_source = FilesystemProjectSource::common_locations();
         let (saved_roots, scan_root_migration) =
             migrate_scan_roots(config::load_scan_roots(), default_source.roots());
@@ -1046,8 +1035,11 @@ impl LocalCodePilot {
         match updates::launch_prepared_update(prepared) {
             Ok(()) => {
                 // The updater waits for this process to exit; a short pause
-                // lets the person read "Reiniciando" before the window closes.
-                self.update_restart_at = Some(Instant::now() + Duration::from_millis(1200));
+                // lets the person read "Instalando" before the window closes.
+                // The updater window goes on from that same step.
+                self.update_restart_at = Some(
+                    Instant::now() + Duration::from_millis(1200) + updates::test_close_delay(),
+                );
                 ctx.request_repaint();
             }
             Err(error) => {

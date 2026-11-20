@@ -30,3 +30,17 @@ pub fn configure(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(12.0, 8.0);
     });
 }
+
+/// The default fonts plus the Phosphor icons used in labels.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let icon_font = "phosphor";
+    fonts.font_data.insert(
+        icon_font.into(),
+        egui::FontData::from_static(egui_phosphor::Variant::Regular.font_bytes()).into(),
+    );
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        family.insert(family.len().min(1), icon_font.into());
+    }
+    ctx.set_fonts(fonts);
+}

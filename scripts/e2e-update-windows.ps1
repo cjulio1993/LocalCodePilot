@@ -19,6 +19,7 @@
       queda-no-meio      o servidor cai durante o download: nada é trocado;
       rollback           a versão nova fecha ao iniciar: a anterior volta;
       confirmacao-lenta  a versão nova demora mais que a espera do atualizador;
+      fechamento-lento   o app demora a fechar: a janela do atualizador diz que está aguardando;
       sem-conexao        o feed não responde: nenhum aviso de atualização;
       assinatura-invalida  os checksums foram assinados com outra chave: nada é baixado nem trocado;
       processos-ativos   com um projeto rodando, pergunta antes de baixar; Agora não mantém tudo;
@@ -40,7 +41,7 @@
     .\scripts\e2e-update-windows.ps1 -Cenario sucesso,rollback -Recompilar
 #>
 param(
-    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download', 'instalador-sucesso', 'instalador-falha', 'instalador-nao-abriu')]
+    [ValidateSet('todos', 'sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'fechamento-lento', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download', 'instalador-sucesso', 'instalador-falha', 'instalador-nao-abriu')]
     [string[]]$Cenario = @('todos'),
     [string]$Pasta = (Join-Path ([IO.Path]::GetTempPath()) 'lcp-e2e-update'),
     [switch]$Recompilar,
@@ -56,7 +57,7 @@ $versaoAntiga = '0.4.0-alpha.90'
 $versaoNova = '0.4.0-alpha.91'
 # AppId do instalador descartável: nunca o da instalação real.
 $appIdDoTeste = '{7D1E2E57-0A11-4C0D-8E2E-5E7E57A1B2C3}'
-$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download', 'instalador-sucesso', 'instalador-falha', 'instalador-nao-abriu')
+$todos = @('sucesso', 'sha-errado', 'queda-no-meio', 'rollback', 'confirmacao-lenta', 'fechamento-lento', 'sem-conexao', 'assinatura-invalida', 'processos-ativos', 'processo-durante-download', 'instalador-sucesso', 'instalador-falha', 'instalador-nao-abriu')
 if ($Cenario -contains 'todos') { $Cenario = $todos }
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
@@ -210,6 +211,11 @@ function Find-Botao([int]$ProcessId, [string]$Nome) {
 }
 
 function Save-Janela([int]$ProcessId, [string]$Arquivo) {
+    # A janela do atualizador pode fechar a qualquer momento: sem ela, não há captura.
+    try { Save-JanelaAgora $ProcessId $Arquivo } catch {}
+}
+
+function Save-JanelaAgora([int]$ProcessId, [string]$Arquivo) {
     $janela = Get-Janela $ProcessId
     if (-not $janela) { return }
     if (-not ('E2eJanela' -as [type])) {
@@ -265,6 +271,46 @@ function Wait-Ate([scriptblock]$Condicao, [int]$Segundos) {
         Start-Sleep -Milliseconds 500
     }
     $null
+}
+
+# A janela do atualizador (T002.11): o atualizador roda da pasta TEMP do cenário.
+# Guarda o título e os textos vistos e salva uma captura de cada estado.
+$tituloDoAtualizador = 'Atualizando o LocalCodePilot'
+$avisoDoAtualizador = 'Você pode fechar esta janela. A atualização continuará.'
+$estadosDoAtualizador = [ordered]@{
+    'Instalando a atualização...'           = 'instalando'
+    'Aguardando o LocalCodePilot fechar...' = 'aguardando'
+    'Reiniciando o LocalCodePilot...'       = 'reiniciando'
+}
+# -FecharEm: ao ver esse estado, fecha a janela (como o X) e confere que o atualizador continua.
+function Watch-Atualizador([string]$PastaTemp, [hashtable]$Vistos, [string]$Prefixo, [string]$FecharEm = '') {
+    $processos = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -like "$PastaTemp\*" } catch { $false } })
+    foreach ($processo in $processos) {
+        $janela = try { Get-Janela $processo.Id } catch { $null }
+        if (-not $janela) { continue }
+        $Vistos["titulo:$($janela.Current.Name)"] = $true
+        $textos = Get-TextosNaTela $processo.Id
+        foreach ($texto in $textos) { $Vistos[$texto] = $true }
+        if ($Capturas) {
+            foreach ($estado in $estadosDoAtualizador.Keys) {
+                $arquivo = "$Prefixo-$($estadosDoAtualizador[$estado]).png"
+                if (($textos -contains $estado) -and -not $Vistos.ContainsKey("captura:$arquivo")) {
+                    New-Item -ItemType Directory -Force $Capturas | Out-Null
+                    Save-Janela $processo.Id (Join-Path $Capturas $arquivo)
+                    $Vistos["captura:$arquivo"] = $true
+                }
+            }
+        }
+        if ($FecharEm -and ($textos -contains $FecharEm) -and -not $Vistos.ContainsKey('fechada:janela')) {
+            $janela.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+            $Vistos['fechada:janela'] = $true
+            # A janela some e o processo do atualizador continua (ele espera a versão nova).
+            $semJanela = [bool](Wait-Ate { -not (Get-Janela $processo.Id) } 5)
+            $processo.Refresh()
+            $Vistos['fechada:diagnostico'] = "sem janela: $semJanela; processo encerrado: $($processo.HasExited)"
+            $Vistos['fechada:atualizador continuou sem janela'] = $semJanela -and -not $processo.HasExited
+        }
+    }
 }
 
 # --- Um cenário --------------------------------------------------------------
@@ -342,11 +388,16 @@ function Invoke-Cenario([string]$Nome) {
 
     # Instância de teste isolada.
     $ambienteOriginal = @{}
-    foreach ($nomeVariavel in 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'LOCALCODEPILOT_TEST_FEED') {
+    foreach ($nomeVariavel in 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'LOCALCODEPILOT_TEST_FEED', 'LOCALCODEPILOT_TEST_CLOSE_DELAY') {
         $ambienteOriginal[$nomeVariavel] = [Environment]::GetEnvironmentVariable($nomeVariavel)
     }
     $env:APPDATA = $appdata.FullName; $env:LOCALAPPDATA = $localappdata.FullName
     $env:TEMP = $temp.FullName; $env:TMP = $temp.FullName; $env:LOCALCODEPILOT_TEST_FEED = $base
+    # O app demora 6 s a mais para fechar: a janela do atualizador passa a dizer que aguarda.
+    $env:LOCALCODEPILOT_TEST_CLOSE_DELAY = $(if ($Nome -eq 'fechamento-lento') { '6' } else { $null })
+    $vistosNoAtualizador = @{}
+    $vistosNoAppAoFechar = @{}
+    $atualizadorEncerrado = $false
     $app = $null
     $na_tela = ''
     $esperado = ''
@@ -421,6 +472,7 @@ function Invoke-Cenario([string]$Nome) {
                 'processos-ativos' { "LocalCodePilot atualizado para a versão $versaoNova." }
                 'processo-durante-download' { 'Há projetos em execução.' }
                 'confirmacao-lenta' { "LocalCodePilot atualizado para a versão $versaoNova." }
+                'fechamento-lento' { "LocalCodePilot atualizado para a versão $versaoNova." }
                 'rollback' { "A versão $versaoAntiga foi restaurada e continua em uso" }
                 # Falhas aparecem em camadas (T002.07): o título simples fica na tela e o erro
                 # técnico fica recolhido em "Detalhes técnicos".
@@ -431,6 +483,13 @@ function Invoke-Cenario([string]$Nome) {
             $falhaNoDownload = $Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida'
             $naMesmaJanela = $falhaNoDownload -or $Nome -eq 'processo-durante-download'
             $na_tela = Wait-Ate {
+                if (-not $naMesmaJanela) {
+                    Watch-Atualizador $temp.FullName $vistosNoAtualizador "atualizador-$Nome" `
+                        $(if ($Nome -eq 'confirmacao-lenta') { 'Reiniciando o LocalCodePilot...' } else { '' })
+                    if (-not $app.HasExited) {
+                        foreach ($texto in Get-TextosNaTela $app.Id) { $vistosNoAppAoFechar[$texto] = $true }
+                    }
+                }
                 $processos = if ($naMesmaJanela) { @($app) } else {
                     @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo -and $_.Id -ne $app.Id } catch { $false } })
                 }
@@ -478,10 +537,10 @@ function Invoke-Cenario([string]$Nome) {
                 }
             }
         }
-        # O atualizador e a limpeza terminam antes de conferir os arquivos.
-        Wait-Ate {
+        # O atualizador (e a janela dele) e a limpeza terminam antes de conferir os arquivos.
+        $atualizadorEncerrado = [bool](Wait-Ate {
             -not (Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -like "$($temp.FullName)\*" } catch { $false } })
-        } 60 | Out-Null
+        } 60)
         Start-Sleep -Seconds 3
 
         $atualizacoes = Join-Path $temp.FullName 'LocalCodePilot\updates'
@@ -498,7 +557,7 @@ function Invoke-Cenario([string]$Nome) {
             app_aberto = [bool](Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo } catch { $false } })
         }
 
-        $exeEsperado = if ($Nome -in 'sucesso', 'confirmacao-lenta', 'processos-ativos') { $versaoNova } else { $versaoAntiga }
+        $exeEsperado = if ($Nome -in 'sucesso', 'confirmacao-lenta', 'fechamento-lento', 'processos-ativos') { $versaoNova } else { $versaoAntiga }
         $checagens = [ordered]@{
             'texto esperado na tela' = [bool]$na_tela
             "executável final é $exeEsperado" = $resultado.exe_final -eq $exeEsperado
@@ -524,9 +583,31 @@ function Invoke-Cenario([string]$Nome) {
             $checagens['Agora não: nada instalado e o projeto continua rodando'] = $agoraNaoManteve
             $checagens['arquivo preparado descartado'] = $resultado.preparos_em_temp -eq 0
         }
-        if ($Nome -in 'sucesso', 'confirmacao-lenta') {
+        if ($Nome -in 'sucesso', 'confirmacao-lenta', 'fechamento-lento') {
             $checagens["cópia das configurações em backups\antes-de-$versaoNova"] = $resultado.copia_das_configuracoes -eq "antes-de-$versaoNova"
             $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
+        }
+        if ($Nome -in 'sucesso', 'confirmacao-lenta', 'fechamento-lento', 'rollback', 'processos-ativos') {
+            # T002.11: a janela do atualizador cobre o intervalo com o app fechado e some sozinha.
+            $resultado.janela_do_atualizador = @($vistosNoAtualizador.Keys | Where-Object { $_ -notlike 'captura:*' -and $_ -notlike 'fechada:*' } | Sort-Object) -join ' | '
+            $checagens["janela do atualizador com o título '$tituloDoAtualizador'"] = $vistosNoAtualizador.ContainsKey("titulo:$tituloDoAtualizador")
+            $checagens['janela do atualizador explica que pode ser fechada'] = $vistosNoAtualizador.ContainsKey($avisoDoAtualizador)
+            $checagens['janela do atualizador mostra Instalando ou Reiniciando'] = $vistosNoAtualizador.ContainsKey('Instalando a atualização...') -or
+                $vistosNoAtualizador.ContainsKey('Reiniciando o LocalCodePilot...')
+            $checagens['janela do atualizador nunca mostra o resultado'] = -not ($vistosNoAtualizador.Keys | Where-Object { $_ -like 'LocalCodePilot atualizado*' -or $_ -like '*foi restaurada*' })
+            $checagens['atualizador e janela encerrados sozinhos'] = $atualizadorEncerrado
+        }
+        if ($Nome -eq 'confirmacao-lenta') {
+            # O X só esconde a janela: o atualizador continua e a versão nova confirma sozinha.
+            $checagens['janela do atualizador fechada pelo X durante Reiniciando'] = $vistosNoAtualizador.ContainsKey('fechada:janela')
+            $resultado.depois_do_x = $vistosNoAtualizador['fechada:diagnostico']
+            $checagens['atualizador continuou depois do X'] = $vistosNoAtualizador['fechada:atualizador continuou sem janela'] -eq $true
+        }
+        if ($Nome -eq 'fechamento-lento') {
+            $resultado.app_ao_fechar = @($vistosNoAppAoFechar.Keys | Sort-Object) -join ' | '
+            $checagens["app mostra 'Instalando a atualização...' antes de fechar"] = $vistosNoAppAoFechar.ContainsKey('Instalando a atualização...')
+            $checagens["janela do atualizador mostra 'Aguardando o LocalCodePilot fechar...'"] = $vistosNoAtualizador.ContainsKey('Aguardando o LocalCodePilot fechar...')
+            $checagens['janela do atualizador mostra Reiniciando depois de aguardar'] = $vistosNoAtualizador.ContainsKey('Reiniciando o LocalCodePilot...')
         }
         if ($Nome -in 'sha-errado', 'queda-no-meio', 'assinatura-invalida') {
             $checagens['pasta de preparo removida'] = $resultado.preparos_em_temp -eq 0
@@ -714,7 +795,9 @@ function Invoke-CenarioInstalador([string]$Nome) {
             'instalador-nao-abriu' { "A versão $versaoNova não abriu. Restauramos o aplicativo e as configurações da versão $versaoAntiga; você pode continuar trabalhando. A lista de programas do Windows ainda pode mostrar a versão $versaoNova. Tente novamente mais tarde ou baixe o instalador na página oficial." }
         }
         $reaberto = $null
+        $vistosNoAtualizador = @{}
         $na_tela = Wait-Ate {
+            Watch-Atualizador $temp.FullName $vistosNoAtualizador "atualizador-$Nome"
             foreach ($processo in @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $alvo -and $_.Id -ne $app.Id } catch { $false } })) {
                 $texto = (Get-TextosNaTela $processo.Id) | Where-Object {
                     if ($Nome -eq 'instalador-falha') { $_ -eq $esperado } else { $_.Contains($esperado) }
@@ -741,9 +824,9 @@ function Invoke-CenarioInstalador([string]$Nome) {
             Save-Janela $reaberto (Join-Path $Capturas "atualizacao-$Nome.png")
         }
 
-        Wait-Ate {
+        $atualizadorEncerrado = [bool](Wait-Ate {
             -not (Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -like "$($temp.FullName)\*" } catch { $false } })
-        } 60 | Out-Null
+        } 60)
         Start-Sleep -Seconds 3
 
         $atualizacoes = Join-Path $temp.FullName 'LocalCodePilot\updates'
@@ -751,6 +834,7 @@ function Invoke-CenarioInstalador([string]$Nome) {
         $resultado = [ordered]@{
             cenario = $Nome
             na_tela = $(if ($na_tela) { $na_tela } else { '(texto esperado não apareceu)' })
+            janela_do_atualizador = @($vistosNoAtualizador.Keys | Where-Object { $_ -notlike 'captura:*' } | Sort-Object) -join ' | '
             exe_final = $(if ($shaFinal -eq $shaNova) { $versaoNova } elseif ($shaFinal -eq $shaAntiga) { $versaoAntiga } else { 'outro' })
             versao_na_lista_de_programas = Get-VersaoRegistrada
             sobras_na_instalacao = @(Get-ChildItem -LiteralPath $instalacao -File | Where-Object { $_.Name -notin $arquivosDoInstalador } | ForEach-Object Name) -join ', '
@@ -771,6 +855,12 @@ function Invoke-CenarioInstalador([string]$Nome) {
             'registro da atualização removido' = -not $resultado.registro_da_atualizacao
             'app aberto no fim' = $resultado.app_aberto
             'aviso ao reabrir inteiro dentro da janela' = $avisoInteiro
+            # T002.11: a janela do atualizador acompanha o instalador e nunca mostra o resultado.
+            "janela do atualizador com o título '$tituloDoAtualizador'" = $vistosNoAtualizador.ContainsKey("titulo:$tituloDoAtualizador")
+            "janela do atualizador mostra 'Instalando a atualização...'" = $vistosNoAtualizador.ContainsKey('Instalando a atualização...')
+            'janela do atualizador explica que pode ser fechada' = $vistosNoAtualizador.ContainsKey($avisoDoAtualizador)
+            'janela do atualizador nunca mostra o resultado' = -not ($vistosNoAtualizador.Keys | Where-Object { $_ -like 'LocalCodePilot atualizado*' -or $_ -like '*não foi concluída*' -or $_ -like '*não abriu*' })
+            'atualizador e janela encerrados sozinhos' = $atualizadorEncerrado
         }
         if ($Nome -eq 'instalador-sucesso') {
             $checagens['instalador novo baixado (não o executável)'] = (Get-Content -LiteralPath (Join-Path $raiz 'servidor.log') -ErrorAction SilentlyContinue) -match [regex]::Escape($nomeSetup)

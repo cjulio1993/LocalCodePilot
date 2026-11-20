@@ -1,25 +1,28 @@
-//! Progress of an in-app update: the steps Baixar › Verificar › Reiniciar, the
-//! download bar and one status line. Shared by the update banner and
-//! Configurações > Atualizações, so both always say the same thing.
+//! Progress of an update: the steps Baixar › Verificar › Instalar › Reiniciar,
+//! the download bar and one status line. Shared by the update banner,
+//! Configurações > Atualizações and the updater window, so all of them always
+//! say the same thing.
 
 use eframe::egui::{self, RichText};
 use egui_phosphor::regular::{CARET_RIGHT, CHECK_CIRCLE, CIRCLE, RECORD};
 
 use crate::{theme, updates::UpdatePhase};
 
-/// The steps the person sees. Installing happens after the app closes, in the
-/// updater, so it is not a step of this screen.
+/// The steps the person sees. The app shows the first three; once it closes,
+/// the updater window goes on with Instalar and Reiniciar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum UpdateStep {
+pub(crate) enum UpdateStep {
     Download,
     Verify,
+    Install,
     Restart,
 }
 
 impl UpdateStep {
-    const ALL: [UpdateStep; 3] = [
+    const ALL: [UpdateStep; 4] = [
         UpdateStep::Download,
         UpdateStep::Verify,
+        UpdateStep::Install,
         UpdateStep::Restart,
     ];
 
@@ -27,26 +30,30 @@ impl UpdateStep {
         match self {
             UpdateStep::Download => "Baixar",
             UpdateStep::Verify => "Verificar",
+            UpdateStep::Install => "Instalar",
             UpdateStep::Restart => "Reiniciar",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UpdateProgress {
+pub(crate) struct UpdateProgress {
     pub step: UpdateStep,
     pub downloaded_bytes: u64,
     pub total_bytes: Option<u64>,
+    /// The updater is still waiting for the app to close, for longer than usual.
+    pub waiting_for_app: bool,
 }
 
 impl UpdateProgress {
-    pub(super) fn new(
+    /// The app's progress, until it closes for the updater.
+    pub(crate) fn new(
         phase: Option<UpdatePhase>,
         progress: Option<(u64, Option<u64>)>,
-        restarting: bool,
+        installing: bool,
     ) -> Self {
-        let step = if restarting {
-            UpdateStep::Restart
+        let step = if installing {
+            UpdateStep::Install
         } else if phase == Some(UpdatePhase::Verifying) {
             UpdateStep::Verify
         } else {
@@ -57,11 +64,22 @@ impl UpdateProgress {
             step,
             downloaded_bytes,
             total_bytes: total_bytes.filter(|total| *total > 0),
+            waiting_for_app: false,
+        }
+    }
+
+    /// The updater window's progress, after the download was verified.
+    pub(crate) fn after_close(step: UpdateStep, waiting_for_app: bool) -> Self {
+        Self {
+            step,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            waiting_for_app: waiting_for_app && step == UpdateStep::Install,
         }
     }
 
     /// Share of the download, only when the server sent the total size.
-    pub(super) fn fraction(&self) -> Option<f32> {
+    pub(crate) fn fraction(&self) -> Option<f32> {
         if self.step != UpdateStep::Download {
             return None;
         }
@@ -69,9 +87,13 @@ impl UpdateProgress {
         Some((self.downloaded_bytes as f64 / total as f64).clamp(0.0, 1.0) as f32)
     }
 
-    pub(super) fn status(&self) -> String {
+    pub(crate) fn status(&self) -> String {
         match self.step {
             UpdateStep::Restart => "Reiniciando o LocalCodePilot...".into(),
+            UpdateStep::Install if self.waiting_for_app => {
+                "Aguardando o LocalCodePilot fechar...".into()
+            }
+            UpdateStep::Install => "Instalando a atualização...".into(),
             UpdateStep::Verify => "Verificando a atualização...".into(),
             UpdateStep::Download if self.downloaded_bytes == 0 => {
                 "Baixando a atualização...".into()
@@ -92,7 +114,7 @@ impl UpdateProgress {
     }
 
     /// The steps as text, for screen readers and for the hover of the step row.
-    pub(super) fn steps_description(&self) -> String {
+    pub(crate) fn steps_description(&self) -> String {
         let position = UpdateStep::ALL
             .iter()
             .position(|step| *step == self.step)
@@ -111,7 +133,7 @@ fn megabytes(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / (1024.0 * 1024.0)).replace('.', ",")
 }
 
-pub(super) fn show(ui: &mut egui::Ui, progress: &UpdateProgress) {
+pub(crate) fn show(ui: &mut egui::Ui, progress: &UpdateProgress) {
     // Each step has its own symbol (done, current, next) besides the color, and
     // the current one is bold, so the row does not depend on color alone.
     let steps = ui
@@ -172,7 +194,7 @@ mod tests {
             "Baixando a atualização · 42% · 6,3 de 15,0 MB"
         );
         assert!((progress.fraction().unwrap() - 0.42).abs() < 0.001);
-        assert_eq!(progress.steps_description(), "Etapa 1 de 3: Baixar");
+        assert_eq!(progress.steps_description(), "Etapa 1 de 4: Baixar");
     }
 
     #[test]
@@ -204,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn verifying_and_restarting_replace_the_bar() {
+    fn verifying_and_installing_replace_the_bar() {
         let verifying = UpdateProgress::new(
             Some(UpdatePhase::Verifying),
             Some((15 * MIB, Some(15 * MIB))),
@@ -213,11 +235,31 @@ mod tests {
         assert_eq!(verifying.step, UpdateStep::Verify);
         assert_eq!(verifying.status(), "Verificando a atualização...");
         assert_eq!(verifying.fraction(), None);
-        assert_eq!(verifying.steps_description(), "Etapa 2 de 3: Verificar");
+        assert_eq!(verifying.steps_description(), "Etapa 2 de 4: Verificar");
 
-        let restarting = UpdateProgress::new(Some(UpdatePhase::Verifying), None, true);
-        assert_eq!(restarting.step, UpdateStep::Restart);
+        // The app shows Instalar before closing, so the updater window goes on
+        // from the same step and the sequence never goes back.
+        let installing = UpdateProgress::new(Some(UpdatePhase::Verifying), None, true);
+        assert_eq!(installing.step, UpdateStep::Install);
+        assert_eq!(installing.status(), "Instalando a atualização...");
+        assert_eq!(installing.fraction(), None);
+        assert_eq!(installing.steps_description(), "Etapa 3 de 4: Instalar");
+    }
+
+    #[test]
+    fn the_updater_window_installs_waits_and_restarts() {
+        let installing = UpdateProgress::after_close(UpdateStep::Install, false);
+        assert_eq!(installing.status(), "Instalando a atualização...");
+        assert_eq!(installing.steps_description(), "Etapa 3 de 4: Instalar");
+
+        let waiting = UpdateProgress::after_close(UpdateStep::Install, true);
+        assert_eq!(waiting.status(), "Aguardando o LocalCodePilot fechar...");
+        assert_eq!(waiting.steps_description(), "Etapa 3 de 4: Instalar");
+
+        // Waiting only applies before installing; restarting says so.
+        let restarting = UpdateProgress::after_close(UpdateStep::Restart, true);
         assert_eq!(restarting.status(), "Reiniciando o LocalCodePilot...");
-        assert_eq!(restarting.steps_description(), "Etapa 3 de 3: Reiniciar");
+        assert_eq!(restarting.steps_description(), "Etapa 4 de 4: Reiniciar");
+        assert_eq!(restarting.fraction(), None);
     }
 }
