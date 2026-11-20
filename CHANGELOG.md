@@ -16,6 +16,14 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
   As etapas e os comandos executados não mudaram.
 
+- Os erros de atualização aparecem em camadas. Antes, o app mostrava o erro técnico ("Atualização automática: ...") e o link **Baixar o ZIP manualmente**, inclusive quando o arquivo tinha sido recusado por segurança. Agora a primeira linha diz o que aconteceu em linguagem simples, e a segunda confirma que a versão atual continua funcionando:
+  - sem conexão ou resposta inesperada ao verificar: **Não foi possível verificar atualizações**, com **Tentar de novo**;
+  - queda durante o download: **O download foi interrompido**, com **Tentar de novo** e **Ver página oficial da versão**;
+  - checksum, assinatura ou arquivo inválido: **Atualização recusada por segurança**. Não há **Tentar de novo** nem download direto; a ação é **Consultar página oficial da versão**, e o texto pede para não instalar manualmente aquela atualização;
+  - problema neste computador (pasta sem permissão, disco): **Não foi possível preparar a atualização**, com **Tentar de novo**.
+
+  O erro original continua em **Detalhes técnicos**, com **Copiar erro técnico**.
+
 ## [0.4.0-alpha.9] - 2026-11-19
 
 ### Segurança
