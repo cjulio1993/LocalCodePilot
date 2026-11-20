@@ -309,11 +309,30 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     // A SQLite file that does not exist yet is created when the project starts; only a
     // database server that does not answer keeps the project from starting.
     if environment.is_ready()
-        && !environment.databases.iter().any(|(database, available)| {
-            *available == Some(false) && database.engine != DatabaseEngine::Sqlite
-        })
+        && !environment
+            .databases
+            .iter()
+            .any(|database| database.not_running() || database.rejection().is_some())
     {
         return summary(ProjectState::Stopped, None, PrimaryAction::Start);
+    }
+    // A database server that is not running, before any start, is not a failure: the project
+    // is stopped and says why. A refused login or a missing database is a problem.
+    if environment.is_ready()
+        && environment
+            .databases
+            .iter()
+            .all(|database| database.rejection().is_none())
+        && environment
+            .databases
+            .iter()
+            .any(DatabaseStatus::not_running)
+    {
+        return summary(
+            ProjectState::Stopped,
+            Some("O banco de dados deste projeto não está rodando.".into()),
+            PrimaryAction::Details,
+        );
     }
     let reason = environment
         .problem_details()
@@ -358,15 +377,18 @@ fn only_dependencies_missing(environment: &ProjectEnvironment) -> bool {
 
 /// Only things a first preparation solves are missing: the project's dependencies or a
 /// language that is not installed. An incompatible version, missing PHP extensions or a
-/// database server that does not answer still need attention, so they stay "Com problema".
+/// database that refuses the project still need attention, so they stay "Com problema".
 fn only_needs_preparation(environment: &ProjectEnvironment) -> bool {
     let incompatible = environment
         .runtime_requirements
         .iter()
         .any(|requirement| matches!(requirement.status, RequirementStatus::Incompatible { .. }));
-    let database_down = environment.databases.iter().any(|(database, available)| {
-        *available == Some(false) && database.engine != DatabaseEngine::Sqlite
-    });
+    // A server that is not running is something to start, not a failure; a refused login or
+    // a missing database is.
+    let database_down = environment
+        .databases
+        .iter()
+        .any(|database| database.rejection().is_some());
     !incompatible
         && !database_down
         && environment.missing_php_extensions.is_empty()
@@ -1546,6 +1568,16 @@ impl ProjectCard<'_> {
         for line in self.summary.technical.iter().chain(&self.languages) {
             detail(ui, line);
         }
+        // Each database: where it is configured, the address tested, the result and when.
+        for database in self
+            .environment
+            .into_iter()
+            .flat_map(|environment| &environment.databases)
+        {
+            for line in database.technical() {
+                ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+            }
+        }
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(format!(
@@ -1716,6 +1748,112 @@ mod tests {
             container_url: None,
             languages: &[],
         }
+    }
+
+    fn database(available: Option<bool>, outcome: Option<ConnectionOutcome>) -> DatabaseStatus {
+        DatabaseStatus {
+            requirement: localcodepilot_runtime::databases::DatabaseRequirement {
+                source: std::path::PathBuf::from(".env"),
+                engine: DatabaseEngine::MySql,
+                host: Some("127.0.0.1".into()),
+                port: Some(3306),
+                compose_service: None,
+            },
+            available,
+            connection: outcome.map(|outcome| ConnectionTest {
+                outcome,
+                target: "127.0.0.1:3306".into(),
+                user: Some("app".into()),
+                database: Some("loja".into()),
+                insufficient: vec![],
+                at: std::time::SystemTime::now(),
+            }),
+        }
+    }
+
+    fn with_database(status: DatabaseStatus) -> ProjectEnvironment {
+        ProjectEnvironment {
+            databases: vec![status],
+            ..ready()
+        }
+    }
+
+    #[test]
+    fn only_an_authenticated_login_says_connected() {
+        let connected = database(Some(true), Some(ConnectionOutcome::Connected));
+        assert_eq!(connected.card_state(None), "Banco de dados conectado.");
+        // A port that answers, without a login test, is not a connection.
+        assert_eq!(
+            database(Some(true), None).card_state(None),
+            "conexão não verificada"
+        );
+        // A running container is not a connection either.
+        assert_eq!(
+            connected.card_state(Some(true)),
+            "Container ativo; conexão não verificada."
+        );
+        assert_eq!(
+            database(Some(true), Some(ConnectionOutcome::InsufficientData)).card_state(None),
+            "Conexão não verificada: faltam dados de acesso que o aplicativo consiga ler."
+        );
+        let summary = summarize_project(&facts(&with_database(connected)));
+        assert_eq!(summary.state, ProjectState::Stopped);
+        assert_eq!(summary.primary, PrimaryAction::Start);
+    }
+
+    #[test]
+    fn a_database_that_is_not_running_keeps_the_project_stopped_with_the_reason() {
+        for status in [
+            database(Some(false), None),
+            database(Some(true), Some(ConnectionOutcome::NotResponding)),
+        ] {
+            assert!(status.not_running());
+            let summary = summarize_project(&facts(&with_database(status)));
+            assert_eq!(summary.state, ProjectState::Stopped);
+            assert_eq!(
+                summary.reason.as_deref(),
+                Some("O banco de dados deste projeto não está rodando.")
+            );
+            assert_ne!(summary.primary, PrimaryAction::Start);
+        }
+    }
+
+    #[test]
+    fn a_refused_login_and_a_missing_database_are_problems_with_their_own_reason() {
+        let refused = summarize_project(&facts(&with_database(database(
+            Some(true),
+            Some(ConnectionOutcome::AccessDenied),
+        ))));
+        assert_eq!(refused.state, ProjectState::Problem);
+        assert_eq!(
+            refused.reason.as_deref(),
+            Some(
+                "O banco respondeu, mas não aceitou os dados de acesso deste projeto. Confira a configuração de conexão."
+            )
+        );
+        let missing = summarize_project(&facts(&with_database(database(
+            Some(true),
+            Some(ConnectionOutcome::DatabaseMissing),
+        ))));
+        assert_eq!(missing.state, ProjectState::Problem);
+        assert_eq!(
+            missing.reason.as_deref(),
+            Some(
+                "O banco respondeu, mas o banco de dados loja não foi encontrado. Confira a configuração de conexão."
+            )
+        );
+    }
+
+    #[test]
+    fn technical_details_show_the_tested_address_but_never_a_password() {
+        let lines = database(Some(true), Some(ConnectionOutcome::Connected)).technical();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("configurado em .env como 127.0.0.1:3306"));
+        assert!(
+            lines[1]
+                .starts_with("Conexão testada em 127.0.0.1:3306 com o usuário app no banco loja")
+        );
+        assert!(lines[1].ends_with(": conectado"));
     }
 
     #[test]

@@ -6,6 +6,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Alterado
+
+- O banco de dados de um projeto passa a ser testado com os dados de acesso do próprio projeto (banco, usuário e senha do `.env` ou do `wp-config.php`) quando roda neste computador, com PostgreSQL, MySQL ou MariaDB. O cartão só diz **Banco de dados conectado.** depois desse login; antes, uma porta aberta aparecia como "TCP acessível; login não verificado". O app diferencia o banco que não está rodando (o projeto fica **Parado**, com o motivo), o acesso recusado e o banco de dados que não existe (os dois ficam **Com problema**, com a orientação), e diz quando faltam dados de acesso que ele consiga ler. Para um banco do Compose, mostra "Container ativo; conexão não verificada.". **Detalhes técnicos** mostra onde está a configuração, o endereço testado, o usuário, o banco, o resultado e quando; a senha nunca aparece. A cada nova verificação dos projetos, o resultado anterior é descartado.
+
 ### Corrigido
 
 - Os cards de Projetos agora têm todos a mesma altura, com **Iniciar** e **Detalhes técnicos** alinhados na base, em qualquer número de colunas. Antes, cada card tinha a altura do próprio conteúdo, e a grade ficava irregular. O motivo do estado aparece em até 3 linhas; se for maior, termina em "…", e o texto completo fica ao passar o mouse, em **Detalhes técnicos** e para o leitor de tela. As tecnologias ficam numa linha, e as que não cabem viram "+N", com a lista completa nos mesmos lugares. Um card com **Detalhes técnicos** aberto cresce sem mudar os outros.

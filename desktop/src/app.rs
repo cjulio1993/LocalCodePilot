@@ -50,10 +50,18 @@ use localcodepilot_platform::{
         terminate_process_tree,
     },
 };
+use localcodepilot_runtime::database_connection::{
+    ConnectionOutcome, ConnectionTest, read_credentials, test_connection,
+};
 use localcodepilot_runtime::databases::{
     DatabaseEngine, DatabaseRequirement, detect_database_requirements, prepare_sqlite_database,
     probe_local_tcp, probe_sqlite_database,
 };
+
+/// The login test of a project's database runs during the project check: short enough not
+/// to hold the check, since a closed port is answered at once and only a server that
+/// answers is logged into.
+const DATABASE_LOGIN_TIMEOUT: Duration = Duration::from_secs(5);
 use localcodepilot_runtime::{
     ManifestRuntimeDetector, detect_clojure_java_requirement, detect_clojure_requirement,
     detect_dart_requirement, detect_go_requirement, detect_haskell_requirement,
@@ -372,9 +380,135 @@ struct ProjectEnvironment {
     runtime_requirements: Vec<RuntimeRequirement>,
     missing_php_extensions: Vec<String>,
     laravel_constraint: Option<String>,
-    databases: Vec<(DatabaseRequirement, Option<bool>)>,
+    databases: Vec<DatabaseStatus>,
     /// Manifests that exist but cannot be read, such as an invalid `package.json`.
     manifest_errors: Vec<String>,
+}
+
+/// A project's database, as the last check of the project saw it.
+#[derive(Debug, Clone)]
+pub(super) struct DatabaseStatus {
+    pub requirement: DatabaseRequirement,
+    /// SQLite: the file is fine. Servers: something answers on the configured local port.
+    /// `None`: not checked (remote host, Compose service, unknown port).
+    pub available: Option<bool>,
+    /// The authenticated login with the project's own access data, when the app tests it.
+    pub connection: Option<ConnectionTest>,
+}
+
+impl DatabaseStatus {
+    fn is_server(&self) -> bool {
+        self.requirement.engine != DatabaseEngine::Sqlite
+    }
+
+    /// The server does not answer: before any start the project stays "Parado".
+    pub(super) fn not_running(&self) -> bool {
+        self.is_server()
+            && (self.available == Some(false)
+                || matches!(
+                    self.connection.as_ref().map(|test| &test.outcome),
+                    Some(ConnectionOutcome::NotResponding)
+                ))
+    }
+
+    /// The server answered but did not let the project in: "Com problema", with the reason.
+    pub(super) fn rejection(&self) -> Option<String> {
+        let test = self.connection.as_ref()?;
+        match &test.outcome {
+            ConnectionOutcome::AccessDenied => Some(
+                "O banco respondeu, mas não aceitou os dados de acesso deste projeto. Confira a configuração de conexão.".into(),
+            ),
+            ConnectionOutcome::DatabaseMissing => Some(format!(
+                "O banco respondeu, mas o banco de dados {} não foi encontrado. Confira a configuração de conexão.",
+                test.database.as_deref().unwrap_or_default()
+            )),
+            _ => None,
+        }
+    }
+
+    /// What follows "Banco: {motor} · " on the card. Only an authenticated login says
+    /// "Banco de dados conectado."; a port or a running container proves nothing.
+    pub(super) fn card_state(&self, container_running: Option<bool>) -> String {
+        if !self.is_server() {
+            return match self.available {
+                Some(true) => "arquivo íntegro",
+                Some(false) => "arquivo será preparado ao iniciar",
+                None => "arquivo não verificado",
+            }
+            .into();
+        }
+        if self.requirement.compose_service.is_some() || container_running.is_some() {
+            return match container_running {
+                Some(true) => "Container ativo; conexão não verificada.",
+                Some(false) => "container do banco parado",
+                None => "serviço do Compose; inicie os containers",
+            }
+            .into();
+        }
+        match self.connection.as_ref().map(|test| &test.outcome) {
+            Some(ConnectionOutcome::Connected) => "Banco de dados conectado.".into(),
+            Some(ConnectionOutcome::AccessDenied | ConnectionOutcome::DatabaseMissing) => {
+                self.rejection().unwrap_or_default()
+            }
+            Some(ConnectionOutcome::NotResponding) => {
+                "O banco de dados deste projeto não está rodando.".into()
+            }
+            Some(ConnectionOutcome::InsufficientData) => {
+                "Conexão não verificada: faltam dados de acesso que o aplicativo consiga ler."
+                    .into()
+            }
+            Some(ConnectionOutcome::TimedOut) => {
+                "Conexão não verificada: o banco não respondeu a tempo.".into()
+            }
+            Some(ConnectionOutcome::Failed(_)) => {
+                "Conexão não verificada: o teste falhou (veja Detalhes técnicos).".into()
+            }
+            None if self.available == Some(false) => {
+                "O banco de dados deste projeto não está rodando.".into()
+            }
+            None => "conexão não verificada".into(),
+        }
+    }
+
+    /// "Detalhes técnicos": configuration, address actually tested, result and when, never the
+    /// password.
+    pub(super) fn technical(&self) -> Vec<String> {
+        let requirement = &self.requirement;
+        let mut lines = vec![format!(
+            "Banco {}: configurado em {} como {}:{}",
+            requirement.engine.label(),
+            display_path(&requirement.source),
+            requirement.host.as_deref().unwrap_or("?"),
+            requirement
+                .port
+                .map_or_else(|| "?".to_owned(), |port| port.to_string()),
+        )];
+        if let Some(test) = &self.connection {
+            let when = test
+                .at
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| relative_time(elapsed.as_secs()))
+                .unwrap_or_default();
+            let result = match &test.outcome {
+                ConnectionOutcome::Connected => "conectado".to_owned(),
+                ConnectionOutcome::AccessDenied => "acesso recusado pelo servidor".to_owned(),
+                ConnectionOutcome::DatabaseMissing => "o banco de dados não existe".to_owned(),
+                ConnectionOutcome::NotResponding => "nada respondeu no endereço".to_owned(),
+                ConnectionOutcome::TimedOut => "tempo esgotado".to_owned(),
+                ConnectionOutcome::InsufficientData => {
+                    format!("não testado: {}", test.insufficient.join(", "))
+                }
+                ConnectionOutcome::Failed(message) => format!("falhou: {message}"),
+            };
+            lines.push(format!(
+                "Conexão testada em {} com o usuário {} no banco {} ({when}): {result}",
+                test.target,
+                test.user.as_deref().unwrap_or("?"),
+                test.database.as_deref().unwrap_or("?"),
+            ));
+        }
+        lines
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -504,7 +638,7 @@ impl ProjectEnvironment {
         } else if self
             .databases
             .iter()
-            .any(|(_, available)| *available == Some(false))
+            .any(|database| database.not_running() || database.rejection().is_some())
         {
             ("Banco indisponível", Color32::from_rgb(255, 205, 75))
         } else if !self.is_ready() {
@@ -549,21 +683,15 @@ impl ProjectEnvironment {
                 "Instale as dependências de: {}",
                 self.missing_dependencies.join(", ")
             ))
-        } else if let Some((database, _)) = self
-            .databases
-            .iter()
-            .find(|(_, available)| *available == Some(false))
-        {
-            if database.engine == DatabaseEngine::Sqlite {
-                Some("Arquivo SQLite será preparado ao iniciar o ambiente".into())
-            } else {
-                Some(format!(
-                    "{} local em {}:{} não responde; inicie o servidor de banco",
-                    database.engine.label(),
-                    database.host.as_deref().unwrap_or("localhost"),
-                    database.port.unwrap_or_default()
-                ))
-            }
+        } else if let Some(rejection) = self.databases.iter().find_map(DatabaseStatus::rejection) {
+            Some(rejection)
+        } else if self.databases.iter().any(DatabaseStatus::not_running) {
+            Some("O banco de dados deste projeto não está rodando.".into())
+        } else if self.databases.iter().any(|database| {
+            database.requirement.engine == DatabaseEngine::Sqlite
+                && database.available == Some(false)
+        }) {
+            Some("Arquivo SQLite será preparado ao iniciar o ambiente".into())
         } else {
             None
         }
@@ -1027,6 +1155,16 @@ impl LocalCodePilot {
         } else {
             self.update_confirmation = Some(UpdateConfirmation::BeforeDownload(update.clone()));
             self.update_confirmation_focus = true;
+        }
+    }
+
+    /// A new check of the projects is starting: no earlier login result may still read as
+    /// "Banco de dados conectado" while it runs.
+    fn forget_database_tests(&mut self) {
+        for environment in self.project_environments.values_mut() {
+            for database in &mut environment.databases {
+                database.connection = None;
+            }
         }
     }
 
@@ -1566,6 +1704,7 @@ impl LocalCodePilot {
             return;
         }
         self.notify("Atualizando a lista de projetos...");
+        self.forget_database_tests();
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
@@ -1589,6 +1728,7 @@ impl LocalCodePilot {
             Ok(()) => "Pasta adicionada. Procurando projetos...".into(),
             Err(error) => format!("Pasta adicionada, mas não foi possível salvar: {error}"),
         });
+        self.forget_database_tests();
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
@@ -1607,6 +1747,7 @@ impl LocalCodePilot {
             Ok(()) => "Pasta removida. Atualizando os projetos...".into(),
             Err(error) => format!("Pasta removida, mas não foi possível salvar: {error}"),
         });
+        self.forget_database_tests();
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
@@ -1625,6 +1766,7 @@ impl LocalCodePilot {
             Ok(()) => "Pastas padrão restauradas. Atualizando os projetos...".into(),
             Err(error) => format!("Pastas restauradas, mas não foi possível salvar: {error}"),
         });
+        self.forget_database_tests();
         self.discovery = Some(spawn_discovery(
             FilesystemProjectSource::new(self.scan_roots.clone()),
             self.environment_path.clone(),
@@ -2183,9 +2325,9 @@ impl LocalCodePilot {
                     return;
                 }
                 if let Some(environment) = self.project_environments.get_mut(project_path) {
-                    for (existing, available) in &mut environment.databases {
-                        if existing.source == database.source {
-                            *available = Some(true);
+                    for existing in &mut environment.databases {
+                        if existing.requirement.source == database.source {
+                            existing.available = Some(true);
                         }
                     }
                 }
@@ -4262,22 +4404,20 @@ impl LocalCodePilot {
                                 .size(10.0),
                         );
                     }
-                    for (database, available) in &environment.databases {
-                        let matching_container = database.host.as_deref().and_then(|host| {
+                    for database in &environment.databases {
+                        let matching_container = database.requirement.host.as_deref().and_then(|host| {
                             self.database_container_running(&project.path, host)
                         });
-                        let state = match (database.engine, available) {
-                            (DatabaseEngine::Sqlite, Some(true)) => "arquivo íntegro",
-                            (DatabaseEngine::Sqlite, Some(false)) => "arquivo será preparado ao iniciar",
-                            (DatabaseEngine::Sqlite, None) => "arquivo não verificado",
-                            (_, _) if matching_container == Some(true) => "container do banco ativo; login não verificado",
-                            (_, _) if matching_container == Some(false) => "container do banco parado",
-                            (_, _) if database.compose_service.is_some() => "serviço do Compose; inicie os containers",
-                            (_, Some(true)) => "TCP acessível; login não verificado",
-                            (_, Some(false)) => "servidor local indisponível",
-                            (_, None) => "conexão não testada",
-                        };
-                        ui.label(RichText::new(format!("Banco: {} · {state}", database.engine.label())).color(theme::MUTED).size(10.0));
+                        let state = database.card_state(matching_container);
+                        ui.label(
+                            RichText::new(format!(
+                                "Banco: {} · {state}",
+                                database.requirement.engine.label()
+                            ))
+                            .color(theme::MUTED)
+                            .size(10.0),
+                        )
+                        .on_hover_text(database.technical().join("\n"));
                     }
                     if project.technologies.contains(&TechnologyKind::WordPress)
                         && environment.databases.is_empty()
@@ -7434,7 +7574,21 @@ fn inspect_project_environment_with_inventory(
             } else {
                 probe_local_tcp(&database)
             };
-            (database, available)
+            // Only a server that answers is logged into; nothing to test on a closed port.
+            let connection = (available == Some(true))
+                .then(|| {
+                    test_connection(
+                        &database,
+                        &read_credentials(&database),
+                        DATABASE_LOGIN_TIMEOUT,
+                    )
+                })
+                .flatten();
+            DatabaseStatus {
+                requirement: database,
+                available,
+                connection,
+            }
         })
         .collect();
     ProjectEnvironment {

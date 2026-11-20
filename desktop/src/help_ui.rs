@@ -201,7 +201,7 @@ const SECTIONS: &[HelpSection] = &[
         title: "Bancos de dados",
         blocks: &[
             Block::Text(
-                "O aplicativo identifica algumas configurações de banco, inclusive em projetos PHP e serviços Compose. Uma porta acessível não confirma que as credenciais funcionam nem que o banco existe.",
+                "O LocalCodePilot testa a conexão com os dados de acesso do projeto (banco, usuário e senha do .env ou do wp-config.php) quando o banco roda neste computador. Banco de dados conectado só aparece depois desse teste; uma porta aberta ou um container ativo não bastam. Em Detalhes técnicos, confira onde a configuração está, o endereço testado e o resultado. A senha nunca é mostrada.",
             ),
             Block::Text(
                 "Confira a configuração do projeto e os logs do serviço de banco. Nomes como db podem funcionar somente dentro da rede Compose.",
