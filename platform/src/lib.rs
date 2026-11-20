@@ -6,6 +6,7 @@ pub mod installations;
 pub mod languages;
 pub mod ports;
 pub mod toolchains;
+pub mod vc_runtime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatingSystem {
@@ -72,3 +73,4 @@ impl Platform for NativePlatform {
     }
 }
 pub mod containers;
+pub mod credentials;

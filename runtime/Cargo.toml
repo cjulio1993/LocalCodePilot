@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 localcodepilot-core.workspace = true
+localcodepilot-platform.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 semver.workspace = true
@@ -15,3 +16,8 @@ serde.workspace = true
 sha2.workspace = true
 ureq.workspace = true
 zip.workspace = true
+ring.workspace = true
+# Administrator connections to the servers the app manages (127.0.0.1 only).
+tokio = { version = "1.54", features = ["rt", "net", "time"] }
+tokio-postgres = "0.7.18"
+mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls-ring"] }

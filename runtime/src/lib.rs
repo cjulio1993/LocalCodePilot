@@ -12,6 +12,7 @@ use semver::{Version, VersionReq};
 use std::{collections::VecDeque, fs, path::Path};
 
 pub mod database_packages;
+pub mod database_servers;
 pub mod databases;
 
 const IGNORED_DIRECTORIES: &[&str] = &[

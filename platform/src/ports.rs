@@ -64,6 +64,46 @@ pub fn process_descends_from(process_id: u32, ancestor: u32) -> bool {
     })
 }
 
+/// Start time, executable and command line of a running process, to tell whether it is
+/// one the app started (database servers) without trusting the PID alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessDetails {
+    /// Seconds since the epoch.
+    pub started_at: u64,
+    pub executable: Option<std::path::PathBuf>,
+    pub command_line: Vec<String>,
+}
+
+pub fn process_details(process_id: u32) -> Option<ProcessDetails> {
+    use sysinfo::{ProcessRefreshKind, UpdateKind};
+    let pid = Pid::from_u32(process_id);
+    let mut system = System::new().ok()?;
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
+    );
+    system.process(pid).map(|process| ProcessDetails {
+        started_at: process.start_time(),
+        executable: process.exe().map(std::path::Path::to_path_buf),
+        command_line: process
+            .cmd()
+            .iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect(),
+    })
+}
+
+/// The process listening on `port` of this computer, when the system says which one.
+pub fn listener_process_id(port: Port) -> Option<u32> {
+    match inspect_tcp_port(port) {
+        PortAvailability::Occupied { owner } => owner.map(|owner| owner.process_id),
+        PortAvailability::Available => None,
+    }
+}
+
 /// When `process_id` started, in seconds since the epoch. Together with the PID it tells a
 /// process apart from a later one that got the same PID.
 pub fn process_started_at(process_id: u32) -> Option<u64> {
