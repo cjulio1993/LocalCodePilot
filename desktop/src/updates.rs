@@ -419,6 +419,39 @@ pub fn automatic_update_available(update: &UpdateInfo) -> bool {
             .is_some_and(trusted_release_asset_url)
 }
 
+/// What "Baixar atualização" opens when this copy cannot update itself. On Windows it is
+/// the official installer, so the person ends with an installed copy that updates itself
+/// from then on; the portable package is only the fallback for releases without one.
+pub fn manual_download_url(update: &UpdateInfo) -> &str {
+    manual_download_url_for_os(update, env::consts::OS)
+}
+
+fn manual_download_url_for_os<'a>(update: &'a UpdateInfo, operating_system: &str) -> &'a str {
+    match update.installer_url.as_deref() {
+        Some(installer)
+            if operating_system == "windows" && trusted_release_asset_url(installer) =>
+        {
+            installer
+        }
+        _ => &update.download_url,
+    }
+}
+
+/// The line under the update notice when the update has to be downloaded by hand.
+pub fn manual_download_note(update: &UpdateInfo) -> &'static str {
+    manual_download_note_for_os(update, env::consts::OS)
+}
+
+fn manual_download_note_for_os(update: &UpdateInfo, operating_system: &str) -> &'static str {
+    if manual_download_url_for_os(update, operating_system) == update.download_url {
+        "Use o pacote oficial para concluir esta atualização."
+    } else {
+        MANUAL_INSTALLER_NOTE
+    }
+}
+
+pub const MANUAL_INSTALLER_NOTE: &str = "Esta cópia não foi instalada. Baixe o instalador para atualizar e receber as próximas atualizações automaticamente.";
+
 /// The installer to run when this copy was installed by it and the release offers it.
 fn installer_update_url(update: &UpdateInfo) -> Option<String> {
     if !installed_by_installer() {
@@ -2008,6 +2041,62 @@ mod tests {
         assert!(executable_url.ends_with("/LocalCodePilot-0.4.0-alpha.8-windows-x64.exe"));
         assert!(trusted_release_asset_url(executable_url));
         assert!(update.download_url.ends_with("-windows-x64.zip"));
+    }
+
+    #[test]
+    fn a_manual_download_on_windows_gets_the_installer_not_the_zip() {
+        // Asset list of the published v0.4.0-alpha.10. A copy run from the loose
+        // update executable (for example straight from Downloads) cannot update itself
+        // and must be sent to the installer, never to another loose file or the zip.
+        let assets = [
+            "LocalCodePilot-0.4.0-alpha.10-macos-universal.dmg",
+            "LocalCodePilot-0.4.0-alpha.10-windows-x64.exe",
+            "LocalCodePilot-0.4.0-alpha.10-windows-x64.zip",
+            "LocalCodePilotSetup-0.4.0-alpha.10-windows-x64.exe",
+            "SHA256SUMS.txt",
+            "SHA256SUMS.txt.sig",
+        ];
+        let current = Version::parse("0.4.0-alpha.9").unwrap();
+
+        let windows = select_update_for_os(
+            release_with_assets("0.4.0-alpha.10", &assets),
+            &current,
+            "windows",
+        )
+        .unwrap();
+        assert!(
+            manual_download_url_for_os(&windows, "windows")
+                .ends_with("/LocalCodePilotSetup-0.4.0-alpha.10-windows-x64.exe")
+        );
+        assert_eq!(
+            manual_download_note_for_os(&windows, "windows"),
+            MANUAL_INSTALLER_NOTE
+        );
+
+        let macos = select_update_for_os(
+            release_with_assets("0.4.0-alpha.10", &assets),
+            &current,
+            "macos",
+        )
+        .unwrap();
+        assert!(manual_download_url_for_os(&macos, "macos").ends_with("-macos-universal.dmg"));
+        assert_eq!(
+            manual_download_note_for_os(&macos, "macos"),
+            "Use o pacote oficial para concluir esta atualização."
+        );
+
+        // A release without the installer, or one whose installer link is not an
+        // official release asset, falls back to the portable package.
+        let without_installer = select_update_for_os(
+            release_with_assets("0.4.0-alpha.10", &assets[..3]),
+            &current,
+            "windows",
+        )
+        .unwrap();
+        assert!(manual_download_url_for_os(&without_installer, "windows").ends_with(".zip"));
+        let mut foreign = windows.clone();
+        foreign.installer_url = Some("https://example.com/LocalCodePilotSetup.exe".into());
+        assert!(manual_download_url_for_os(&foreign, "windows").ends_with(".zip"));
     }
 
     #[test]
