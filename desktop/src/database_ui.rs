@@ -1238,7 +1238,9 @@ impl LocalCodePilot {
                     ui.add_space(6.0);
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Agora não").clicked() {
+                    let not_now = ui.button("Agora não");
+                    focus_safe_choice_once(ui, PREPARE_FOCUS, &not_now);
+                    if not_now.clicked() {
                         cancel = true;
                     }
                     if request.missing_runtime.is_empty() {
@@ -1253,6 +1255,12 @@ impl LocalCodePilot {
                     }
                 });
             });
+        if escape_pressed(root_ui) {
+            cancel = true;
+        }
+        if confirm || retry || cancel || !open {
+            forget_first_focus(root_ui, PREPARE_FOCUS);
+        }
         let project = request.project.clone();
         if confirm {
             self.database.confirmation = None;
@@ -1332,7 +1340,9 @@ impl LocalCodePilot {
                 ui.label(text);
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Agora não").clicked() {
+                    let not_now = ui.button("Agora não");
+                    focus_safe_choice_once(ui, FIX_FOCUS, &not_now);
+                    if not_now.clicked() {
                         cancel = true;
                     }
                     if ui
@@ -1343,6 +1353,12 @@ impl LocalCodePilot {
                     }
                 });
             });
+        if escape_pressed(root_ui) {
+            cancel = true;
+        }
+        if confirm || cancel || !open {
+            forget_first_focus(root_ui, FIX_FOCUS);
+        }
         if cancel || !open {
             self.database.fix_confirmation = None;
             return;
@@ -1462,6 +1478,40 @@ impl LocalCodePilot {
     }
 }
 
+const PREPARE_FOCUS: &str = "database-prepare-confirmation";
+const FIX_FOCUS: &str = "database-fix-confirmation";
+const SQL_FOCUS: &str = "sql-server-confirmation";
+
+fn first_focus_id(key: &'static str) -> egui::Id {
+    egui::Id::unique(("first-focus", key))
+}
+
+/// The database confirmations open with the focus on the safe choice, as the app's other
+/// confirmations do: opened from the keyboard, it would stay on the button behind the
+/// window. Tab reaches the main action.
+fn focus_safe_choice_once(ui: &egui::Ui, key: &'static str, button: &egui::Response) {
+    let id = first_focus_id(key);
+    if !ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(id))
+        .unwrap_or(false)
+    {
+        button.request_focus();
+        ui.ctx().data_mut(|data| data.insert_temp(id, true));
+    }
+}
+
+/// A closed confirmation forgets it was focused, so the next one starts on the safe choice.
+fn forget_first_focus(ui: &egui::Ui, key: &'static str) {
+    ui.ctx()
+        .data_mut(|data| data.remove::<bool>(first_focus_id(key)));
+}
+
+/// Escape cancels a database confirmation, as "Agora não" does.
+fn escape_pressed(ui: &egui::Ui) -> bool {
+    ui.input(|input| input.key_pressed(egui::Key::Escape))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SqlChoice {
     Waiting,
@@ -1546,7 +1596,9 @@ fn sql_server_confirmation_window(
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button("Agora não").clicked() {
+                let not_now = ui.button("Agora não");
+                focus_safe_choice_once(ui, SQL_FOCUS, &not_now);
+                if not_now.clicked() {
                     cancel = true;
                 }
                 if ui
@@ -1560,9 +1612,16 @@ fn sql_server_confirmation_window(
                 }
             });
         });
+    if escape_pressed(root_ui) {
+        cancel = true;
+    }
+    let confirm = confirm && request.accepted;
+    if confirm || cancel || !open {
+        forget_first_focus(root_ui, SQL_FOCUS);
+    }
     if cancel || !open {
         SqlChoice::Cancel
-    } else if confirm && request.accepted {
+    } else if confirm {
         SqlChoice::Confirm
     } else {
         SqlChoice::Waiting
@@ -2060,24 +2119,45 @@ mod tests {
     /// Renders the SQL Server confirmation without a screen and reads its accessibility tree:
     /// (choice, [(name, disabled)]).
     fn sql_confirmation_tree(request: &mut SqlServerRequest) -> (SqlChoice, Vec<(String, bool)>) {
+        let (choice, nodes, _) = sql_confirmation_frames(request, &[]);
+        (choice, nodes)
+    }
+
+    /// Three frames of the SQL Server confirmation (a window settles its size in the first
+    /// ones); `last_events` reach the last frame. Returns the accessible names, whether each
+    /// is disabled, and the name of the focused widget.
+    fn sql_confirmation_frames(
+        request: &mut SqlServerRequest,
+        last_events: &[egui::Event],
+    ) -> (SqlChoice, Vec<(String, bool)>, Option<String>) {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let mut choice = SqlChoice::Waiting;
         let mut nodes = vec![];
-        // A window settles its size in the first frames.
-        for _ in 0..3 {
+        let mut focused = None;
+        for frame in 0..3 {
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(1280.0, 900.0),
                     )),
+                    events: if frame == 2 {
+                        last_events.to_vec()
+                    } else {
+                        vec![]
+                    },
                     ..Default::default()
                 },
                 |ui| choice = sql_server_confirmation_window(ui, request),
             );
             output.textures_delta.clear();
             if let Some(update) = output.platform_output.accesskit_update {
+                focused = update
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == update.focus)
+                    .and_then(|(_, node)| node.label().map(str::to_owned));
                 nodes = update
                     .nodes
                     .iter()
@@ -2088,8 +2168,46 @@ mod tests {
                     })
                     .collect();
             }
+            if choice != SqlChoice::Waiting {
+                break;
+            }
         }
-        (choice, nodes)
+        (choice, nodes, focused)
+    }
+
+    #[test]
+    fn a_database_confirmation_starts_on_the_safe_choice_and_escape_cancels_it() {
+        let mut request = SqlServerRequest {
+            project: PathBuf::from("loja"),
+            requirement: DatabaseRequirement {
+                source: PathBuf::from("loja").join(".env"),
+                engine: DatabaseEngine::SqlServer,
+                host: Some("127.0.0.1".into()),
+                port: Some(14339),
+                compose_service: None,
+            },
+            engine: "podman",
+            port: 14339,
+            database: "loja".into(),
+            user: "app_loja".into(),
+            password: "x".into(),
+            replaces: None,
+            accepted: true,
+            path: None,
+        };
+        let (choice, _, focused) = sql_confirmation_frames(&mut request, &[]);
+        assert_eq!(choice, SqlChoice::Waiting);
+        assert_eq!(focused.as_deref(), Some("Agora não"));
+        // Even with the terms accepted, Escape gives up instead of preparing.
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let (choice, _, _) = sql_confirmation_frames(&mut request, &[escape]);
+        assert_eq!(choice, SqlChoice::Cancel);
     }
 
     #[test]

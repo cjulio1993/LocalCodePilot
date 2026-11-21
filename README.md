@@ -24,6 +24,7 @@ O LocalCodePilot é um aplicativo para desenvolvedores, do júnior ao especialis
 - **Prepara o que falta:** instala as dependências do projeto e, quando a linguagem nem está instalada, oferece instalá-la com um clique.
 - **Inicia, mostra o endereço e abre o site.** Se algo der errado (uma porta ocupada, um programa que fechou), diz o motivo em português e oferece **Tentar de novo**.
 - **Também cuida de containers** (Docker e Podman), com proteção para um projeto não mexer nos containers de outro.
+- **Testa o banco de dados do projeto** com os dados de acesso dele e, no Windows, prepara o servidor de banco quando falta (veja [Bancos de dados](#bancos-de-dados)).
 
 Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e nada é instalado sem você ver o plano e confirmar.
 
@@ -90,11 +91,31 @@ O que acontece ao clicar em **Iniciar**, validado no Windows 11:
 
 Quando uma linguagem não está instalada, **Preparar ambiente** usa o `winget` do Windows. Nas linhas em negrito, a instalação foi validada de ponta a ponta. Para Python, Java, PHP, Node.js, Go e Dart, a instalação pelo app ainda está em validação.
 
+### Bancos de dados
+
+O LocalCodePilot lê o banco de dados do projeto no `.env` (`DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`) ou no `wp-config.php` e testa a conexão com esses dados de acesso. O cartão só mostra **Banco de dados conectado.** depois que o banco aceita o login do projeto; uma porta aberta ou um container ativo não bastam. Se o banco impede o início, o projeto fica **Parado** ou **Com problema**, com o motivo por escrito.
+
+| Situação | O que o app faz |
+|---|---|
+| PostgreSQL, MySQL ou MariaDB neste computador, no **Windows** | **Iniciar** prepara um servidor só deste computador (`127.0.0.1`). Na primeira vez, a confirmação **Preparar banco de dados para este projeto?** mostra o download, o espaço necessário, o banco e o usuário que serão criados. O pacote é uma versão fixada e conferida por SHA-256; a senha de administração fica no Gerenciador de Credenciais do Windows. |
+| SQL Server neste computador, no **Windows** | Com o Docker ou o Podman prontos, **Iniciar** pode criar um container do SQL Server 2022 Developer (gratuito para desenvolvimento e teste). Você precisa marcar que leu e aceita os termos de licença da Microsoft; o app nunca aceita por você. Sem Docker nem Podman prontos, o cartão leva à página **Containers**. |
+| Servidor que você já tem, na porta do projeto | Só o login é testado. O app não cria banco nem usuário, não altera o servidor e não oferece **Parar** para ele. |
+| Serviço do Compose (como `db`) | Fica no fluxo de **Containers**, com as mesmas proteções contra conflito de nomes. O cartão mostra "Container ativo; conexão não verificada."; nenhum outro servidor é preparado. |
+| Banco em outro computador | Não recebe preparo nem mudança. **Testar conexão**, em **Detalhes técnicos**, testa o login só quando você pede. |
+| **macOS e Linux** | O login do projeto é testado com PostgreSQL, MySQL, MariaDB e SQL Server, mas o app não prepara servidores de banco. |
+| SQLite com arquivo dentro do projeto | O app cria a pasta e o arquivo quando faltam e confere a integridade. Não cria tabelas nem roda migrations. |
+
+**Onde ficam os dados.** Os servidores preparados no Windows guardam os dados em `%LOCALAPPDATA%\LocalCodePilot\bancos`; o SQL Server guarda num volume do Docker ou do Podman. Ao fechar o app, o LocalCodePilot tenta encerrar os servidores que iniciou e avisa na próxima abertura se algum continuou rodando; os dados permanecem e voltam no próximo **Iniciar**.
+
+**Correções.** Quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: **Usar outra porta** (muda só `DB_PORT` e guarda uma cópia do `.env`), **Corrigir conexão** (só no servidor do LocalCodePilot) ou **Criar banco novo** (os dados anteriores ficam guardados). **Detalhes técnicos** mostra onde está a configuração, o endereço testado, o usuário, o banco e o resultado; a senha nunca aparece.
+
+Mais detalhes em [docs/DATABASES.md](docs/DATABASES.md).
+
 ### Limitações desta alpha
 
 - **Plataforma:** a validação de ponta a ponta foi feita no Windows 11. No macOS o pacote é experimental, e no Linux há só testes automáticos.
 - **Assinatura:** os downloads ainda não têm assinatura digital (veja [Baixar e instalar](#baixar-e-instalar)).
-- **Bancos de dados:** projetos que precisam de banco (Rails com `db:prepare`, Phoenix com Ecto) ainda pedem esse passo manual. O erro aparece em **Ver logs**.
+- **Bancos de dados:** o preparo do servidor existe só no Windows; no macOS e no Linux, o app testa o login, mas você inicia o banco. O SQL Server não é instalado direto no Windows (só em container), e a imagem funciona só em computadores x64. O app não cria tabelas: migrations como `db:prepare` (Rails) ou `ecto.migrate` (Phoenix) continuam com você, e o erro aparece em **Ver logs**. Bancos configurados só por `DATABASE_URL` ou por arquivos de Spring, Django e .NET ainda não são reconhecidos.
 - **Formatos não cobertos:** Leiningen (`project.clj`) e Haskell só com Cabal ainda pedem o comando de início.
 - **Containers:** o app não instala o Docker nem o Podman.
 - **Atualização pelo app:** é experimental até ser testada com uma versão mais nova. Durante a atualização, o app mostra as etapas Baixar, Verificar, Instalar e Reiniciar e a barra do download. Enquanto o app está fechado para atualizar, uma janela pequena, **Atualizando o LocalCodePilot**, acompanha a instalação e o reinício; fechar essa janela não interrompe a atualização, e o resultado aparece no app que reabre. Antes de baixar, ele confere a assinatura do projeto nos checksums da release e recusa a atualização se ela não conferir. Se algo falhar, o aviso diz o que aconteceu em linguagem simples, oferece **Tentar de novo** ou a página oficial da versão e guarda o erro original em **Detalhes técnicos**. Se houver projetos em execução, o app pergunta antes de fechar e encerrar os processos deles; **Agora não** mantém tudo rodando. O aviso também resume a novidade da versão numa linha ("O que há de novo: ..."), tirada das notas oficiais.
@@ -130,6 +151,7 @@ LocalCodePilot is an app for developers, from junior to expert, that finds the p
 - **Prepares what is missing:** installs the project's dependencies and, when the language itself is not installed, offers to install it with one click.
 - **Starts the project, shows its address, and opens the site.** When something goes wrong (a port in use, a program that closed), it tells you why and offers **Try again**.
 - **Also handles containers** (Docker and Podman), with protection so one project does not touch another project's containers.
+- **Tests the project's database** with the project's own credentials and, on Windows, prepares the database server when it is missing (see [Databases](#databases)).
 
 Everything runs on your computer. The app does not send your projects anywhere, and nothing is installed before you see the plan and confirm it.
 
@@ -196,11 +218,31 @@ What happens when you click **Start**, validated on Windows 11:
 
 When a language is not installed, **Prepare environment** uses Windows' `winget`. Installation was validated end to end for the rows in bold. For Python, Java, PHP, Node.js, Go, and Dart, installation by the app is still being validated.
 
+### Databases
+
+LocalCodePilot reads the project's database settings from `.env` (`DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`) or from `wp-config.php` and tests the connection with those credentials. The card shows **Banco de dados conectado.** (database connected) only after the database accepts the project's login; an open port or a running container is not enough. When the database keeps the project from starting, the project shows **Parado** (stopped) or **Com problema** (needs attention), with the reason in words.
+
+| Situation | What the app does |
+|---|---|
+| PostgreSQL, MySQL or MariaDB on this computer, on **Windows** | **Start** prepares a server for this computer only (`127.0.0.1`). The first time, the confirmation **Preparar banco de dados para este projeto?** (prepare a database for this project?) shows the download, the disk space needed, and the database and user it will create. The package is a pinned version checked by SHA-256; the admin password is kept in Windows Credential Manager. |
+| SQL Server on this computer, on **Windows** | With Docker or Podman ready, **Start** can create a SQL Server 2022 Developer container (free for development and testing). You must tick that you have read and accept Microsoft's license terms; the app never accepts them for you. Without Docker or Podman ready, the card leads to the **Containers** page. |
+| A server you already run, on the project's port | Only the login is tested. The app does not create a database or user, does not change the server, and does not offer **Stop** for it. |
+| A Compose service (such as `db`) | It stays in the **Containers** flow, with the same name-conflict protections. The card shows "Container ativo; conexão não verificada." (container running; connection not verified); no other server is prepared. |
+| A database on another computer | Nothing is prepared or changed. **Testar conexão** (test connection), under **Detalhes técnicos** (technical details), tests the login only when you ask. |
+| **macOS and Linux** | The project's login is tested for PostgreSQL, MySQL, MariaDB and SQL Server, but the app does not prepare database servers. |
+| SQLite with the file inside the project | The app creates the folder and the file when missing and checks its integrity. It does not create tables or run migrations. |
+
+**Where the data lives.** Servers prepared on Windows keep their data in `%LOCALAPPDATA%\LocalCodePilot\bancos`; SQL Server keeps it in a Docker or Podman volume. When the app closes, LocalCodePilot tries to stop the servers it started and tells you at the next launch if one kept running; the data stays and comes back on the next **Start**.
+
+**Fixes.** When it is safe, the card offers a way out, always with a confirmation and a new login test before starting: **Usar outra porta** (use another port: changes only `DB_PORT` and keeps a copy of `.env`), **Corrigir conexão** (fix connection: only on LocalCodePilot's own server) or **Criar banco novo** (create a new database: the previous data is kept). **Detalhes técnicos** shows where the settings are, the address tested, the user, the database and the result; the password never appears.
+
+More in [docs/DATABASES.md](docs/DATABASES.md).
+
 ### Limitations in this alpha
 
 - **Platform:** end-to-end validation was done on Windows 11. The macOS package is experimental, and Linux has automated tests only.
 - **Signing:** downloads are not digitally signed yet (see [Download and install](#download-and-install)).
-- **Databases:** projects that need a database (Rails with `db:prepare`, Phoenix with Ecto) still need that manual step. The error shows in **View logs**.
+- **Databases:** preparing the server is Windows-only; on macOS and Linux the app tests the login, but you start the database. SQL Server is not installed directly on Windows (container only), and its image runs only on x64 computers. The app does not create tables: migrations such as `db:prepare` (Rails) or `ecto.migrate` (Phoenix) are still yours to run, and the error shows in **View logs**. Databases configured only through `DATABASE_URL` or Spring, Django and .NET files are not recognized yet.
 - **Formats not covered:** Leiningen (`project.clj`) and Cabal-only Haskell projects still ask for the start command.
 - **Containers:** the app does not install Docker or Podman.
 - **In-app update:** experimental until tested against a newer release. While updating, the app shows the download, verify, install, and restart steps and a download progress bar. While the app is closed for the update, a small **Atualizando o LocalCodePilot** ("updating LocalCodePilot") window follows the installation and the restart; closing it does not stop the update, and the outcome shows in the app when it reopens. Before downloading, it checks the project's signature on the release checksums and refuses the update if it does not match. If something fails, the notice says what happened in plain language, offers **Tentar de novo** (try again) or the official release page, and keeps the original error under **Detalhes técnicos** (technical details). If projects are running, the app asks before closing and ending their processes; **Agora não** (not now) keeps everything running. The notice also sums up what is new in one line ("O que há de novo: ..."), taken from the official release notes.

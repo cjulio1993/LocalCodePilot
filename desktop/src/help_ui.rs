@@ -201,10 +201,42 @@ const SECTIONS: &[HelpSection] = &[
         title: "Bancos de dados",
         blocks: &[
             Block::Text(
-                "O LocalCodePilot testa a conexão com os dados de acesso do projeto (banco, usuário e senha do .env ou do wp-config.php) quando o banco roda neste computador. Banco de dados conectado só aparece depois desse teste; uma porta aberta ou um container ativo não bastam. No Windows, com PostgreSQL, MySQL ou MariaDB neste computador, Iniciar pode preparar um servidor do LocalCodePilot: na primeira vez, uma confirmação mostra o download, o espaço necessário, o banco e o usuário que serão criados. O servidor só escuta neste computador, a senha de administração fica no Gerenciador de Credenciais do Windows, e o projeto só inicia depois que o banco aceita os dados de acesso dele. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar o servidor; os dados permanecem. Se algo impedir o início, o cartão diz o motivo e, quando for seguro, oferece uma saída com confirmação: usar outra porta (com cópia do .env), atualizar a senha do usuário no banco do LocalCodePilot ou criar um banco novo (os dados anteriores ficam guardados). Com SQL Server neste computador, o login do projeto também é testado. No Windows, com o Docker ou o Podman prontos, Iniciar pode criar um container do SQL Server Developer, que é gratuito para desenvolvimento e teste: antes, você precisa marcar que leu e aceita os termos de licença da Microsoft, e os dados ficam num volume do motor de containers. Sem Docker nem Podman prontos, o cartão leva à página Containers. Em Detalhes técnicos, confira onde a configuração está, o endereço testado e o resultado. A senha nunca é mostrada.",
+                "O LocalCodePilot testa a conexão com os dados de acesso do projeto (banco, usuário e senha do .env ou do wp-config.php). Banco de dados conectado só aparece depois desse teste; uma porta aberta ou um container ativo não bastam. Se o banco impede o início, o projeto fica Parado ou Com problema, e o cartão diz o motivo por escrito.",
+            ),
+            Block::Item(
+                "No Windows, com PostgreSQL, MySQL ou MariaDB",
+                "Iniciar prepara um servidor só deste computador. Na primeira vez, a confirmação mostra o download, o espaço necessário, o banco e o usuário que serão criados; nada é baixado antes de Preparar e iniciar. A senha de administração fica no Gerenciador de Credenciais do Windows, e o projeto só inicia depois que o banco aceita os dados de acesso dele.",
+            ),
+            Block::Item(
+                "Onde ficam os dados",
+                "na pasta do LocalCodePilot, em %LOCALAPPDATA%\\LocalCodePilot\\bancos. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar o servidor; os dados permanecem e voltam no próximo Iniciar.",
+            ),
+            Block::Item(
+                "Servidor que você já tem",
+                "se um banco já responde na porta do projeto, o LocalCodePilot só testa o login: não cria banco nem usuário, não altera o servidor e não oferece Parar para ele.",
+            ),
+            Block::Item(
+                "Correções",
+                "quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: Usar outra porta (muda só DB_PORT e guarda uma cópia do .env), Corrigir conexão (só no servidor do LocalCodePilot) ou Criar banco novo (os dados anteriores ficam guardados).",
+            ),
+            Block::Item(
+                "Compose",
+                "um banco que é serviço do Compose, como db, só existe na rede dos containers. Ele é iniciado em Containers, com as mesmas proteções contra conflito de nomes, e o cartão mostra Container ativo; conexão não verificada. O LocalCodePilot não prepara outro servidor para ele.",
+            ),
+            Block::Item(
+                "SQL Server",
+                "o login do projeto é testado. No Windows, com o Docker ou o Podman prontos, Iniciar pode criar um container do SQL Server 2022 Developer, gratuito para desenvolvimento e teste: antes, você precisa marcar que leu e aceita os termos de licença da Microsoft, e os dados ficam num volume do motor de containers. Sem Docker nem Podman prontos, o cartão leva à página Containers. O LocalCodePilot não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.",
+            ),
+            Block::Item(
+                "Mac e Linux",
+                "o login do projeto também é testado, mas o LocalCodePilot não prepara servidores de banco: inicie o seu banco como de costume.",
+            ),
+            Block::Item(
+                "Banco em outro computador",
+                "não recebe preparo nem mudança. Testar conexão, em Detalhes técnicos, testa o login só quando você pede.",
             ),
             Block::Text(
-                "Confira a configuração do projeto e os logs do serviço de banco. Nomes como db podem funcionar somente dentro da rede Compose.",
+                "Em Detalhes técnicos, confira onde está a configuração, o endereço testado, o usuário, o banco, o resultado e, quando for o caso, o servidor do LocalCodePilot. A senha nunca é mostrada.",
             ),
         ],
         link: None,
@@ -619,7 +651,9 @@ mod tests {
         ] {
             assert!(text.contains(term), "missing {term}");
         }
-        // Names from the previous interface must not come back.
+        // Names from the previous interface must not come back. "Corrigir conexão" is the
+        // database fix of today, not the retired generic "Corrigir".
+        let text = text.replace("Corrigir conexão", "");
         for retired in [
             "Abrir aplicação",
             "Iniciar ambiente",
@@ -657,6 +691,42 @@ mod tests {
             HelpState::default().open,
             [true, false, false, false, false, false, false, false]
         );
+    }
+
+    #[test]
+    fn the_database_help_covers_every_case_the_app_handles() {
+        let section = SECTIONS
+            .iter()
+            .find(|section| section.id == "bancos")
+            .expect("seção de bancos");
+        let terms: Vec<_> = section
+            .blocks
+            .iter()
+            .filter_map(|block| block.content().0)
+            .collect();
+        for case in [
+            "No Windows, com PostgreSQL, MySQL ou MariaDB",
+            "Onde ficam os dados",
+            "Servidor que você já tem",
+            "Correções",
+            "Compose",
+            "SQL Server",
+            "Mac e Linux",
+            "Banco em outro computador",
+        ] {
+            assert!(terms.contains(&case), "falta o item {case}");
+        }
+        let text = all_text();
+        for fact in [
+            "não prepara servidores de banco",
+            "%LOCALAPPDATA%\\LocalCodePilot\\bancos",
+            "os dados permanecem",
+            "termos de licença da Microsoft",
+            "só em computadores x64",
+            "A senha nunca é mostrada.",
+        ] {
+            assert!(text.contains(fact), "a Ajuda não diz: {fact}");
+        }
     }
 
     #[test]
