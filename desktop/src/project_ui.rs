@@ -1667,18 +1667,13 @@ impl ProjectCard<'_> {
             }
         }
         ui.horizontal_wrapped(|ui| {
-            if extras
+            if let Some(fix) = extras
                 .failure
                 .as_ref()
-                .is_some_and(|failure| failure.other_port_option)
-                && ui
-                    .button(database_ui::DatabaseFix::OtherPort.label())
-                    .clicked()
+                .and_then(|failure| failure.detail_fix)
+                && ui.button(fix.label()).clicked()
             {
-                action = Some(ProjectCardAction::DatabaseFix(
-                    path(),
-                    database_ui::DatabaseFix::OtherPort,
-                ));
+                action = Some(ProjectCardAction::DatabaseFix(path(), fix));
             }
             if extras.can_stop && ui.button("Parar o banco de dados").clicked() {
                 action = Some(ProjectCardAction::StopDatabase(path()));

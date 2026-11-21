@@ -8,12 +8,17 @@
 //! a copy of `.env`), the user's password on the app's server, or a new data folder that
 //! keeps the old one. Agreed with product in `.internal/conversas/2026-11-20-t019-04-*.md`
 //! and `.internal/conversas/2026-11-20-t019-05-correcoes.md`.
+//!
+//! SQL Server (T019.06) runs in a container of Docker or Podman that the app creates after the
+//! person accepts Microsoft's license terms; its ids carry the `mssql:` prefix. Agreed in
+//! `.internal/conversas/2026-11-20-t019-06-sql-server.md`.
 
 use super::*;
 use localcodepilot_runtime::{
     database_connection::{loopback_address, test_remote_connection},
     database_packages::{self, DatabasePackage},
     database_servers::{self, ManagedServer, Recognition, ServerError, SystemVault},
+    sql_server_container::{self, ContainerState, SqlServerContainer},
 };
 use sha2::{Digest, Sha256};
 use std::sync::mpsc::{Receiver, Sender};
@@ -40,6 +45,29 @@ fn runtime_dlls(engine: &str) -> &'static [&'static str] {
         "mysql" => &["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"],
         _ => &[],
     }
+}
+
+/// The id of an app SQL Server container among the app's servers.
+const SQL_PREFIX: &str = "mssql:";
+
+fn sql_id(id: &str) -> Option<&str> {
+    id.strip_prefix(SQL_PREFIX)
+}
+
+/// The engines whose local database the app looks after.
+fn looked_after(engine: DatabaseEngine) -> bool {
+    engine_key(engine).is_some() || engine == DatabaseEngine::SqlServer
+}
+
+const NO_CONTAINER_ENGINE: &str =
+    "Para preparar o SQL Server, prepare o Docker ou o Podman na página Containers.";
+
+/// The first container engine that answers (Docker first).
+fn ready_container_engine(path: Option<&std::ffi::OsStr>) -> Option<&'static str> {
+    localcodepilot_platform::containers::inspect_container_engines(path)
+        .into_iter()
+        .find(|diagnosis| diagnosis.state == localcodepilot_core::containers::EngineState::Ready)
+        .map(|diagnosis| diagnosis.engine.program())
 }
 
 fn local_server(requirement: &DatabaseRequirement) -> bool {
@@ -74,6 +102,11 @@ pub(super) enum DatabaseFix {
     OtherPort,
     FixPassword,
     NewData,
+    /// SQL Server needs Docker or Podman ready: the page where they are prepared.
+    OpenContainers,
+    /// No administrator password the app keeps logs in to its SQL Server: a new container and
+    /// volume; the old ones are kept.
+    NewSqlServer,
 }
 
 impl DatabaseFix {
@@ -82,6 +115,8 @@ impl DatabaseFix {
             Self::OtherPort => "Usar outra porta",
             Self::FixPassword => "Corrigir conexão",
             Self::NewData => "Criar banco novo",
+            Self::OpenContainers => "Abrir Containers",
+            Self::NewSqlServer => "Criar SQL Server novo",
         }
     }
 }
@@ -92,8 +127,9 @@ pub(super) struct DatabaseFailure {
     pub reason: String,
     /// The card's main action, when a fix is safe here.
     pub fix: Option<DatabaseFix>,
-    /// "Usar outra porta" in "Detalhes técnicos" only: a database on the port refuses access.
-    pub other_port_option: bool,
+    /// A fix offered in "Detalhes técnicos" only ("Usar outra porta" when a database on the port
+    /// refuses access, "Criar SQL Server novo").
+    pub detail_fix: Option<DatabaseFix>,
     /// "Tentar de novo": the app's server did not start, for a reason that may pass.
     pub retry: bool,
     /// Lines for "Detalhes técnicos".
@@ -105,7 +141,7 @@ impl DatabaseFailure {
         Self {
             reason: reason.into(),
             fix: None,
-            other_port_option: false,
+            detail_fix: None,
             retry: false,
             details: vec![],
         }
@@ -132,6 +168,24 @@ impl DatabaseRequest {
     fn engine_label(&self) -> &'static str {
         self.requirement.engine.label()
     }
+}
+
+/// The SQL Server container the app would create for a project, waiting for the terms.
+#[derive(Debug, Clone)]
+pub(super) struct SqlServerRequest {
+    pub project: PathBuf,
+    pub requirement: DatabaseRequirement,
+    /// `docker` or `podman`.
+    pub engine: &'static str,
+    pub port: u16,
+    pub database: String,
+    pub user: String,
+    password: String,
+    /// "Criar SQL Server novo": the container the app lets go of (kept, with its volume).
+    pub replaces: Option<SqlServerContainer>,
+    /// The terms checkbox; never checked by the app.
+    pub accepted: bool,
+    path: Option<std::ffi::OsString>,
 }
 
 /// A fix waiting for the person's confirmation.
@@ -198,6 +252,8 @@ enum JobResult {
         server_id: String,
         actions: Vec<String>,
         new_data: Option<PathBuf>,
+        /// Shown with "Rodando" until the next start.
+        note: Option<String>,
     },
     Failed(JobFailure),
     Stopped(Result<(), String>),
@@ -210,6 +266,9 @@ struct JobFailure {
     server_id: Option<String>,
     /// The app's server did not start and its log shows damaged data.
     damaged: bool,
+    /// SQL Server: the recovery that fits (no "Tentar de novo" then).
+    recovery: Option<DatabaseFix>,
+    details: Vec<String>,
 }
 
 impl JobFailure {
@@ -219,6 +278,52 @@ impl JobFailure {
             outcome: None,
             server_id: None,
             damaged: false,
+            recovery: None,
+            details: vec![],
+        }
+    }
+
+    /// A SQL Server step failed: the sentence for the card, the rest in "Detalhes técnicos".
+    fn sql(error: String, server_id: Option<String>) -> Self {
+        let recovery = if error.starts_with(sql_server_container::STOP_NOT_CONFIRMED) {
+            Some(DatabaseFix::OpenContainers)
+        } else if sql_server_container::needs_new_container(&error) {
+            Some(DatabaseFix::NewSqlServer)
+        } else {
+            None
+        };
+        let (message, details) = match error.strip_prefix(sql_server_container::PREPARATION_FAILED)
+        {
+            Some(rest) => (
+                sql_server_container::PREPARATION_FAILED.to_owned(),
+                vec![
+                    rest.trim()
+                        .trim_start_matches('(')
+                        .trim_end_matches(')')
+                        .to_owned(),
+                ],
+            ),
+            None => match error.find(" (") {
+                Some(at) if recovery == Some(DatabaseFix::OpenContainers) => (
+                    error[..at].to_owned(),
+                    vec![
+                        error[at..]
+                            .trim()
+                            .trim_start_matches('(')
+                            .trim_end_matches(')')
+                            .to_owned(),
+                    ],
+                ),
+                _ => (error, vec![]),
+            },
+        };
+        Self {
+            message,
+            outcome: None,
+            server_id,
+            damaged: false,
+            recovery,
+            details,
         }
     }
 }
@@ -247,6 +352,8 @@ pub(super) enum DatabaseGate {
 #[derive(Default)]
 pub(super) struct DatabaseState {
     pub confirmation: Option<DatabaseRequest>,
+    /// The SQL Server preparation waiting for the person (with the license terms).
+    pub sql_confirmation: Option<SqlServerRequest>,
     pub fix_confirmation: Option<FixConfirmation>,
     pub jobs: HashMap<PathBuf, DatabaseJob>,
     pub failures: HashMap<PathBuf, DatabaseFailure>,
@@ -287,9 +394,7 @@ impl LocalCodePilot {
             .databases
             .iter()
             .map(|status| status.requirement.clone())
-            .filter(|requirement| {
-                local_server(requirement) && engine_key(requirement.engine).is_some()
-            })
+            .filter(|requirement| local_server(requirement) && looked_after(requirement.engine))
             .collect()
     }
 
@@ -351,6 +456,12 @@ impl LocalCodePilot {
     ) -> DatabaseGate {
         for status in &environment.databases {
             let requirement = &status.requirement;
+            if requirement.engine == DatabaseEngine::SqlServer && local_server(requirement) {
+                match self.sql_server_gate(project_path, status) {
+                    Some(gate) => return gate,
+                    None => continue,
+                }
+            }
             let Some(engine) = engine_key(requirement.engine).filter(|_| local_server(requirement))
             else {
                 continue;
@@ -393,7 +504,7 @@ impl LocalCodePilot {
                 return DatabaseGate::Blocked(DatabaseFailure {
                     reason: port_taken,
                     fix: can_manage.then_some(DatabaseFix::OtherPort),
-                    other_port_option: false,
+                    detail_fix: None,
                     retry: false,
                     details: vec![],
                 });
@@ -409,7 +520,7 @@ impl LocalCodePilot {
                 return DatabaseGate::Blocked(DatabaseFailure {
                     reason: status_now.rejection().unwrap_or_default(),
                     fix: None,
-                    other_port_option: can_manage,
+                    detail_fix: can_manage.then_some(DatabaseFix::OtherPort),
                     retry: false,
                     details: vec![
                         "O servidor nesta porta não é o do LocalCodePilot; nada foi alterado nele."
@@ -455,7 +566,7 @@ impl LocalCodePilot {
                 return DatabaseGate::Blocked(DatabaseFailure {
                     reason: port_taken,
                     fix: Some(DatabaseFix::OtherPort),
-                    other_port_option: false,
+                    detail_fix: None,
                     retry: false,
                     details: vec![],
                 });
@@ -493,6 +604,159 @@ impl LocalCodePilot {
             return DatabaseGate::Waiting;
         }
         DatabaseGate::Ready
+    }
+
+    /// SQL Server on this computer: `None` when the project's login is accepted. The app's
+    /// container starts after a click on "Iniciar"; a new one needs the terms accepted.
+    fn sql_server_gate(
+        &mut self,
+        project_path: &Path,
+        status: &DatabaseStatus,
+    ) -> Option<DatabaseGate> {
+        let requirement = &status.requirement;
+        let test = test_connection(
+            requirement,
+            &read_credentials(requirement),
+            DATABASE_LOGIN_TIMEOUT,
+        );
+        let outcome = test.as_ref().map(|test| test.outcome.clone());
+        if outcome == Some(ConnectionOutcome::Connected) {
+            return None;
+        }
+        let port = requirement.port?;
+        let status_now = DatabaseStatus {
+            requirement: requirement.clone(),
+            available: status.available,
+            connection: test,
+            managed: None,
+        };
+        let plain_reason = || {
+            status_now
+                .rejection()
+                .or_else(|| {
+                    status_now
+                        .not_running()
+                        .then(|| "O banco de dados deste projeto não está rodando.".into())
+                })
+                .unwrap_or_else(|| status_now.card_state(None))
+        };
+        let Some(root) = database_root().filter(|_| cfg!(windows)) else {
+            return Some(DatabaseGate::Blocked(
+                DatabaseFailure::plain(plain_reason()),
+            ));
+        };
+        if let Some(server) = sql_server_container::find(&root, port) {
+            let credentials = read_credentials(requirement);
+            let (Some(database), Some(user)) =
+                (credentials.database.clone(), credentials.user.clone())
+            else {
+                return Some(DatabaseGate::Blocked(
+                    DatabaseFailure::plain(plain_reason()),
+                ));
+            };
+            let requirement = requirement.clone();
+            let password = credentials.password_for_setup();
+            let path = self.environment_path.clone();
+            self.spawn_job(project_path, "SQL Server", true, move |sender| {
+                run_sql_start_job(
+                    &server,
+                    &requirement,
+                    &database,
+                    &user,
+                    &password,
+                    path.as_deref(),
+                    sender,
+                )
+            });
+            return Some(DatabaseGate::Waiting);
+        }
+        if matches!(
+            outcome,
+            Some(ConnectionOutcome::AccessDenied | ConnectionOutcome::DatabaseMissing)
+        ) {
+            return Some(DatabaseGate::Blocked(DatabaseFailure {
+                reason: plain_reason(),
+                fix: None,
+                detail_fix: Some(DatabaseFix::OtherPort),
+                retry: false,
+                details: vec![
+                    "O servidor nesta porta não é o do LocalCodePilot; nada foi alterado nele."
+                        .into(),
+                ],
+            }));
+        }
+        let listener = localcodepilot_core::ports::Port::new(port)
+            .and_then(localcodepilot_platform::ports::listener_process_id)
+            .is_some();
+        if listener {
+            return Some(DatabaseGate::Blocked(DatabaseFailure {
+                reason: format!("A porta {port} {PORT_TAKEN}"),
+                fix: Some(DatabaseFix::OtherPort),
+                detail_fix: None,
+                retry: false,
+                details: vec![],
+            }));
+        }
+        if outcome != Some(ConnectionOutcome::NotResponding) {
+            return Some(DatabaseGate::Blocked(
+                DatabaseFailure::plain(plain_reason()),
+            ));
+        }
+        Some(
+            match self.sql_server_request(project_path, requirement, None) {
+                Ok(request) => {
+                    // A new container: the person reads and accepts the terms first.
+                    self.database.sql_confirmation = Some(request);
+                    DatabaseGate::Waiting
+                }
+                Err(failure) => DatabaseGate::Blocked(failure),
+            },
+        )
+    }
+
+    /// What the SQL Server confirmation needs: the project's names and a ready engine.
+    fn sql_server_request(
+        &self,
+        project_path: &Path,
+        requirement: &DatabaseRequirement,
+        replaces: Option<SqlServerContainer>,
+    ) -> Result<SqlServerRequest, DatabaseFailure> {
+        let credentials = read_credentials(requirement);
+        let (Some(database), Some(user), Some(port)) = (
+            credentials.database.clone(),
+            credentials.user.clone(),
+            requirement.port,
+        ) else {
+            return Err(DatabaseFailure::plain(
+                "Faltam o nome do banco ou o usuário na configuração deste projeto.",
+            ));
+        };
+        if !database_servers::creatable_name(&database) || !database_servers::creatable_name(&user)
+        {
+            return Err(DatabaseFailure::plain(ServerError::InvalidName.to_string()));
+        }
+        let path = self.environment_path.clone();
+        let Some(engine) = ready_container_engine(path.as_deref()) else {
+            return Err(DatabaseFailure {
+                reason: NO_CONTAINER_ENGINE.into(),
+                fix: Some(DatabaseFix::OpenContainers),
+                detail_fix: None,
+                retry: false,
+                details: vec![],
+            });
+        };
+        Ok(SqlServerRequest {
+            project: project_path.to_path_buf(),
+            requirement: requirement.clone(),
+            engine,
+            port,
+            database,
+            user,
+            password: credentials.password_for_setup(),
+            replaces,
+            accepted: false,
+            path,
+        })
     }
 
     fn spawn_job(
@@ -574,6 +838,7 @@ impl LocalCodePilot {
                     server_id,
                     actions,
                     new_data,
+                    note,
                 } => {
                     if !self.database.session_servers.contains(&server_id) {
                         self.database.session_servers.push(server_id);
@@ -597,6 +862,9 @@ impl LocalCodePilot {
                         self.database
                             .notes
                             .insert(project.clone(), NEW_DATA_NOTE.into());
+                    }
+                    if let Some(note) = note {
+                        self.database.notes.insert(project.clone(), note);
                     }
                     self.database.actions.insert(project.clone(), lines);
                     self.refresh_project_environment(&project);
@@ -626,8 +894,24 @@ impl LocalCodePilot {
     /// Turns a job failure into the card's reason and, where safe, its fix.
     fn failure_from_job(&mut self, project: &Path, failure: JobFailure) -> DatabaseFailure {
         let mut result = DatabaseFailure::plain(failure.message.clone());
+        result.details.extend(failure.details.iter().cloned());
         // The app's server did not start: another try may pass (a locked file, an antivirus).
         result.retry = failure.server_id.is_some() && failure.outcome.is_none();
+        match failure.recovery {
+            Some(DatabaseFix::OpenContainers) => {
+                result.retry = false;
+                result.fix = Some(DatabaseFix::OpenContainers);
+            }
+            Some(DatabaseFix::NewSqlServer) => {
+                result.retry = false;
+                result.detail_fix = Some(DatabaseFix::NewSqlServer);
+                result.details.push(
+                    "Criar SQL Server novo cria outro container e outro volume; o volume atual é mantido, com os dados."
+                        .into(),
+                );
+            }
+            _ => {}
+        }
         if failure.damaged {
             let count = self
                 .database
@@ -712,7 +996,7 @@ impl LocalCodePilot {
             let requirement = &status.requirement;
             if !local_server(requirement)
                 && requirement.compose_service.is_none()
-                && engine_key(requirement.engine).is_some()
+                && looked_after(requirement.engine)
                 && requirement.host.is_some()
             {
                 extras.remote = true;
@@ -752,10 +1036,32 @@ impl LocalCodePilot {
         let Some(port) = requirement.port else {
             return;
         };
+        let sql = requirement.engine == DatabaseEngine::SqlServer;
+        let sql_server = database_root()
+            .filter(|_| sql)
+            .and_then(|root| sql_server_container::find(&root, port));
+        match fix {
+            DatabaseFix::OpenContainers => {
+                self.touch_project(project_path);
+                self.focused_project = Some(project_path.to_path_buf());
+                self.page = Page::Containers;
+                return;
+            }
+            DatabaseFix::NewSqlServer => {
+                match self.sql_server_request(project_path, &requirement, sql_server) {
+                    Ok(request) => self.database.sql_confirmation = Some(request),
+                    Err(failure) => self.record_database_failure(project_path, failure),
+                }
+                return;
+            }
+            _ => {}
+        }
         let engine = engine_key(requirement.engine).unwrap_or_default();
         let server = database_root()
             .as_deref()
-            .and_then(|root| database_servers::find_server(root, engine, port));
+            .and_then(|root| database_servers::find_server(root, engine, port))
+            .map(|server| server.id)
+            .or_else(|| sql_server.map(|server| format!("{SQL_PREFIX}{}", server.id)));
         self.database.fix_confirmation = match fix {
             DatabaseFix::OtherPort => {
                 let Some(to) = free_port_after(requirement.engine.default_port().unwrap_or(port))
@@ -770,17 +1076,22 @@ impl LocalCodePilot {
                     to,
                 })
             }
-            DatabaseFix::FixPassword => server.map(|server| FixConfirmation::FixPassword {
+            DatabaseFix::FixPassword => server.map(|server_id| FixConfirmation::FixPassword {
                 project: project_path.to_path_buf(),
-                server_id: server.id,
+                server_id,
                 user: read_credentials(&requirement).user.unwrap_or_default(),
                 requirement: requirement.clone(),
             }),
-            DatabaseFix::NewData => server.map(|server| FixConfirmation::NewData {
-                project: project_path.to_path_buf(),
-                server_id: server.id,
-                requirement: requirement.clone(),
-            }),
+            DatabaseFix::NewData => {
+                server
+                    .filter(|server_id| sql_id(server_id).is_none())
+                    .map(|server_id| FixConfirmation::NewData {
+                        project: project_path.to_path_buf(),
+                        server_id,
+                        requirement: requirement.clone(),
+                    })
+            }
+            DatabaseFix::OpenContainers | DatabaseFix::NewSqlServer => None,
         };
     }
 
@@ -803,6 +1114,20 @@ impl LocalCodePilot {
         else {
             return;
         };
+        if let Some(id) = sql_id(&server.id).map(str::to_owned) {
+            let path = self.environment_path.clone();
+            self.spawn_job(project_path, "", false, move |_| {
+                let Some(server) = database_root().and_then(|root| {
+                    sql_server_container::load_registry(&root)
+                        .into_iter()
+                        .find(|known| known.id == id)
+                }) else {
+                    return JobResult::Stopped(Err("o servidor não está mais registrado".into()));
+                };
+                JobResult::Stopped(sql_server_container::stop(&server, path.as_deref()))
+            });
+            return;
+        }
         self.spawn_job(project_path, "", false, move |_| {
             let Some(root) = database_root() else {
                 return JobResult::Stopped(Err(
@@ -851,6 +1176,7 @@ impl LocalCodePilot {
     /// The first-time confirmation (CA-3), with the texts agreed with product.
     pub(super) fn show_database_confirmation(&mut self, root_ui: &mut egui::Ui) {
         self.show_fix_confirmation(root_ui);
+        self.show_sql_server_confirmation(root_ui);
         let Some(request) = self.database.confirmation.clone() else {
             return;
         };
@@ -949,6 +1275,24 @@ impl LocalCodePilot {
         }
     }
 
+    /// A new SQL Server container: the person reads and accepts Microsoft's license terms
+    /// (never accepted by the app) and sees where the data stays.
+    fn show_sql_server_confirmation(&mut self, root_ui: &mut egui::Ui) {
+        let Some(mut request) = self.database.sql_confirmation.clone() else {
+            return;
+        };
+        match sql_server_confirmation_window(root_ui, &mut request) {
+            SqlChoice::Cancel => self.database.sql_confirmation = None,
+            SqlChoice::Waiting => self.database.sql_confirmation = Some(request),
+            SqlChoice::Confirm => {
+                self.database.sql_confirmation = None;
+                let project = request.project.clone();
+                self.spawn_job(&project, "SQL Server", true, move |sender| {
+                    run_sql_prepare_job(&request, sender)
+                });
+            }
+        }
+    }
     fn show_fix_confirmation(&mut self, root_ui: &mut egui::Ui) {
         let Some(confirmation) = self.database.fix_confirmation.clone() else {
             return;
@@ -1053,6 +1397,17 @@ impl LocalCodePilot {
             return;
         };
         for id in std::mem::take(&mut self.database.session_servers) {
+            if let Some(id) = sql_id(&id) {
+                if let Some(server) = sql_server_container::load_registry(&root)
+                    .into_iter()
+                    .find(|server| server.id == id)
+                    && sql_server_container::stop(&server, self.environment_path.as_deref())
+                        .is_err()
+                {
+                    let _ = sql_server_container::mark_stop_failed(&root, &server, true);
+                }
+                continue;
+            }
             let Some(mut server) = database_servers::load_registry(&root)
                 .into_iter()
                 .find(|server| server.id == id)
@@ -1087,9 +1442,132 @@ impl LocalCodePilot {
                 }
             }
         }
+        for server in sql_server_container::load_registry(&root)
+            .into_iter()
+            .filter(|server| server.stop_failed)
+        {
+            if sql_server_container::state(&server, self.environment_path.as_deref())
+                == Ok(ContainerState::Running)
+            {
+                self.database
+                    .session_servers
+                    .push(format!("{SQL_PREFIX}{}", server.id));
+                self.notify(
+                    "O SQL Server não parou quando o aplicativo foi fechado e ainda está rodando.",
+                );
+            } else {
+                let _ = sql_server_container::mark_stop_failed(&root, &server, false);
+            }
+        }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlChoice {
+    Waiting,
+    Cancel,
+    /// Only with the terms accepted.
+    Confirm,
+}
+
+/// "Preparar SQL Server para este projeto?": what is downloaded, where the data stays, the
+/// terms checkbox (unchecked) and "Preparar e iniciar", enabled only once it is checked.
+fn sql_server_confirmation_window(
+    root_ui: &mut egui::Ui,
+    request: &mut SqlServerRequest,
+) -> SqlChoice {
+    let engine_name = if request.engine == "podman" {
+        "Podman"
+    } else {
+        "Docker"
+    };
+    let mut open = true;
+    let mut cancel = false;
+    let mut confirm = false;
+    egui::Window::new("Preparar SQL Server para este projeto?")
+        .id(egui::Id::unique("sql-server-confirmation"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .default_width(540.0)
+        .show(root_ui, |ui| {
+            ui.label(format!(
+                "O LocalCodePilot vai baixar a imagem oficial do SQL Server ({}) e criar um container com o {engine_name}. O SQL Server Developer é gratuito para desenvolvimento e teste, nos termos da Microsoft. Os dados ficarão num volume do {engine_name}. Ao fechar o aplicativo, o LocalCodePilot tentará parar o container.",
+                sql_server_container::APPROXIMATE_DOWNLOAD
+            ));
+            if let Some(old) = &request.replaces {
+                ui.add_space(6.0);
+                ui.label(format!(
+                    "O projeto passará a usar um banco vazio. Os dados anteriores continuam no volume {}.",
+                    old.volume()
+                ));
+            }
+            ui.label(
+                RichText::new(format!(
+                    "Espaço em disco depois do preparo: {}",
+                    sql_server_container::APPROXIMATE_SPACE
+                ))
+                .color(theme::MUTED),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "Banco {} e usuário {}, com acesso só a esse banco.",
+                    request.database, request.user
+                ))
+                .color(theme::MUTED),
+            );
+            egui::CollapsingHeader::new("Detalhes técnicos")
+                .id_salt("sql-server-confirmation-details")
+                .show(ui, |ui| {
+                    for line in [
+                        format!(
+                            "{} em 127.0.0.1:{}",
+                            sql_server_container::VERSION_LABEL,
+                            request.port
+                        ),
+                        format!("Imagem: {}", sql_server_container::IMAGE),
+                        "Container e volume: localcodepilot-mssql-<identificador>".to_owned(),
+                        format!("Configuração: {}", display_path(&request.requirement.source)),
+                        "Quem administra o motor de containers consegue ver a senha inicial do administrador, que o LocalCodePilot troca logo depois do preparo.".to_owned(),
+                    ] {
+                        ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+                    }
+                });
+            ui.add_space(8.0);
+            ui.checkbox(
+                &mut request.accepted,
+                "Li e aceito os termos de licença do Microsoft SQL Server",
+            );
+            ui.hyperlink_to(
+                "Ler os termos de licença (site da Microsoft)",
+                sql_server_container::TERMS_URL,
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("Agora não").clicked() {
+                    cancel = true;
+                }
+                if ui
+                    .add_enabled(
+                        request.accepted,
+                        egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY),
+                    )
+                    .clicked()
+                {
+                    confirm = true;
+                }
+            });
+        });
+    if cancel || !open {
+        SqlChoice::Cancel
+    } else if confirm && request.accepted {
+        SqlChoice::Confirm
+    } else {
+        SqlChoice::Waiting
+    }
+}
 /// The first free port after `default` that no server of the app uses either.
 fn free_port_after(default: u16) -> Option<u16> {
     let registered: Vec<u16> = database_root()
@@ -1228,6 +1706,8 @@ fn login_failure(
         outcome,
         server_id,
         damaged: false,
+        recovery: None,
+        details: vec![],
     })
 }
 
@@ -1288,6 +1768,8 @@ fn run_start_job(request: &DatabaseRequest, sender: &Sender<JobEvent>) -> JobRes
                             outcome: None,
                             server_id: Some(server.id.clone()),
                             damaged,
+                            recovery: None,
+                            details: vec![],
                         });
                     }
                 }
@@ -1327,6 +1809,7 @@ fn run_start_job(request: &DatabaseRequest, sender: &Sender<JobEvent>) -> JobRes
             server_id: server.id,
             actions,
             new_data: None,
+            note: None,
         },
         _ => login_failure(&request.requirement, test, Some(server.id)),
     }
@@ -1343,10 +1826,35 @@ fn run_fix_password_job(
             "a pasta de dados do Windows não foi encontrada",
         ));
     };
+    let password = read_credentials(requirement).password_for_setup();
+    if let Some(id) = sql_id(server_id) {
+        let Some(server) = sql_server_container::load_registry(&root)
+            .into_iter()
+            .find(|server| server.id == id)
+        else {
+            return JobResult::Failed(JobFailure::text("o servidor não está mais registrado"));
+        };
+        if let Err(error) =
+            sql_server_container::set_project_password(&server, &SystemVault, user, &password)
+        {
+            return JobResult::Failed(JobFailure::sql(error, Some(server_id.to_owned())));
+        }
+        let test = project_login(requirement);
+        return match test.as_ref().map(|test| &test.outcome) {
+            Some(ConnectionOutcome::Connected) => JobResult::Ready {
+                server_id: server_id.to_owned(),
+                actions: vec![format!(
+                    "senha do login {user} atualizada no SQL Server do LocalCodePilot"
+                )],
+                new_data: None,
+                note: None,
+            },
+            _ => login_failure(requirement, test, Some(server_id.to_owned())),
+        };
+    }
     let Some(server) = registered(&root, server_id) else {
         return JobResult::Failed(JobFailure::text("o servidor não está mais registrado"));
     };
-    let password = read_credentials(requirement).password_for_setup();
     if let Err(error) =
         database_servers::set_project_password(&server, &SystemVault, user, &password)
     {
@@ -1360,6 +1868,7 @@ fn run_fix_password_job(
                 "senha do usuário {user} atualizada no servidor do LocalCodePilot"
             )],
             new_data: None,
+            note: None,
         },
         _ => login_failure(requirement, test, Some(server.id)),
     }
@@ -1409,15 +1918,287 @@ fn run_new_data_job(
                 server_id: server.id,
                 actions,
                 new_data: Some(kept),
+                note: None,
             }
         }
         _ => login_failure(requirement, test, Some(server.id)),
     }
 }
 
+/// The project's database and login on the app's container, then the project's own login.
+fn sql_project_ready(
+    server: &SqlServerContainer,
+    requirement: &DatabaseRequirement,
+    database: &str,
+    user: &str,
+    password: &str,
+    mut actions: Vec<String>,
+    note: Option<String>,
+) -> JobResult {
+    let server_id = format!("{SQL_PREFIX}{}", server.id);
+    if let Err(error) = sql_server_container::ensure_project_database(
+        server,
+        &SystemVault,
+        database,
+        user,
+        password,
+    ) {
+        return JobResult::Failed(JobFailure::sql(error, Some(server_id)));
+    }
+    let test = project_login(requirement);
+    match test.as_ref().map(|test| &test.outcome) {
+        Some(ConnectionOutcome::Connected) => {
+            actions.push(format!(
+                "banco {database} e login {user} conferidos no SQL Server; o login do projeto tem acesso só ao banco {database}"
+            ));
+            JobResult::Ready {
+                server_id,
+                actions,
+                new_data: None,
+                note,
+            }
+        }
+        _ => login_failure(requirement, test, Some(server_id)),
+    }
+}
+
+/// "Iniciar" with the app's SQL Server container already created.
+fn run_sql_start_job(
+    server: &SqlServerContainer,
+    requirement: &DatabaseRequirement,
+    database: &str,
+    user: &str,
+    password: &str,
+    path: Option<&std::ffi::OsStr>,
+    sender: &Sender<JobEvent>,
+) -> JobResult {
+    let _ = sender.send(JobEvent::Step(DatabaseStep::StartingServer));
+    if let Err(error) = sql_server_container::start(server, &SystemVault, path) {
+        return JobResult::Failed(JobFailure::sql(
+            error,
+            Some(format!("{SQL_PREFIX}{}", server.id)),
+        ));
+    }
+    sql_project_ready(server, requirement, database, user, password, vec![], None)
+}
+
+/// After the terms were accepted: pull, create the container, change the initial password,
+/// then the project's database and login. "Criar SQL Server novo" first stops the old
+/// container (confirmed) and lets go of it; its volume keeps the data.
+fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) -> JobResult {
+    let Some(root) = database_root() else {
+        return JobResult::Failed(JobFailure::text(
+            "a pasta de dados do Windows não foi encontrada",
+        ));
+    };
+    let path = request.path.as_deref();
+    let mut actions = vec![];
+    let mut note = None;
+    if let Some(old) = &request.replaces {
+        if let Err(error) = sql_server_container::stop(old, path) {
+            return JobResult::Failed(JobFailure::sql(error, None));
+        }
+        if let Err(error) = sql_server_container::release(&root, &old.id) {
+            return JobResult::Failed(JobFailure::text(error));
+        }
+        actions.push(format!(
+            "SQL Server novo criado; os dados anteriores continuam no volume {} do {}",
+            old.volume(),
+            old.engine
+        ));
+        note = Some(format!(
+            "O projeto está conectado a um SQL Server novo. Os dados anteriores continuam no volume {}.",
+            old.volume()
+        ));
+    }
+    let _ = sender.send(JobEvent::Step(DatabaseStep::Downloading {
+        received: 0,
+        total: 0,
+    }));
+    let server = match sql_server_container::prepare(
+        &root,
+        request.engine,
+        request.port,
+        &SystemVault,
+        path,
+        || {
+            let _ = sender.send(JobEvent::Step(DatabaseStep::StartingServer));
+        },
+    ) {
+        Ok(server) => server,
+        Err(error) => {
+            // A container that was created stays registered: "Tentar de novo" resumes it.
+            let created = sql_server_container::find(&root, request.port)
+                .map(|server| format!("{SQL_PREFIX}{}", server.id));
+            return JobResult::Failed(JobFailure::sql(error, created));
+        }
+    };
+    actions.insert(
+        0,
+        format!(
+            "container {} e volume {} criados no {}",
+            server.container(),
+            server.volume(),
+            server.engine
+        ),
+    );
+    sql_project_ready(
+        &server,
+        &request.requirement,
+        &request.database,
+        &request.user,
+        &request.password,
+        actions,
+        note,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Renders the SQL Server confirmation without a screen and reads its accessibility tree:
+    /// (choice, [(name, disabled)]).
+    fn sql_confirmation_tree(request: &mut SqlServerRequest) -> (SqlChoice, Vec<(String, bool)>) {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut choice = SqlChoice::Waiting;
+        let mut nodes = vec![];
+        // A window settles its size in the first frames.
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| choice = sql_server_confirmation_window(ui, request),
+            );
+            output.textures_delta.clear();
+            if let Some(update) = output.platform_output.accesskit_update {
+                nodes = update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        node.label()
+                            .or(node.value())
+                            .map(|name| (name.to_owned(), node.is_disabled()))
+                    })
+                    .collect();
+            }
+        }
+        (choice, nodes)
+    }
+
+    #[test]
+    fn the_sql_server_terms_are_never_accepted_for_the_person() {
+        let mut request = SqlServerRequest {
+            project: PathBuf::from("loja"),
+            requirement: DatabaseRequirement {
+                source: PathBuf::from("loja").join(".env"),
+                engine: DatabaseEngine::SqlServer,
+                host: Some("127.0.0.1".into()),
+                port: Some(14339),
+                compose_service: None,
+            },
+            engine: "docker",
+            port: 14339,
+            database: "loja".into(),
+            user: "app_loja".into(),
+            password: "x".into(),
+            replaces: None,
+            accepted: false,
+            path: None,
+        };
+        let (choice, nodes) = sql_confirmation_tree(&mut request);
+        let find = |nodes: &[(String, bool)], name: &str| {
+            nodes
+                .iter()
+                .find(|(label, _)| label.contains(name))
+                .cloned()
+                .unwrap_or_else(|| panic!("{name} não está na janela: {nodes:?}"))
+        };
+        assert_eq!(choice, SqlChoice::Waiting);
+        // What is downloaded and where the data stays, before any choice.
+        find(
+            &nodes,
+            "baixar a imagem oficial do SQL Server (cerca de 500 MB)",
+        );
+        find(&nodes, "Os dados ficarão num volume do Docker");
+        find(
+            &nodes,
+            "Banco loja e usuário app_loja, com acesso só a esse banco.",
+        );
+        find(&nodes, "Ler os termos de licença");
+        // The box starts unchecked and "Preparar e iniciar" is disabled until it is checked.
+        assert!(!request.accepted);
+        find(
+            &nodes,
+            "Li e aceito os termos de licença do Microsoft SQL Server",
+        );
+        assert!(
+            find(&nodes, "Preparar e iniciar").1,
+            "deve estar desabilitado"
+        );
+        assert!(!find(&nodes, "Agora não").1);
+        request.accepted = true;
+        let (choice, nodes) = sql_confirmation_tree(&mut request);
+        assert_eq!(choice, SqlChoice::Waiting, "marcar não inicia nada sozinho");
+        assert!(
+            !find(&nodes, "Preparar e iniciar").1,
+            "habilitado depois do aceite"
+        );
+        // "Criar SQL Server novo" says the project starts empty and where the old data is.
+        request.replaces = Some(SqlServerContainer {
+            id: "abc123".into(),
+            engine: "docker".into(),
+            port: 14339,
+            stop_failed: false,
+        });
+        let (_, nodes) = sql_confirmation_tree(&mut request);
+        find(
+            &nodes,
+            "Os dados anteriores continuam no volume localcodepilot-mssql-abc123.",
+        );
+    }
+
+    #[test]
+    fn sql_server_failures_offer_only_the_recovery_that_helps() {
+        // The preparation failed after the container was created: the agreed sentence on the
+        // card, the cause in "Detalhes técnicos", "Tentar de novo" resumes it.
+        let failure = JobFailure::sql(
+            format!(
+                "{} (o SQL Server não ficou pronto: tempo esgotado)",
+                sql_server_container::PREPARATION_FAILED
+            ),
+            Some("mssql:abc".into()),
+        );
+        assert_eq!(failure.message, sql_server_container::PREPARATION_FAILED);
+        assert_eq!(
+            failure.details,
+            vec!["o SQL Server não ficou pronto: tempo esgotado"]
+        );
+        assert_eq!(failure.recovery, None);
+        // The stop was not confirmed: "Abrir Containers", never "Tentar de novo".
+        let failure = JobFailure::sql(
+            format!(
+                "{} (tempo esgotado)",
+                sql_server_container::STOP_NOT_CONFIRMED
+            ),
+            None,
+        );
+        assert_eq!(failure.message, sql_server_container::STOP_NOT_CONFIRMED);
+        assert_eq!(failure.recovery, Some(DatabaseFix::OpenContainers));
+        // No kept password logs in: "Criar SQL Server novo" in "Detalhes técnicos".
+        let failure = JobFailure::sql(
+            "Nenhuma senha de administração guardada pelo LocalCodePilot entra neste SQL Server."
+                .into(),
+            Some("mssql:abc".into()),
+        );
+        assert_eq!(failure.recovery, Some(DatabaseFix::NewSqlServer));
+    }
 
     #[test]
     fn sizes_read_like_the_confirmation_says_them() {

@@ -436,10 +436,11 @@ impl DatabaseStatus {
                 .as_deref()
                 .and_then(localcodepilot_runtime::database_connection::loopback_address)
                 .is_some()
-            && localcodepilot_runtime::database_packages::package_for_this_system(
-                self.requirement.engine,
-            )
-            .is_some()
+            && (self.requirement.engine == DatabaseEngine::SqlServer
+                || localcodepilot_runtime::database_packages::package_for_this_system(
+                    self.requirement.engine,
+                )
+                .is_some())
     }
 
     /// The server answered but did not let the project in: "Com problema", with the reason.
@@ -7683,6 +7684,32 @@ fn inspect_project_environment_with_inventory(
 /// project only shows that nothing can be started, with no reason.
 /// The app's server for a local database, looked up during the project check.
 fn managed_info(requirement: &DatabaseRequirement) -> Option<ManagedInfo> {
+    if requirement.engine == DatabaseEngine::SqlServer {
+        use localcodepilot_runtime::sql_server_container::{self, ContainerState};
+        let root = database_ui::database_root()?;
+        let server = sql_server_container::find(&root, requirement.port?)?;
+        let state = sql_server_container::state(&server, None);
+        let running = state == Ok(ContainerState::Running);
+        let state_text = match &state {
+            Ok(ContainerState::Running) => "rodando".to_owned(),
+            Ok(ContainerState::Stopped) => "parado".to_owned(),
+            Ok(ContainerState::Missing) => "container não encontrado".to_owned(),
+            Ok(ContainerState::NotOurs(reason)) => reason.clone(),
+            Err(_) => "estado não confirmado".to_owned(),
+        };
+        return Some(ManagedInfo {
+            summary: format!(
+                "SQL Server gerenciado pelo LocalCodePilot: {} em 127.0.0.1:{} ({state_text}); container {} e volume {} no {}",
+                sql_server_container::VERSION_LABEL,
+                server.port,
+                server.container(),
+                server.volume(),
+                server.engine
+            ),
+            id: format!("mssql:{}", server.id),
+            running,
+        });
+    }
     let engine = match requirement.engine {
         DatabaseEngine::PostgreSql => "postgresql",
         DatabaseEngine::MySql => "mysql",

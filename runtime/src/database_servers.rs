@@ -134,6 +134,7 @@ fn io(context: &str) -> impl Fn(std::io::Error) -> ServerError + '_ {
 pub trait Vault {
     fn save_new(&self, target: &str, user: &str, secret: &str) -> Result<(), String>;
     fn read(&self, target: &str) -> Result<Option<String>, String>;
+    fn delete(&self, target: &str) -> Result<(), String>;
 }
 
 /// The Windows Credential Manager.
@@ -146,6 +147,10 @@ impl Vault for SystemVault {
 
     fn read(&self, target: &str) -> Result<Option<String>, String> {
         credentials::read(target)
+    }
+
+    fn delete(&self, target: &str) -> Result<(), String> {
+        credentials::delete(target)
     }
 }
 
@@ -1585,6 +1590,11 @@ mod tests {
 
         fn read(&self, target: &str) -> Result<Option<String>, String> {
             Ok(self.0.borrow().get(target).cloned())
+        }
+
+        fn delete(&self, target: &str) -> Result<(), String> {
+            self.0.borrow_mut().remove(target);
+            Ok(())
         }
     }
 
