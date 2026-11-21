@@ -10,11 +10,11 @@ This document keeps the technical detail that used to live in the README: how th
 
 ## Português
 
-Este documento descreve a versão `0.4.0-alpha.9`.
+Este documento descreve a versão `0.4.0-alpha.10`.
 
-**Windows:** a `0.4.0-alpha.9` é distribuída para Windows 10/11 x64 como instalador (`LocalCodePilotSetup-0.4.0-alpha.9-windows-x64.exe`) e como ZIP portátil na [página de releases](https://github.com/cjulio1993/LocalCodePilot/releases). Confira o SHA-256 publicado; os arquivos ainda não têm assinatura digital. Quem usa a Alpha 8 pode usar **Atualizar agora**; se a atualização não concluir, instale pelo instalador ou pelo ZIP. Quem usa a Alpha 7 deve instalar pelo instalador ou pelo ZIP.
+**Windows:** a `0.4.0-alpha.10` é distribuída para Windows 10/11 x64 como instalador (`LocalCodePilotSetup-0.4.0-alpha.10-windows-x64.exe`) e como ZIP portátil na [página de releases](https://github.com/cjulio1993/LocalCodePilot/releases). Confira o SHA-256 publicado; os arquivos ainda não têm assinatura digital. Quem usa a Alpha 8 ou a Alpha 9 pode usar **Atualizar agora**; se a atualização não concluir, instale pelo instalador ou pelo ZIP. Na Alpha 9 instalada pelo instalador, **Atualizar agora** troca só o executável, e a lista de programas do Windows continua mostrando 0.4.0-alpha.9; a partir da Alpha 10, a atualização roda o instalador oficial. Quem usa a Alpha 7 deve instalar pelo instalador ou pelo ZIP.
 
-**macOS (experimental):** a Alpha 9 inclui um DMG universal para Intel e Apple Silicon, para testes em Macs reais. O app usa assinatura ad hoc e não é notarizado. Veja [docs/README-MACOS.txt](README-MACOS.txt).
+**macOS (experimental):** a Alpha 10 inclui um DMG universal para Intel e Apple Silicon, para testes em Macs reais. O app usa assinatura ad hoc e não é notarizado. Veja [docs/README-MACOS.txt](README-MACOS.txt).
 ### O que é o LocalCodePilot?
 
 O LocalCodePilot pretende reunir os projetos, runtimes, processos, portas e serviços de desenvolvimento da máquina em um único lugar. Em vez de exigir que cada projeto seja cadastrado manualmente, a aplicação procura projetos automaticamente e identifica suas tecnologias por meio dos arquivos presentes em cada diretório.
@@ -225,7 +225,7 @@ Serviços com uma URL HTTP local são verificados em segundo plano a cada dez se
 
 ### Em desenvolvimento
 
-A versão `0.4.0-alpha.9` tem suporte principal no Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11 em versões anteriores; os novos fluxos desta alpha precisam de validação manual. O DMG universal do macOS é distribuído como pacote experimental para validação em Macs reais.
+A versão `0.4.0-alpha.10` tem suporte principal no Windows. Health checks HTTP e a execução integrada com Docker/Podman foram validados pela interface no Windows 11 em versões anteriores; os novos fluxos desta alpha precisam de validação manual. O DMG universal do macOS é distribuído como pacote experimental para validação em Macs reais.
 
 - Detecção de frameworks e metadados mais detalhados.
 - Modelo de ambiente composto para agrupar frontend, API, workers e microsserviços relacionados.
@@ -378,11 +378,11 @@ Ao enviar alterações, execute a formatação, os testes e o Clippy apresentado
 
 ## English
 
-This document describes version `0.4.0-alpha.9`.
+This document describes version `0.4.0-alpha.10`.
 
-**Windows:** `0.4.0-alpha.9` is distributed for Windows 10/11 x64 as an installer (`LocalCodePilotSetup-0.4.0-alpha.9-windows-x64.exe`) and a portable ZIP on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Verify the published SHA-256; the files are not digitally signed yet. Alpha 8 users can use **Update now**; if the update does not complete, install with the installer or the ZIP. Alpha 7 users should install with the installer or the ZIP.
+**Windows:** `0.4.0-alpha.10` is distributed for Windows 10/11 x64 as an installer (`LocalCodePilotSetup-0.4.0-alpha.10-windows-x64.exe`) and a portable ZIP on the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). Verify the published SHA-256; the files are not digitally signed yet. Alpha 8 and Alpha 9 users can use **Update now**; if the update does not complete, install with the installer or the ZIP. On an Alpha 9 installed with the installer, **Update now** replaces only the executable, and the Windows program list keeps showing 0.4.0-alpha.9; starting with Alpha 10, the update runs the official installer. Alpha 7 users should install with the installer or the ZIP.
 
-**Experimental macOS package:** Alpha 9 includes a universal DMG for Intel and Apple Silicon intended for testing on real Macs. The application uses an ad hoc signature and is not notarized. See [docs/README-MACOS.txt](README-MACOS.txt).
+**Experimental macOS package:** Alpha 10 includes a universal DMG for Intel and Apple Silicon intended for testing on real Macs. The application uses an ad hoc signature and is not notarized. See [docs/README-MACOS.txt](README-MACOS.txt).
 
 ### What is LocalCodePilot?
 
@@ -588,7 +588,7 @@ Services with a local HTTP URL are checked in the background every ten seconds, 
 
 ### Work in progress
 
-Version `0.4.0-alpha.9` has primary support on Windows. HTTP health checks and integrated Docker/Podman execution were validated through the Windows 11 interface in earlier versions; this alpha's new workflows still need manual validation. The universal macOS DMG is distributed as an experimental package for validation on real Macs.
+Version `0.4.0-alpha.10` has primary support on Windows. HTTP health checks and integrated Docker/Podman execution were validated through the Windows 11 interface in earlier versions; this alpha's new workflows still need manual validation. The universal macOS DMG is distributed as an experimental package for validation on real Macs.
 
 - Framework detection and richer project metadata.
 - A composed-environment model for grouping related frontends, APIs, workers, and microservices.

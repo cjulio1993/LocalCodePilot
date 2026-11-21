@@ -35,7 +35,7 @@ Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e
 - **Instalador (`LocalCodePilotSetup-<versão>-windows-x64.exe`; até a alpha 8, `...-windows-x64-setup.exe`), recomendado.** Instala o app e cria o atalho no Menu Iniciar. Quando você usa **Atualizar agora**, o app roda o instalador da nova versão em segundo plano, e a lista de programas do Windows passa a mostrar a versão certa. O outro `.exe` da release (`LocalCodePilot-<versão>-windows-x64.exe`) é o arquivo que a cópia portátil usa para se atualizar.
 - **Zip (portátil).** Extraia e execute `LocalCodePilot.exe`, sem instalar.
 
-**Se você usa a Alpha 8:** o app avisa a nova versão; use **Atualizar agora**. Se a atualização não concluir, baixe o instalador ou o zip na [página de releases](https://github.com/cjulio1993/LocalCodePilot/releases).
+**Se você usa a Alpha 8 ou a Alpha 9:** o app avisa a nova versão; use **Atualizar agora**. Se a atualização não concluir, baixe o instalador ou o zip na [página de releases](https://github.com/cjulio1993/LocalCodePilot/releases). Na Alpha 9 instalada pelo instalador, **Atualizar agora** troca só o executável, e a lista de programas do Windows continua mostrando a Alpha 9; para a lista mostrar a versão certa, rode o instalador da Alpha 10 uma vez. A partir da Alpha 10, a atualização roda o instalador oficial.
 
 **Se você usa a Alpha 7:** baixe o instalador ou o zip. O botão **Atualizar agora** da Alpha 7 não conclui a atualização.
 
@@ -162,7 +162,7 @@ Everything runs on your computer. The app does not send your projects anywhere, 
 - **Installer (`LocalCodePilotSetup-<version>-windows-x64.exe`; up to alpha 8, `...-windows-x64-setup.exe`), recommended.** Installs the app and adds a Start menu shortcut. When you use **Update now**, the app runs the new version's installer in the background, so the Windows program list shows the right version. The other `.exe` on the release (`LocalCodePilot-<version>-windows-x64.exe`) is the file the portable copy uses to update itself.
 - **Zip (portable).** Extract it and run `LocalCodePilot.exe`, no install needed.
 
-**If you use Alpha 8:** the app announces the new version; use **Update now**. If the update does not complete, download the installer or zip from the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases).
+**If you use Alpha 8 or Alpha 9:** the app announces the new version; use **Update now**. If the update does not complete, download the installer or zip from the [releases page](https://github.com/cjulio1993/LocalCodePilot/releases). On an Alpha 9 installed with the installer, **Update now** replaces only the executable, and the Windows program list keeps showing Alpha 9; to make the list show the right version, run the Alpha 10 installer once. Starting with Alpha 10, the update runs the official installer.
 
 **If you use Alpha 7:** download the installer or zip. Alpha 7's **Update now** button does not complete the update.
 

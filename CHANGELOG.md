@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.10] - 2026-11-21
+
 ### Alterado
 
 - As confirmações do banco de dados (**Preparar banco de dados para este projeto?**, **Preparar SQL Server para este projeto?**, **Usar outra porta?**, **Corrigir conexão?** e **Criar banco novo?**) abrem com o foco em **Agora não**, como as outras confirmações do app; Tab leva à ação principal, e Escape tem o mesmo efeito de **Agora não**. Antes, abertas pelo teclado, o foco ficava no botão atrás da janela, e Escape não fechava a confirmação.
@@ -21,6 +23,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Documentação
 
+- A Ajuda ganha a seção **Atualizar o LocalCodePilot**: a atualização pelo app é experimental, a assinatura dos checksums é verificada antes do download, as etapas **Baixar, Verificar, Instalar e Reiniciar**, a diferença entre a cópia instalada e a portátil, a confirmação quando há projetos rodando e o que acontece numa falha.
 - A seção **Bancos de dados** da Ajuda passa a ter um item para cada situação: o preparo no Windows, onde ficam os dados, o servidor que você já tem, as correções, o Compose, o SQL Server, macOS e Linux e o banco em outro computador. O README (em português e em inglês) ganha a seção **Bancos de dados**, com uma tabela do que o app faz em cada caso. A limitação antiga ("ainda pedem esse passo manual") deu lugar aos limites reais: preparo só no Windows, SQL Server só em container e em computadores x64, migrations por conta do projeto e `DATABASE_URL` ainda não reconhecido. O `docs/DATABASES.md` foi reescrito com o comportamento atual.
 - O README e a Ajuda (**Instalar no Windows com segurança**) explicam, passo a passo, como conferir o SHA-256 do instalador ou do zip no `SHA256SUMS.txt` da release antes de abrir o arquivo, e só então o que fazer no aviso do SmartScreen. Saiu a promessa de assinatura de código "a caminho": as versões atuais não têm assinatura de código.
 
