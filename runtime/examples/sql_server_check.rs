@@ -126,6 +126,24 @@ fn main() -> ExitCode {
             sql_server_container::APPROXIMATE_SPACE
         );
     }
+    // The space on disk once extracted, as the files take it inside the image.
+    if let Ok(output) = std::process::Command::new(&engine)
+        .args([
+            "run",
+            "--rm",
+            "--entrypoint",
+            "/bin/sh",
+            sql_server_container::IMAGE,
+            "-c",
+            "du -sxm / 2>/dev/null | cut -f1",
+        ])
+        .output()
+    {
+        println!(
+            "espaço extraído: {} MB",
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
     check(
         "preparado e rodando",
         sql_server_container::state(&server, None) == Ok(ContainerState::Running),
