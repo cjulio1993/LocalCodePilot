@@ -17,6 +17,17 @@ pub mod database_servers;
 pub mod databases;
 pub mod sql_server_container;
 
+/// Picks ring as the process-wide rustls backend, once. The dependencies turn on two
+/// backends (ring for mysql_async, aws-lc-rs through tiberius), and then rustls has no
+/// default: mysql_async's TLS (`ClientConfig::builder()`) panics. Called before every
+/// MySQL/MariaDB connection; a backend someone already installed is kept.
+pub fn tls_ready() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
     "node_modules",
@@ -3978,3 +3989,17 @@ version = "0.1.0"
     }
 }
 pub mod containers;
+
+#[cfg(test)]
+mod tls_tests {
+    /// Two rustls backends are compiled in (ring and aws-lc-rs, see Cargo.toml): without a
+    /// process default, the builder mysql_async uses for TLS panics. This is what left the
+    /// MySQL preparation on "Preparando…" before the Alpha 10.
+    #[test]
+    fn mysql_tls_has_a_crypto_backend() {
+        super::tls_ready();
+        super::tls_ready();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let _ = rustls::ClientConfig::builder();
+    }
+}

@@ -376,6 +376,7 @@ pub fn test_remote_connection(
                 .user(Some(user))
                 .pass(Some(password))
                 .db_name(Some(database));
+            crate::tls_ready();
             match mysql_async::Conn::new(options).await {
                 Ok(connection) => {
                     let _ = connection.disconnect().await;
@@ -560,6 +561,7 @@ async fn mysql_login(
                 "destino fora deste computador".into(),
             ));
         };
+        crate::tls_ready();
         match mysql_async::Conn::new(options).await {
             Ok(connection) => {
                 let _ = connection.disconnect().await;

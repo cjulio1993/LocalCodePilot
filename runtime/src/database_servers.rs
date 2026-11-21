@@ -1175,7 +1175,7 @@ fn mysql_ensure(
         .ssl_opts(ssl);
     let failed = |error: mysql_async::Error| ServerError::Authentication(error.to_string());
     runtime()?.block_on(async {
-        let mut connection = mysql_async::Conn::new(options).await.map_err(failed)?;
+        let mut connection = mysql_connect(options).await?;
         let had_database: Option<String> = connection
             .exec_first(
                 "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?",
@@ -1359,6 +1359,28 @@ fn postgres_admin(server: &ManagedServer, password: &str, sql: &str) -> Result<(
     })
 }
 
+/// How long an administrator login to the app's MySQL/MariaDB may take before it fails.
+const MYSQL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// An administrator connection to the app's MySQL/MariaDB, with one TLS backend chosen and a
+/// time limit: a server that accepts the socket but never answers fails instead of hanging.
+async fn mysql_connect(
+    options: mysql_async::OptsBuilder,
+) -> Result<mysql_async::Conn, ServerError> {
+    crate::tls_ready();
+    match tokio::time::timeout(MYSQL_CONNECT_TIMEOUT, mysql_async::Conn::new(options)).await {
+        Ok(Ok(connection)) => Ok(connection),
+        Ok(Err(error)) => Err(ServerError::Authentication(error.to_string())),
+        Err(_) => Err(ServerError::StartFailed {
+            detail: format!(
+                "o servidor não respondeu ao login de administração em {} s",
+                MYSQL_CONNECT_TIMEOUT.as_secs()
+            ),
+            log: String::new(),
+        }),
+    }
+}
+
 fn mysql_admin(server: &ManagedServer, password: &str, sql: &str) -> Result<(), ServerError> {
     use mysql_async::prelude::Queryable;
     // MySQL 9 authenticates with caching_sha2_password, which needs TLS on the first login.
@@ -1372,9 +1394,7 @@ fn mysql_admin(server: &ManagedServer, password: &str, sql: &str) -> Result<(), 
         .pass(Some(password))
         .ssl_opts(ssl);
     runtime()?.block_on(async {
-        let mut connection = mysql_async::Conn::new(options)
-            .await
-            .map_err(|error| ServerError::Authentication(error.to_string()))?;
+        let mut connection = mysql_connect(options).await?;
         let result = connection.query_drop(sql).await;
         // SHUTDOWN closes the connection from the server side.
         let _ = connection.disconnect().await;
