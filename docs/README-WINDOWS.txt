@@ -19,8 +19,8 @@ aplicativo ou em Configurações > Atualizações. O LocalCodePilot confere a as
 dos checksums e o SHA-256 do download e mostra as etapas Baixar, Verificar, Instalar e
 Reiniciar. Na cópia instalada pelo instalador, ele roda o instalador oficial da nova
 versão em silêncio; na cópia portátil (ZIP), troca o executável. Se houver projetos em
-execução, ele pergunta antes de encerrá-los. Se algo falhar, a versão atual continua
-(ou volta, se a troca já tinha começado), e o aviso diz o que aconteceu.
+execução, ele pergunta antes de encerrá-los. Se algo falhar, o aviso informa o resultado
+e a próxima ação. A versão anterior é reaberta quando sua recuperação for confirmada.
 
 Esta é uma versão alpha experimental. Faça backup dos projetos importantes antes de
 aceitar alterações de dependências ou migrações sugeridas pelo aplicativo.

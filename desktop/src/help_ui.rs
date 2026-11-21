@@ -268,6 +268,32 @@ const SECTIONS: &[HelpSection] = &[
         link: None,
     },
     HelpSection {
+        id: "atualizar",
+        title: "Atualizar o LocalCodePilot",
+        blocks: &[
+            Block::Text(
+                "A atualização pelo aplicativo é experimental. Quando há uma versão nova, o aviso mostra o que mudou e Atualizar agora; a mesma ação fica em Configurações > Atualizações. Antes de baixar, o LocalCodePilot verifica a assinatura dos checksums.",
+            ),
+            Block::Item(
+                "Etapas",
+                "Baixar, Verificar, Instalar e Reiniciar. Com o app fechado, a janela Atualizando o LocalCodePilot acompanha a instalação; fechar essa janela não interrompe a atualização.",
+            ),
+            Block::Item(
+                "Instalado ou portátil",
+                "a cópia instalada pelo instalador é atualizada pelo instalador oficial da versão nova, e a lista de programas do Windows acompanha a versão. A cópia portátil (zip) troca o executável.",
+            ),
+            Block::Item(
+                "Projetos rodando",
+                "se houver projetos em execução, o LocalCodePilot pede confirmação antes de encerrá-los; Agora não mantém os projetos rodando.",
+            ),
+            Block::Item(
+                "Se falhar",
+                "o aviso informa o resultado e oferece uma próxima ação, e Detalhes técnicos guarda o erro original. A versão anterior é reaberta quando a recuperação dela é confirmada.",
+            ),
+        ],
+        link: None,
+    },
+    HelpSection {
         id: "tecnico",
         title: "Detalhes técnicos",
         blocks: &[
@@ -683,13 +709,14 @@ mod tests {
                 "Containers e Compose",
                 "Bancos de dados",
                 "Instalar no Windows com segurança",
+                "Atualizar o LocalCodePilot",
                 "Detalhes técnicos",
             ]
         );
         // Only the first steps are open at first; the rest is one click away.
         assert_eq!(
             HelpState::default().open,
-            [true, false, false, false, false, false, false, false]
+            [true, false, false, false, false, false, false, false, false]
         );
     }
 
