@@ -280,7 +280,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Instalado ou portátil",
-                "a cópia instalada pelo instalador é atualizada pelo instalador oficial da versão nova, e a lista de programas do Windows acompanha a versão. A cópia portátil (zip) troca o executável.",
+                "a cópia instalada pelo instalador é atualizada pelo instalador oficial da versão nova, e a lista de programas do Windows acompanha a versão. A cópia portátil (zip) troca o executável. Um .exe avulso aberto direto da pasta Downloads não se atualiza sozinho: Baixar atualização leva ao instalador, e a cópia instalada passa a se atualizar sozinha.",
             ),
             Block::Item(
                 "Projetos rodando",

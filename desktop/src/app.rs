@@ -1371,11 +1371,9 @@ impl LocalCodePilot {
                         );
                         if !automatic_update {
                             ui.label(
-                                RichText::new(
-                                    "Use o pacote oficial para concluir esta atualização.",
-                                )
-                                .color(theme::MUTED)
-                                .size(10.0),
+                                RichText::new(updates::manual_download_note(&update))
+                                    .color(theme::MUTED)
+                                    .size(10.0),
                             );
                         }
                     });
@@ -1407,8 +1405,9 @@ impl LocalCodePilot {
                             )
                             .clicked()
                         {
-                            ui.ctx()
-                                .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                updates::manual_download_url(&update),
+                            ));
                         }
                         if ui.link("Ver novidades").clicked() {
                             ui.ctx()
@@ -4963,11 +4962,20 @@ impl LocalCodePilot {
                             )
                             .clicked()
                     {
-                        ui.ctx()
-                            .open_url(egui::OpenUrl::new_tab(&update.download_url));
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(
+                            updates::manual_download_url(update),
+                        ));
                     }
                 });
                 if let Some(update) = &available_update {
+                    if !automatic_update {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(updates::manual_download_note(update))
+                                .color(theme::MUTED)
+                                .size(11.0),
+                        );
+                    }
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(update_versions_line(&update.version))
