@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [0.4.0-alpha.10] - 2026-11-21
+
 ### Alterado
 
 - As confirmações do banco de dados (**Preparar banco de dados para este projeto?**, **Preparar SQL Server para este projeto?**, **Usar outra porta?**, **Corrigir conexão?** e **Criar banco novo?**) abrem com o foco em **Agora não**, como as outras confirmações do app; Tab leva à ação principal, e Escape tem o mesmo efeito de **Agora não**. Antes, abertas pelo teclado, o foco ficava no botão atrás da janela, e Escape não fechava a confirmação.

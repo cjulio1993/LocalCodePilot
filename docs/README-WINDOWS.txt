@@ -15,16 +15,25 @@ Atualizações futuras
 --------------------
 
 Quando uma nova versão estiver disponível, use "Atualizar agora" no aviso do
-aplicativo ou em Configurações > Atualizações. O LocalCodePilot baixa o executável,
-confere a assinatura dos checksums e o SHA-256, reinicia e remove os arquivos temporários. Se a pasta não permitir
-escrita, o aplicativo mantém o download manual do ZIP como alternativa.
+aplicativo ou em Configurações > Atualizações. O LocalCodePilot confere a assinatura
+dos checksums e o SHA-256 do download e mostra as etapas Baixar, Verificar, Instalar e
+Reiniciar. Na cópia instalada pelo instalador, ele roda o instalador oficial da nova
+versão em silêncio; na cópia portátil (ZIP), troca o executável. Se houver projetos em
+execução, ele pergunta antes de encerrá-los. Se algo falhar, a versão atual continua
+(ou volta, se a troca já tinha começado), e o aviso diz o que aconteceu.
 
 Esta é uma versão alpha experimental. Faça backup dos projetos importantes antes de
 aceitar alterações de dependências ou migrações sugeridas pelo aplicativo.
 
-O LocalCodePilot não inclui as linguagens nem os bancos de dados. Quando uma linguagem
-não está instalada, o cartão do projeto oferece "Preparar ambiente" para instalá-la
-pelo winget, depois da sua confirmação.
+O LocalCodePilot não inclui as linguagens. Quando uma linguagem não está instalada,
+o cartão do projeto oferece "Preparar ambiente" para instalá-la pelo winget, depois
+da sua confirmação.
+
+Bancos de dados: quando o projeto usa PostgreSQL, MySQL ou MariaDB neste computador e
+o banco não está rodando, "Iniciar" pode preparar um servidor do LocalCodePilot, depois
+da sua confirmação (os dados ficam em %LOCALAPPDATA%\LocalCodePilot\bancos). Para SQL
+Server, com o Docker ou o Podman prontos, ele pode criar um container, depois que você
+aceitar os termos de licença da Microsoft. Veja a seção Bancos de dados no README.
 
 Integridade do download
 -----------------------
