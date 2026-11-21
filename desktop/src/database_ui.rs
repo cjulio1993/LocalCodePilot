@@ -260,6 +260,19 @@ enum JobResult {
     Tested(Option<ConnectionTest>),
 }
 
+/// The card's sentence when a database job stops without a result.
+const JOB_INTERRUPTED: &str =
+    "Não foi possível concluir o preparo do banco de dados. Confira os detalhes e tente novamente.";
+
+/// The message of a panic payload, for "Detalhes técnicos".
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "erro interno sem mensagem".into())
+}
+
 struct JobFailure {
     message: String,
     outcome: Option<ConnectionOutcome>,
@@ -281,6 +294,17 @@ impl JobFailure {
             recovery: None,
             details: vec![],
         }
+    }
+
+    /// The job stopped without finishing (a panic, a lost thread). No "Tentar de novo": the
+    /// server and the data are not known to be in a state another try can safely resume;
+    /// Iniciar checks them again from the start.
+    fn interrupted(detail: String) -> Self {
+        let mut failure = Self::text(JOB_INTERRUPTED);
+        failure.details = vec![format!(
+            "A tarefa do banco de dados foi interrompida: {detail}"
+        )];
+        failure
     }
 
     /// A SQL Server step failed: the sentence for the card, the rest in "Detalhes técnicos".
@@ -781,7 +805,12 @@ impl LocalCodePilot {
             },
         );
         std::thread::spawn(move || {
-            let result = work(&sender);
+            // A panic in a library (a TLS backend, a driver) must not leave the card on
+            // "Preparando…" forever: it becomes a failure the card can show.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&sender)))
+                .unwrap_or_else(|panic| {
+                    JobResult::Failed(JobFailure::interrupted(panic_text(panic.as_ref())))
+                });
             let _ = sender.send(JobEvent::Done(result));
         });
     }
@@ -821,10 +850,24 @@ impl LocalCodePilot {
         }
         let mut finished = vec![];
         for (project, job) in &mut self.database.jobs {
-            while let Ok(event) = job.receiver.try_recv() {
-                match event {
-                    JobEvent::Step(step) => job.step = step,
-                    JobEvent::Done(result) => finished.push((project.clone(), result)),
+            loop {
+                match job.receiver.try_recv() {
+                    Ok(JobEvent::Step(step)) => job.step = step,
+                    Ok(JobEvent::Done(result)) => {
+                        finished.push((project.clone(), result));
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    // The job's thread ended without a result: never "Preparando…" forever.
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        finished.push((
+                            project.clone(),
+                            JobResult::Failed(JobFailure::interrupted(
+                                "a tarefa do banco de dados terminou sem resultado".into(),
+                            )),
+                        ));
+                        break;
+                    }
                 }
             }
         }
@@ -2208,6 +2251,23 @@ mod tests {
         };
         let (choice, _, _) = sql_confirmation_frames(&mut request, &[escape]);
         assert_eq!(choice, SqlChoice::Cancel);
+    }
+
+    #[test]
+    fn an_interrupted_job_becomes_a_failure_without_retry() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("no process-level CryptoProvider");
+        let failure = JobFailure::interrupted(panic_text(payload.as_ref()));
+        assert_eq!(failure.message, JOB_INTERRUPTED);
+        assert_eq!(
+            failure.details,
+            vec!["A tarefa do banco de dados foi interrompida: no process-level CryptoProvider"]
+        );
+        // No server known to be safe to resume: no "Tentar de novo", Iniciar checks again.
+        assert_eq!(failure.server_id, None);
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("outro"));
+        assert_eq!(panic_text(payload.as_ref()), "outro");
+        let payload: Box<dyn std::any::Any + Send> = Box::new(7);
+        assert_eq!(panic_text(payload.as_ref()), "erro interno sem mensagem");
     }
 
     #[test]
