@@ -10,6 +10,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 - No Windows, uma cópia que não consegue se atualizar sozinha (por exemplo, o `.exe` avulso da release aberto direto da pasta Downloads) passa a levar ao instalador oficial em **Baixar atualização**, com a frase "Esta cópia não foi instalada. Baixe o instalador para atualizar e receber as próximas atualizações automaticamente.". Antes, o botão baixava o zip, e a cópia continuava sem se atualizar sozinha. A mesma frase aparece em **Configurações > Atualizações**.
 
+### Segurança
+
+- Atualizada a dependência `url` para corrigir o alerta RUSTSEC-2026-0592.
+
 ## [0.4.0-alpha.10] - 2026-11-21
 
 ### Alterado
