@@ -175,16 +175,6 @@ impl LocalCodePilot {
         });
     }
 
-    fn command_running(&self, id: &str) -> bool {
-        self.processes.iter().any(|process| {
-            process.id == id
-                && matches!(
-                    process.state,
-                    ProcessState::Running | ProcessState::Starting
-                )
-        })
-    }
-
     /// Puts the defined commands of `project` back among its processes and recomputes what
     /// the card shows.
     fn refresh_custom_processes(&mut self, project_path: &Path) {
@@ -196,16 +186,18 @@ impl LocalCodePilot {
         else {
             return;
         };
-        self.processes.retain(|process| {
+        self.managed.processes.retain(|process| {
             !(process.project_path == project_path && custom_commands::is_custom(process))
         });
-        self.processes.extend(custom_commands::processes_for(
-            &project,
-            &self.workspace_state.custom_commands,
-        ));
+        self.managed
+            .processes
+            .extend(custom_commands::processes_for(
+                &project,
+                &self.workspace_state.custom_commands,
+            ));
         let environment = inspect_project_environment(
             &project,
-            &self.processes,
+            &self.managed.processes,
             self.environment_path.as_deref(),
         );
         self.project_environments
@@ -227,7 +219,7 @@ impl LocalCodePilot {
                 name: original.clone(),
                 ..CustomCommand::default()
             };
-            if self.command_running(&old.process_id()) {
+            if self.managed.command_running(&old.process_id()) {
                 return Err("Pare este comando antes de alterá-lo.".into());
             }
         }
@@ -254,7 +246,7 @@ impl LocalCodePilot {
             name: name.to_owned(),
             ..CustomCommand::default()
         };
-        if self.command_running(&target.process_id()) {
+        if self.managed.command_running(&target.process_id()) {
             self.notify("Pare este comando antes de removê-lo.");
             return;
         }

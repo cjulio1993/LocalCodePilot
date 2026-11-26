@@ -459,18 +459,6 @@ impl LocalCodePilot {
             .collect()
     }
 
-    fn project_is_running(&self, project_path: &Path) -> bool {
-        project_process_ids(&self.processes, project_path, false)
-            .iter()
-            .filter_map(|id| self.processes.iter().find(|process| process.id == *id))
-            .any(|process| {
-                matches!(
-                    process.state,
-                    ProcessState::Running | ProcessState::Starting
-                )
-            })
-    }
-
     /// Before the processes of a project start: every local database it needs must accept
     /// its login (CA-5). Returns `Waiting` when a confirmation or a preparation took over.
     pub(super) fn project_database_gate(
@@ -1011,7 +999,7 @@ impl LocalCodePilot {
         {
             let environment = inspect_project_environment(
                 project,
-                &self.processes,
+                &self.managed.processes,
                 self.environment_path.as_deref(),
             );
             self.project_environments
@@ -1055,11 +1043,11 @@ impl LocalCodePilot {
                             None,
                         )
                         .into_iter()
-                        .filter(|(path, _)| self.project_is_running(path))
+                        .filter(|(path, _)| self.managed.project_is_running(path))
                         .map(|(_, name)| name)
                         .collect();
-                    extras.can_stop =
-                        !self.project_is_running(project_path) && extras.stop_blocked_by.is_empty();
+                    extras.can_stop = !self.managed.project_is_running(project_path)
+                        && extras.stop_blocked_by.is_empty();
                 }
             }
         }
