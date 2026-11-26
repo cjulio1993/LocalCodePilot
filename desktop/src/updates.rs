@@ -16,6 +16,7 @@ use std::{
 };
 
 mod recovery;
+pub(crate) mod session;
 #[cfg(feature = "update-test-feed")]
 mod test_feed;
 
