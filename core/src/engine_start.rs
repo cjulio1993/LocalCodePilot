@@ -96,9 +96,31 @@ pub struct StartFacts {
     pub podman_connection: Option<PodmanConnection>,
 }
 
-/// Whether a Docker endpoint is this computer's own daemon (a named pipe or a Unix socket).
-pub fn is_local_docker_endpoint(endpoint: &str) -> bool {
-    endpoint.starts_with("npipe://") || endpoint.starts_with("unix://")
+/// Whether `endpoint` is the daemon that `start` brings up. Docker Desktop on Windows listens
+/// on its own pipes; on macOS and in Docker Desktop for Linux, on the socket in the user's
+/// `.docker` folder (`/var/run/docker.sock` is its link on macOS); rootless Docker, on the
+/// socket in `/run/user/<id>`. Any other endpoint, even on this computer, is someone else's
+/// daemon, and starting Docker Desktop would not make it answer.
+pub fn docker_endpoint_matches(start: &EngineStart, os: HostOs, endpoint: &str) -> bool {
+    let socket = endpoint.strip_prefix("unix://");
+    match (start, os) {
+        (EngineStart::DockerDesktopCli | EngineStart::DockerDesktopApp(_), HostOs::Windows) => {
+            matches!(
+                endpoint,
+                "npipe:////./pipe/dockerDesktopLinuxEngine" | "npipe:////./pipe/docker_engine"
+            )
+        }
+        (EngineStart::DockerDesktopCli | EngineStart::DockerDesktopApp(_), HostOs::MacOs) => socket
+            .is_some_and(|path| {
+                path == "/var/run/docker.sock" || path.ends_with("/.docker/run/docker.sock")
+            }),
+        (EngineStart::SystemdUser(unit), HostOs::Linux) if unit == "docker-desktop" => {
+            socket.is_some_and(|path| path.ends_with("/.docker/desktop/docker.sock"))
+        }
+        (EngineStart::SystemdUser(unit), HostOs::Linux) if unit == "docker" => socket
+            .is_some_and(|path| path.starts_with("/run/user/") && path.ends_with("/docker.sock")),
+        _ => false,
+    }
 }
 
 pub const PODMAN_DEFAULT_MACHINE: &str = "podman-machine-default";
@@ -151,14 +173,11 @@ pub fn plan_start(
     if failure != InfoFailure::Stopped || facts.host_override {
         return None;
     }
-    let has_unit = |unit: &str| facts.systemd_user_units.iter().any(|known| known == unit);
     // The CLI must point to this computer's default target, or the start would act on
     // something else than what the person is shown.
     let target_is_default = match engine {
-        ContainerEngine::Docker => facts
-            .docker_endpoint
-            .as_deref()
-            .is_some_and(is_local_docker_endpoint),
+        // Checked against the chosen start below.
+        ContainerEngine::Docker => facts.docker_endpoint.is_some(),
         ContainerEngine::Podman => match (&facts.podman_connection, &facts.podman_default, os) {
             (Some(PodmanConnection::NoneConfigured), _, HostOs::Linux) => true,
             (Some(PodmanConnection::NoneConfigured), Some(DefaultMachine::NotCreated), _) => true,
@@ -173,6 +192,18 @@ pub fn plan_start(
     if !target_is_default {
         return None;
     }
+    let plan = plan_for_target(engine, os, facts)?;
+    if engine == ContainerEngine::Docker {
+        let endpoint = facts.docker_endpoint.as_deref()?;
+        if !docker_endpoint_matches(&plan, os, endpoint) {
+            return None;
+        }
+    }
+    Some(plan)
+}
+
+fn plan_for_target(engine: ContainerEngine, os: HostOs, facts: &StartFacts) -> Option<EngineStart> {
+    let has_unit = |unit: &str| facts.systemd_user_units.iter().any(|known| known == unit);
     match (engine, os) {
         (ContainerEngine::Docker, HostOs::Windows | HostOs::MacOs) => {
             if facts.docker_desktop_cli {
@@ -255,7 +286,10 @@ mod tests {
             )
         };
         assert!(docker(Some("npipe:////./pipe/dockerDesktopLinuxEngine")).is_some());
-        assert!(docker(Some("unix:///var/run/docker.sock")).is_some());
+        assert!(docker(Some("npipe:////./pipe/docker_engine")).is_some());
+        // Local, but not the daemon Docker Desktop brings up on Windows.
+        assert_eq!(docker(Some("npipe:////./pipe/outro_motor")), None);
+        assert_eq!(docker(Some("unix:///var/run/docker.sock")), None);
         assert_eq!(docker(Some("tcp://10.0.0.5:2376")), None);
         assert_eq!(docker(Some("ssh://deploy@servidor")), None);
         assert_eq!(docker(None), None, "an unreadable context is not proof");
@@ -378,6 +412,77 @@ mod tests {
     }
 
     #[test]
+    fn each_docker_start_accepts_only_the_endpoint_it_brings_up() {
+        let desktop = EngineStart::DockerDesktopCli;
+        assert!(docker_endpoint_matches(
+            &desktop,
+            HostOs::MacOs,
+            "unix:///Users/dev/.docker/run/docker.sock"
+        ));
+        assert!(docker_endpoint_matches(
+            &desktop,
+            HostOs::MacOs,
+            "unix:///var/run/docker.sock"
+        ));
+        assert!(!docker_endpoint_matches(
+            &desktop,
+            HostOs::MacOs,
+            "unix:///Users/dev/.colima/default/docker.sock"
+        ));
+        let linux_desktop = EngineStart::SystemdUser("docker-desktop".into());
+        assert!(docker_endpoint_matches(
+            &linux_desktop,
+            HostOs::Linux,
+            "unix:///home/dev/.docker/desktop/docker.sock"
+        ));
+        assert!(!docker_endpoint_matches(
+            &linux_desktop,
+            HostOs::Linux,
+            "unix:///var/run/docker.sock"
+        ));
+        let rootless = EngineStart::SystemdUser("docker".into());
+        assert!(docker_endpoint_matches(
+            &rootless,
+            HostOs::Linux,
+            "unix:///run/user/1000/docker.sock"
+        ));
+        assert!(!docker_endpoint_matches(
+            &rootless,
+            HostOs::Linux,
+            "unix:///var/run/docker.sock"
+        ));
+
+        // Through plan_start: the system daemon on Linux is never started by the app.
+        let facts = StartFacts {
+            systemd_user_units: vec!["docker.service".into()],
+            docker_endpoint: Some("unix:///var/run/docker.sock".into()),
+            ..facts()
+        };
+        assert_eq!(
+            plan_start(
+                ContainerEngine::Docker,
+                HostOs::Linux,
+                InfoFailure::Stopped,
+                &facts
+            ),
+            None
+        );
+        let facts = StartFacts {
+            docker_endpoint: Some("unix:///run/user/1000/docker.sock".into()),
+            ..facts
+        };
+        assert_eq!(
+            plan_start(
+                ContainerEngine::Docker,
+                HostOs::Linux,
+                InfoFailure::Stopped,
+                &facts
+            ),
+            Some(EngineStart::SystemdUser("docker".into()))
+        );
+    }
+
+    #[test]
     fn a_host_override_plans_no_start() {
         let facts = StartFacts {
             host_override: true,
@@ -407,6 +512,7 @@ mod tests {
         );
         let without_cli = StartFacts {
             docker_desktop_cli: false,
+            docker_endpoint: Some("unix:///var/run/docker.sock".into()),
             ..facts()
         };
         assert_eq!(
@@ -439,8 +545,15 @@ mod tests {
     #[test]
     fn on_linux_only_user_units_are_started_never_a_system_service() {
         let docker = |units: &[&str]| {
+            // Each unit with the socket it serves.
+            let endpoint = if units.contains(&"docker-desktop.service") {
+                "unix:///home/dev/.docker/desktop/docker.sock"
+            } else {
+                "unix:///run/user/1000/docker.sock"
+            };
             let facts = StartFacts {
                 systemd_user_units: units.iter().map(|unit| (*unit).to_owned()).collect(),
+                docker_endpoint: Some(endpoint.into()),
                 ..facts()
             };
             plan_start(
