@@ -4685,6 +4685,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_update_check();
         self.poll_update_install(ctx);
         self.poll_containers(ctx);
+        self.poll_engine_start(ctx);
         self.poll_languages(ctx);
         self.poll_database_jobs(ctx);
         self.persist_workspace_state(false);
@@ -4702,6 +4703,7 @@ impl eframe::App for LocalCodePilot {
         self.show_port_termination_confirmation(ui);
         self.show_clear_history_confirmation(ui);
         self.show_update_confirmation(ui);
+        self.engine_start_confirmation(ui);
         self.show_database_confirmation(ui);
         self.show_notification(ui);
     }

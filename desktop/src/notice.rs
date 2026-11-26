@@ -11,6 +11,8 @@ pub(super) struct Notice<'a> {
     action: Option<(&'a str, bool)>,
     dismiss: Option<&'a str>,
     resolve_label: &'a str,
+    /// Assistive technologies announce the sentence when it changes (progress, failure).
+    live: bool,
 }
 
 /// What was clicked in a notice.
@@ -18,6 +20,8 @@ pub(super) struct Notice<'a> {
 pub(super) struct NoticeResponse {
     pub action: bool,
     pub dismiss: bool,
+    /// The action button, to give it the focus back after a dialog it opened.
+    pub action_id: Option<egui::Id>,
 }
 
 /// Content of the expandable parts. `None` hides the toggle.
@@ -34,7 +38,14 @@ impl<'a> Notice<'a> {
             action: None,
             dismiss: None,
             resolve_label: "Como resolver",
+            live: false,
         }
+    }
+
+    /// Announces the sentence when it appears or changes.
+    pub(super) fn live(mut self) -> Self {
+        self.live = true;
+        self
     }
 
     /// The one action of the first layer.
@@ -74,11 +85,14 @@ impl<'a> Notice<'a> {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let sentence = format!("{WARNING_CIRCLE}  {}", self.sentence);
-                announced(
+                let label = announced(
                     ui.label(RichText::new(&sentence).color(theme::WARNING).strong()),
                     egui::Role::Label,
                     &sentence,
                 );
+                if self.live {
+                    mark_live(ui, label.id);
+                }
                 let resolve_key = self.id.with("resolve");
                 let details_key = self.id.with("details");
                 let mut resolve_open = parts.resolve.is_some() && is_open(ui, resolve_key);
@@ -86,8 +100,9 @@ impl<'a> Notice<'a> {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     if let Some((label, enabled)) = self.action {
-                        response.action =
-                            ui.add_enabled(enabled, egui::Button::new(label)).clicked();
+                        let button = ui.add_enabled(enabled, egui::Button::new(label));
+                        response.action = button.clicked();
+                        response.action_id = Some(button.id);
                     }
                     if let Some(label) = self.dismiss {
                         response.dismiss = ui.button(label).clicked();
@@ -121,6 +136,13 @@ impl<'a> Notice<'a> {
         }
         response
     }
+}
+
+/// Marks a widget as a polite live region: screen readers announce its text when it changes.
+pub(super) fn mark_live(ui: &egui::Ui, id: egui::Id) {
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_live(egui::accesskit::Live::Polite);
+    });
 }
 
 /// Opens the "Como resolver" part of a notice and scrolls to it, for links that lead to it

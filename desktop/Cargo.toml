@@ -14,6 +14,9 @@ default = []
 # scripts/e2e-update-windows.ps1). Refused in release builds; never enable it
 # when packaging.
 update-test-feed = []
+# Simulated engine starts for screen tests (LOCALCODEPILOT_TEST_ENGINE_START=ok|timeout|compose|falha),
+# so a real Docker or Podman is never turned on. Refused in release builds.
+engine-start-test = []
 
 [dependencies]
 eframe.workspace = true

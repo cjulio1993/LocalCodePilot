@@ -88,7 +88,7 @@ O que acontece ao clicar em **Iniciar**, validado no Windows 11:
 | Haskell (Stack) | `stack run` | **instala o Stack**, baixa o compilador e compila |
 | Zig | `zig build run` | **instala o Zig** se faltar |
 | Sites HTML e projetos sem framework | um servidor local (ou `java Main.java`, ou o servidor do PHP) | — |
-| Containers (Docker, Podman, Compose) | `compose up`, escolhendo o motor | não instala o Docker/Podman; mostra o passo a passo |
+| Containers (Docker, Podman, Compose) | `compose up`, escolhendo o motor | não instala Docker/Podman; pode ligar o motor instalado após confirmação |
 | Outras linguagens (C/C++, Perl, Lua, R, Julia…) | o comando que você definir uma vez | — |
 
 Quando uma linguagem não está instalada, **Preparar ambiente** usa o `winget` do Windows. Nas linhas em negrito, a instalação foi validada de ponta a ponta. Para Python, Java, PHP, Node.js, Go e Dart, a instalação pelo app ainda está em validação.
@@ -119,7 +119,7 @@ Mais detalhes em [docs/DATABASES.md](docs/DATABASES.md).
 - **Assinatura:** os downloads ainda não têm assinatura digital (veja [Baixar e instalar](#baixar-e-instalar)).
 - **Bancos de dados:** o preparo do servidor existe só no Windows; no macOS e no Linux, o app testa o login, mas você inicia o banco. O SQL Server não é instalado direto no Windows (só em container), e a imagem funciona só em computadores x64. O app não cria tabelas: migrations como `db:prepare` (Rails) ou `ecto.migrate` (Phoenix) continuam com você, e o erro aparece em **Ver logs**. Bancos configurados só por `DATABASE_URL` ou por arquivos de Spring, Django e .NET ainda não são reconhecidos.
 - **Formatos não cobertos:** Leiningen (`project.clj`) e Haskell só com Cabal ainda pedem o comando de início.
-- **Containers:** o app não instala o Docker nem o Podman.
+- **Containers:** o app não instala o Docker nem o Podman. Quando um deles está instalado e parado, **Iniciar** pergunta antes e liga o motor (no Linux, só o serviço do seu usuário; o serviço do sistema pede senha e continua com você).
 - **Atualização pelo app:** é experimental até ser testada com uma versão mais nova. Durante a atualização, o app mostra as etapas Baixar, Verificar, Instalar e Reiniciar e a barra do download. Enquanto o app está fechado para atualizar, uma janela pequena, **Atualizando o LocalCodePilot**, acompanha a instalação e o reinício; fechar essa janela não interrompe a atualização, e o resultado aparece no app que reabre. Antes de baixar, ele confere a assinatura do projeto nos checksums da release e recusa a atualização se ela não conferir. Se algo falhar, o aviso diz o que aconteceu em linguagem simples, oferece **Tentar de novo** ou a página oficial da versão e guarda o erro original em **Detalhes técnicos**. Se houver projetos em execução, o app pergunta antes de fechar e encerrar os processos deles; **Agora não** mantém tudo rodando. O aviso também resume a novidade da versão numa linha ("O que há de novo: ..."), tirada das notas oficiais.
 
 ### Para desenvolvedores
@@ -217,7 +217,7 @@ What happens when you click **Start**, validated on Windows 11:
 | Haskell (Stack) | `stack run` | **installs Stack**, downloads the compiler, and builds |
 | Zig | `zig build run` | **installs Zig** if missing |
 | HTML sites and projects without a framework | a local server (or `java Main.java`, or PHP's server) | — |
-| Containers (Docker, Podman, Compose) | `compose up`, with your choice of engine | does not install Docker/Podman; shows the steps |
+| Containers (Docker, Podman, Compose) | `compose up`, with your choice of engine | does not install Docker/Podman; can turn on an installed engine after you confirm |
 | Other languages (C/C++, Perl, Lua, R, Julia…) | the command you define once | — |
 
 When a language is not installed, **Prepare environment** uses Windows' `winget`. Installation was validated end to end for the rows in bold. For Python, Java, PHP, Node.js, Go, and Dart, installation by the app is still being validated.
@@ -248,7 +248,7 @@ More in [docs/DATABASES.md](docs/DATABASES.md).
 - **Signing:** downloads are not digitally signed yet (see [Download and install](#download-and-install)).
 - **Databases:** preparing the server is Windows-only; on macOS and Linux the app tests the login, but you start the database. SQL Server is not installed directly on Windows (container only), and its image runs only on x64 computers. The app does not create tables: migrations such as `db:prepare` (Rails) or `ecto.migrate` (Phoenix) are still yours to run, and the error shows in **View logs**. Databases configured only through `DATABASE_URL` or Spring, Django and .NET files are not recognized yet.
 - **Formats not covered:** Leiningen (`project.clj`) and Cabal-only Haskell projects still ask for the start command.
-- **Containers:** the app does not install Docker or Podman.
+- **Containers:** the app does not install Docker or Podman. When one of them is installed and stopped, **Iniciar** (Start) asks first and turns the engine on (on Linux, only your user's service; the system service asks for a password and stays with you).
 - **In-app update:** experimental until tested against a newer release. While updating, the app shows the download, verify, install, and restart steps and a download progress bar. While the app is closed for the update, a small **Atualizando o LocalCodePilot** ("updating LocalCodePilot") window follows the installation and the restart; closing it does not stop the update, and the outcome shows in the app when it reopens. Before downloading, it checks the project's signature on the release checksums and refuses the update if it does not match. If something fails, the notice says what happened in plain language, offers **Tentar de novo** (try again) or the official release page, and keeps the original error under **Detalhes técnicos** (technical details). If projects are running, the app asks before closing and ending their processes; **Agora não** (not now) keeps everything running. The notice also sums up what is new in one line ("O que há de novo: ..."), taken from the official release notes.
 
 ### For developers
