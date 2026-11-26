@@ -40,7 +40,9 @@ Ao adotar um nome novo, containers e volumes criados com o nome antigo continuam
 
 ### Preparação guiada dos motores
 
-Quando um motor não está pronto, o cartão dele mostra o que falta e os passos para resolver. O LocalCodePilot **não executa** esses passos: cada comando tem um botão **Copiar** para o usuário rodar no próprio terminal, e cada referência aponta para a documentação oficial.
+Quando um motor não está pronto, o cartão dele mostra o que falta e os passos para resolver. Quando o motor instalado está comprovadamente parado, o LocalCodePilot oferece ligá-lo após confirmação e aguarda sua resposta. Quando não pode agir com segurança, mostra o motivo e os Detalhes técnicos. Os demais passos (instalação, Compose ausente) continuam com um botão **Copiar** e a referência à documentação oficial.
+
+"Comprovadamente parado" quer dizer: o `info` falhou com a mensagem de motor desligado (pipe ou socket ausente; "Cannot connect to Podman"), a CLI aponta para o alvo padrão deste computador (contexto do Docker no pipe ou socket do próprio Docker Desktop ou do usuário atual; conexão padrão do Podman na máquina padrão) e não há `DOCKER_HOST` nem `CONTAINER_HOST`. Permissão negada, conexão remota, outra máquina ou mensagem desconhecida não geram a oferta. No Linux, só serviços do usuário (`systemctl --user`) são ligados; o serviço do sistema pede senha e o app não tenta.
 
 | Situação | Orientação |
 | --- | --- |

@@ -20,6 +20,12 @@ pub(crate) mod session;
 #[cfg(feature = "update-test-feed")]
 mod test_feed;
 
+// Simulated engine starts are only for screen tests: they must never ship.
+#[cfg(all(feature = "engine-start-test", not(debug_assertions)))]
+compile_error!(
+    "the engine-start-test feature is only for screen tests and cannot be used in a release build"
+);
+
 // The local test feed changes where updates come from: it must never ship.
 #[cfg(all(feature = "update-test-feed", not(debug_assertions)))]
 compile_error!(

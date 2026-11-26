@@ -1,4 +1,7 @@
 use super::*;
+#[path = "engine_start_ui.rs"]
+mod engine_start_ui;
+use engine_start_ui::{EngineStartState, progress_sentence, start_choices, stopped_sentence};
 use localcodepilot_core::compose_safety::{
     BlockedAction, ComposeEnvironment, ComposeName, ComposeSafety, ComposeVolume,
     classify_environment, explain, guard_container_action, guard_environment_action,
@@ -313,9 +316,19 @@ fn stop_summary(scope: &StopScope) -> String {
 }
 
 /// What the Containers page asks for after drawing a frame.
+/// Engines to offer, the project and its start command per engine.
+type EngineStartAsk = (
+    Vec<ContainerEngine>,
+    String,
+    Vec<(ContainerEngine, ContainerCommand)>,
+);
+
 #[derive(Default)]
 struct PageRequests {
     command: Option<ContainerCommand>,
+    /// "Iniciar" of an environment whose engine is stopped: the engines to offer, the
+    /// project and its start command per engine (T026).
+    engine_start: Option<EngineStartAsk>,
     snippet: Option<String>,
     volumes: Option<VolumeConfirmation>,
     check_again: bool,
@@ -626,6 +639,12 @@ fn engine_message(diagnosis: &EngineDiagnosis) -> Option<EngineMessage> {
             "Como instalar",
             None,
         ),
+        EngineState::Unavailable if diagnosis.start.is_some() => (
+            stopped_sentence(engine),
+            Some("Iniciar"),
+            "Como resolver",
+            None,
+        ),
         EngineState::Unavailable => (
             format!("O {engine} foi encontrado, mas não foi possível acessá-lo."),
             check,
@@ -732,6 +751,8 @@ pub(super) struct ContainerState {
     error: Option<String>,
     /// Text of "Buscar projeto ou serviço" in Containers.
     filter: String,
+    /// Turning on a stopped engine after the person confirms (T026).
+    engine_start: EngineStartState,
 }
 
 impl Default for ContainerState {
@@ -753,6 +774,7 @@ impl Default for ContainerState {
             execution: None,
             error: None,
             filter: String::new(),
+            engine_start: EngineStartState::default(),
         }
     }
 }
@@ -1246,6 +1268,7 @@ impl LocalCodePilot {
                     }
                     self.container_state.runtime_containers = containers;
                     self.container_state.pending = None;
+                    self.resume_after_engine_start();
                     if !self
                         .container_state
                         .execution
@@ -1490,13 +1513,37 @@ impl LocalCodePilot {
         });
         let mut copied = None;
         let mut check_engines = false;
+        let mut start_engine = None;
         for diagnosis in &self.container_state.engines {
             if !shown.contains(&diagnosis.engine) {
                 continue;
             }
-            let Some(message) = engine_message(diagnosis) else {
+            if self.container_state.engine_start.starting(diagnosis.engine) {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    let sentence = progress_sentence(diagnosis.engine);
+                    announced(
+                        ui.label(RichText::new(&sentence).strong()),
+                        egui::Role::Label,
+                        &sentence,
+                    );
+                });
+                continue;
+            }
+            let Some(mut message) = engine_message(diagnosis) else {
                 continue;
             };
+            let failure = self
+                .container_state
+                .engine_start
+                .failure
+                .as_ref()
+                .filter(|failure| failure.engine == diagnosis.engine)
+                .cloned();
+            if let Some(failure) = &failure {
+                message.sentence = failure.sentence.clone();
+            }
             let guidance = self
                 .container_state
                 .host
@@ -1509,7 +1556,15 @@ impl LocalCodePilot {
             )
             .resolve_label(message.resolve);
             if let Some(action) = message.action {
-                notice = notice.action(action, !busy);
+                // Turning the engine on does not clash with the read-only check that keeps running
+                // while the engine is stopped: only a container command or another start waits.
+                let enabled = if diagnosis.start.is_some() {
+                    self.container_state.execution.is_none()
+                        && !self.container_state.engine_start.busy()
+                } else {
+                    !busy
+                };
+                notice = notice.action(action, enabled);
             }
             let mut resolve = |ui: &mut egui::Ui| {
                 if let Some(hint) = message.hint {
@@ -1526,6 +1581,17 @@ impl LocalCodePilot {
                 if diagnosis.state != EngineState::Missing {
                     notice::detail_line(ui, compose_status(diagnosis));
                 }
+                if let Some(start) = &diagnosis.start {
+                    for command in start.commands() {
+                        notice::detail_line(ui, &format!("Partida prevista: {command}"));
+                    }
+                }
+                if let Some(error) = &diagnosis.failure {
+                    notice::detail_line(ui, error);
+                }
+                for line in failure.iter().flat_map(|failure| &failure.technical) {
+                    notice::detail_line(ui, line);
+                }
             };
             if notice.show(
                 ui,
@@ -1538,11 +1604,19 @@ impl LocalCodePilot {
                     details: Some(&mut details),
                 },
             ) {
-                check_engines = true;
+                if diagnosis.start.is_some() {
+                    start_engine = Some(diagnosis.engine);
+                } else {
+                    check_engines = true;
+                }
             }
         }
         if check_engines {
             self.refresh_containers(ui.ctx().clone());
+        }
+        // Containers turns on only the engine: no project is started from here.
+        if let Some(engine) = start_engine {
+            self.request_engine_start(vec![engine], None, vec![]);
         }
         if let Some(command) = copied {
             self.notify(format!("Comando copiado: {command}"));
@@ -1916,6 +1990,9 @@ impl LocalCodePilot {
         if requests.check_again {
             self.refresh_containers(ui.ctx().clone());
         }
+        if let Some((choices, project, resume)) = requests.engine_start {
+            self.request_engine_start(choices, Some(project), resume);
+        }
         if let Some(snippet) = requests.snippet {
             self.notify(format!("Trecho copiado: {snippet}"));
         }
@@ -2074,10 +2151,32 @@ impl LocalCodePilot {
             };
             let (ready, compose) = self.engine_readiness(*engine);
             let engine_ok = ready && (project.compose_file.is_none() || compose);
-            let blocked = project.compose_file.as_ref().and_then(|_| {
-                let safety = self.compose_environment_safety(&project.directory, *engine);
-                guard_environment_action(main, &safety, &project.directory).err()
+            let safety = project
+                .compose_file
+                .as_ref()
+                .map(|_| self.compose_environment_safety(&project.directory, *engine));
+            let blocked = safety.as_ref().and_then(|safety| {
+                guard_environment_action(main, safety, &project.directory).err()
             });
+            // With the engine stopped, the environment cannot be verified yet. Turning the
+            // engine on touches no container, and the environment is verified again before
+            // anything runs, so only that block allows the offer (T026).
+            let blocked_by_stopped_engine =
+                !engine_ok && matches!(safety, Some(ComposeSafety::Unverifiable { .. }));
+            // A stopped engine with a safe plan: "Iniciar" asks to turn it on first (T026).
+            let start_choices = if !engine_ok
+                && main == ContainerAction::Start
+                && (blocked.is_none() || blocked_by_stopped_engine)
+            {
+                start_choices(
+                    &self.container_state.engines,
+                    &environment.engines_in_use(),
+                    *engine,
+                )
+            } else {
+                vec![]
+            };
+            let startable = !start_choices.is_empty() && !self.container_state.engine_start.busy();
             let button = if main == ContainerAction::Start {
                 egui::Button::new(RichText::new(&label).color(Color32::WHITE).strong())
                     .fill(theme::PRIMARY)
@@ -2085,11 +2184,29 @@ impl LocalCodePilot {
                 egui::Button::new(&label)
             };
             let response = announced(
-                ui.add_enabled(!executing && engine_ok && blocked.is_none(), button),
+                ui.add_enabled(
+                    !executing && ((engine_ok && blocked.is_none()) || startable),
+                    button,
+                ),
                 egui::Role::Button,
                 &format!("{label} {context}"),
             );
-            if let Some(blocked) = blocked {
+            if !engine_ok && startable {
+                if response.clicked() {
+                    let resume = start_choices
+                        .iter()
+                        .filter_map(|choice| {
+                            project
+                                .proposed_commands(*choice)
+                                .into_iter()
+                                .find(|command| command.action == main)
+                                .map(|command| (*choice, command))
+                        })
+                        .collect();
+                    notice::open(ui.ctx(), container_group_id(group.root));
+                    requests.engine_start = Some((start_choices.clone(), context.clone(), resume));
+                }
+            } else if let Some(blocked) = blocked {
                 response.on_disabled_hover_text(format!("Bloqueado: {}", blocked.summary));
             } else if !engine_ok {
                 response.on_disabled_hover_text(format!(
@@ -2760,6 +2877,32 @@ mod tests {
         assert_eq!(
             container_summary(&container),
             "Docker · running · Up 2 minutes"
+        );
+    }
+    #[test]
+    fn a_stopped_engine_with_a_safe_plan_offers_iniciar_with_the_approved_text() {
+        use localcodepilot_core::engine_start::EngineStart;
+        let stopped = EngineDiagnosis {
+            engine: ContainerEngine::Docker,
+            state: EngineState::Unavailable,
+            compose_available: false,
+            start: Some(EngineStart::DockerDesktopCli),
+            failure: None,
+        };
+        let message = engine_message(&stopped).unwrap();
+        assert_eq!(
+            message.sentence,
+            "O Docker está instalado, mas parado. Para iniciar este projeto, ligue o motor."
+        );
+        assert_eq!(message.action, Some("Iniciar"));
+        // Without a safe plan the old notice stays, with no start offered.
+        let unsure = EngineDiagnosis {
+            start: None,
+            ..stopped
+        };
+        assert_eq!(
+            engine_message(&unsure).unwrap().action,
+            Some("Verificar de novo")
         );
     }
 }
