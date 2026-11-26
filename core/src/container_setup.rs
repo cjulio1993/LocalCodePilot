@@ -293,6 +293,8 @@ mod tests {
             engine,
             state,
             compose_available: compose,
+            start: None,
+            failure: None,
         }
     }
 

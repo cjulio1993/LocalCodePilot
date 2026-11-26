@@ -42,6 +42,11 @@ pub struct EngineDiagnosis {
     pub engine: ContainerEngine,
     pub state: EngineState,
     pub compose_available: bool,
+    /// How the app can start the engine after the person confirms (T026). Set only when the
+    /// engine is certainly stopped; any doubt leaves it empty.
+    pub start: Option<crate::engine_start::EngineStart>,
+    /// The error output of the failed `info`, for "Detalhes técnicos".
+    pub failure: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

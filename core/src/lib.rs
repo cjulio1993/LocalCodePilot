@@ -4,6 +4,7 @@ pub mod container_setup;
 pub mod containers;
 pub mod custom_commands;
 pub mod discovery;
+pub mod engine_start;
 pub mod environments;
 pub mod languages;
 pub mod paths;
