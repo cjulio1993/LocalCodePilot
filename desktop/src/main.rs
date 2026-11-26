@@ -7,6 +7,7 @@ mod build_support;
 mod config;
 mod pages;
 mod secrets;
+mod storage;
 mod theme;
 mod update_progress_ui;
 mod update_window;

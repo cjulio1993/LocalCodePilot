@@ -6,6 +6,10 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Corrigido
+
+- As configurações (projetos favoritos, histórico, comandos personalizados, confirmações, pastas de busca e preferências) não se perdem mais em silêncio. Antes, se o arquivo ficasse ilegível, o app começava vazio e gravava por cima dele. Agora cada gravação troca o arquivo de uma vez e guarda a cópia anterior válida (`.bak`); um arquivo ilegível é guardado ao lado (`.ilegivel-<data>`) e nunca é sobrescrito. Com cópia válida, o app a restaura e avisa "Não foi possível ler seus projetos e configurações. Restauramos a última cópia salva."; sem cópia válida, avisa "Não foi possível carregar seus projetos e configurações. Guardamos os arquivos para recuperação. Alguns dados podem estar ausentes.", com **Abrir pasta**. O aviso continua em **Configurações > Recuperação de configurações** até **Entendi**, e **Detalhes técnicos** mostra a causa e os caminhos, nunca o conteúdo. São mantidos os 5 arquivos guardados mais recentes de cada tipo, e nada com menos de 30 dias é apagado. Um estado gravado por uma versão mais nova do app é copiado (`.versao-<n>`) antes de qualquer gravação.
+
 ### Alterado
 
 - No Windows, uma cópia que não consegue se atualizar sozinha (por exemplo, o `.exe` avulso da release aberto direto da pasta Downloads) passa a levar ao instalador oficial em **Baixar atualização**, com a frase "Esta cópia não foi instalada. Baixe o instalador para atualizar e receber as próximas atualizações automaticamente.". Antes, o botão baixava o zip, e a cópia continuava sem se atualizar sozinha. A mesma frase aparece em **Configurações > Atualizações**.

@@ -1,0 +1,56 @@
+{
+  "schema_version": 3,
+  "last_page": "containers",
+  "focused_project": null,
+  "favorite_projects": [
+    "C:\\projetos-exemplo\\loja-exemplo",
+    "C:\\projetos-exemplo\\blog-exemplo"
+  ],
+  "hidden_recent_projects": [],
+  "projects": [
+    {
+      "path": "C:\\projetos-exemplo\\blog-exemplo",
+      "last_activity": 1763600000,
+      "services": [
+        {
+          "id": "C:\\projetos-exemplo\\blog-exemplo:servidor",
+          "name": "servidor",
+          "command": "php artisan serve",
+          "status": "parado",
+          "port": 8000,
+          "url": "http://127.0.0.1:8000",
+          "updated_at": 1763600000,
+          "logs": [
+            "Server running on [http://127.0.0.1:8000]",
+            "DB_PASSWORD=••••"
+          ]
+        }
+      ]
+    }
+  ],
+  "preparations": [],
+  "last_update_check": 1763590000,
+  "update_remind_after": 1763676400,
+  "cached_update": null,
+  "compose_data_confirmations": [],
+  "project_filter": "",
+  "project_view": "",
+  "sidebar_collapsed": false,
+  "custom_commands": [
+    {
+      "project": "C:\\projetos-exemplo\\api",
+      "name": "Servidor",
+      "program": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "Api"
+      ],
+      "folder": "src",
+      "port": 5080
+    }
+  ],
+  "confirmed_commands": [
+    "4f1c2a9e8b7d6c5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a19"
+  ]
+}

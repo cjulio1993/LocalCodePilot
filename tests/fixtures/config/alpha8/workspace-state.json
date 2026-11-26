@@ -1,0 +1,78 @@
+{
+  "schema_version": 3,
+  "last_page": "projects",
+  "focused_project": "C:\\projetos-exemplo\\loja-exemplo",
+  "favorite_projects": [
+    "C:\\projetos-exemplo\\loja-exemplo"
+  ],
+  "hidden_recent_projects": [
+    "C:\\projetos-exemplo\\antigo"
+  ],
+  "projects": [
+    {
+      "path": "C:\\projetos-exemplo\\loja-exemplo",
+      "last_activity": 1762200000,
+      "services": [
+        {
+          "id": "C:\\projetos-exemplo\\loja-exemplo:dev",
+          "name": "dev",
+          "command": "npm run dev",
+          "status": "parado",
+          "port": 5173,
+          "url": "http://localhost:5173",
+          "updated_at": 1762200000,
+          "logs": [
+            "VITE ready in 312 ms"
+          ]
+        }
+      ]
+    }
+  ],
+  "preparations": [
+    {
+      "project_path": "C:\\projetos-exemplo\\loja-exemplo",
+      "status": "concluído",
+      "updated_at": 1762199000,
+      "steps": [
+        "npm install"
+      ],
+      "logs": [
+        "added 120 packages"
+      ]
+    }
+  ],
+  "last_update_check": 1762190000,
+  "update_remind_after": 0,
+  "cached_update": {
+    "version": "0.4.0-alpha.9",
+    "title": "LocalCodePilot 0.4.0-alpha.9",
+    "release_url": "https://github.com/cjulio1993/LocalCodePilot/releases/tag/v0.4.0-alpha.9",
+    "download_url": "https://github.com/cjulio1993/LocalCodePilot/releases/download/v0.4.0-alpha.9/LocalCodePilot-0.4.0-alpha.9-windows-x64.zip",
+    "executable_url": null,
+    "checksum_url": null
+  },
+  "compose_data_confirmations": [
+    {
+      "engine": "docker",
+      "directory": "C:\\projetos-exemplo\\blog-exemplo",
+      "volumes": [
+        "blog-exemplo_db"
+      ]
+    }
+  ],
+  "project_filter": "running",
+  "project_view": "list",
+  "sidebar_collapsed": true,
+  "custom_commands": [
+    {
+      "project": "C:\\projetos-exemplo\\worker",
+      "name": "Worker",
+      "program": "python",
+      "args": [
+        "worker.py"
+      ],
+      "folder": "",
+      "port": null
+    }
+  ]
+}
