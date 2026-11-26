@@ -528,6 +528,7 @@ impl LocalCodePilot {
             .get(&project.path)
             .unwrap_or(&fallback);
         let processes = self
+            .managed
             .processes
             .iter()
             .filter(|process| process.project_path == project.path)
@@ -537,7 +538,7 @@ impl LocalCodePilot {
             .filter(|process| process.state == ProcessState::Running)
             .filter(|process| process_exposes_application_url(project, process))
             .find_map(|process| {
-                let running = self.running_processes.get(&process.id)?;
+                let running = self.managed.running.get(&process.id)?;
                 if running.finished {
                     return None;
                 }
@@ -546,14 +547,15 @@ impl LocalCodePilot {
                     .last()
                     .map(|url| url.address().to_owned())
                     .or_else(|| {
-                        self.assigned_ports
+                        self.managed
+                            .assigned_ports
                             .get(&process.id)
                             .map(|port| format!("http://localhost:{}", port.value()))
                     })
             });
         let http = processes
             .iter()
-            .filter_map(|process| self.running_processes.get(&process.id))
+            .filter_map(|process| self.managed.running.get(&process.id))
             .find_map(|running| running.http_health.as_ref().map(|health| &health.status));
         let (container_running, container_url) = self.project_container_status(&project.path);
         let dependency_install = self
@@ -582,7 +584,7 @@ impl LocalCodePilot {
                     name: &process.name,
                     command: process.command_line(),
                     exit_code: process.exit_code,
-                    failure: self.process_failures.get(&process.id),
+                    failure: self.managed.failures.get(&process.id),
                 }),
             application_url: application_url.as_deref(),
             http,

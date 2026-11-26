@@ -13,8 +13,14 @@ mod help_ui;
 mod language_ui;
 #[path = "notice.rs"]
 mod notice;
+#[path = "process_state.rs"]
+mod process_state;
 #[path = "project_ui.rs"]
 mod project_ui;
+use process_state::{
+    HttpHealthCheckResult, HttpHealthStatus, ManagedProcesses, PortConflict,
+    PortTerminationRequest, ProcessFailure, RunningProcess,
+};
 #[path = "recovery_ui.rs"]
 mod recovery_ui;
 
@@ -135,135 +141,6 @@ impl Page {
             _ => Self::Overview,
         }
     }
-}
-
-struct RunningProcess {
-    child: Child,
-    output: Receiver<String>,
-    logs: VecDeque<String>,
-    urls: Vec<LocalServerUrl>,
-    finished: bool,
-    started_at: Instant,
-    last_health_check: Instant,
-    port_unavailable_since: Option<Instant>,
-    /// Listener confirmed to be this process or one of its children.
-    verified_listener: Option<VerifiedListener>,
-    /// Another program listening on the port reserved for this process.
-    foreign_listener: Option<PortOwner>,
-    http_health: Option<HttpHealthCheckResult>,
-    http_health_receiver: Option<Receiver<HttpHealthCheckResult>>,
-    last_http_health_check: Option<Instant>,
-    /// Asks the system which ports this process (or a child) listens on, for servers that
-    /// do not print their address or were not started on a known port.
-    listener_probe: Option<Receiver<Vec<Port>>>,
-    last_listener_probe: Option<Instant>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HttpHealthCheckResult {
-    url: String,
-    status: HttpHealthStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum HttpHealthStatus {
-    Healthy {
-        status_code: u16,
-        response_time_ms: u128,
-    },
-    Attention {
-        status_code: u16,
-        response_time_ms: u128,
-    },
-    Unreachable {
-        error: String,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct PortConflict {
-    port: Port,
-    owner: Option<PortOwner>,
-}
-
-/// Why a process failed, kept so the project card still explains it after the notification
-/// is gone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ProcessFailure {
-    FolderMissing(PathBuf),
-    ProgramMissing(String),
-    /// Another program holds the port, found before starting or while waiting for it.
-    PortTaken {
-        port: Port,
-        owner: Option<PortOwner>,
-    },
-    NoResponse(Port),
-    ClosedBeforeReady,
-    PortLost(Port),
-    Exited,
-    SpawnFailed(String),
-    WaitFailed(String),
-}
-
-impl ProcessFailure {
-    /// One sentence for the card: no PID, command or path.
-    fn sentence(&self) -> String {
-        match self {
-            Self::FolderMissing(_) => "A pasta do projeto não existe mais.".into(),
-            Self::ProgramMissing(program) => {
-                format!("O programa {program} não foi encontrado neste computador.")
-            }
-            Self::PortTaken { port, .. } => format!(
-                "Outro programa está usando a porta {}. Este projeto não iniciou.",
-                port.value()
-            ),
-            Self::NoResponse(port) => format!(
-                "O servidor não respondeu na porta {} a tempo. Veja os logs para investigar.",
-                port.value()
-            ),
-            Self::ClosedBeforeReady => {
-                "O servidor fechou antes de ficar pronto. Veja os logs para investigar.".into()
-            }
-            Self::PortLost(port) => {
-                format!("O servidor parou de responder na porta {}.", port.value())
-            }
-            Self::Exited => "O processo fechou inesperadamente.".into(),
-            Self::SpawnFailed(_) => "Não foi possível iniciar o processo.".into(),
-            Self::WaitFailed(_) => "Não foi possível acompanhar o processo.".into(),
-        }
-    }
-
-    /// Lines for "Detalhes técnicos".
-    fn details(&self) -> Vec<String> {
-        match self {
-            Self::FolderMissing(path) => vec![format!("Pasta procurada: {}", display_path(path))],
-            Self::ProgramMissing(program) => vec![format!("Programa procurado no PATH: {program}")],
-            Self::PortTaken {
-                port,
-                owner: Some(owner),
-            } => vec![port_owner_detail(*port, owner)],
-            Self::PortTaken { port, owner: None } => vec![format!(
-                "A porta {} está em uso; o sistema não informou por qual programa.",
-                port.value()
-            )],
-            Self::NoResponse(_) => vec![format!(
-                "Tempo de espera pela porta: {} segundos",
-                PROCESS_START_TIMEOUT.as_secs()
-            )],
-            Self::PortLost(_) => vec![format!(
-                "Sem resposta na porta por {} segundos; o processo foi encerrado.",
-                PROCESS_PORT_LOSS_GRACE.as_secs()
-            )],
-            Self::ClosedBeforeReady | Self::Exited => vec![],
-            Self::SpawnFailed(error) | Self::WaitFailed(error) => vec![error.clone()],
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PortTerminationRequest {
-    process_id: String,
-    conflict: PortConflict,
 }
 
 /// A folder of installed programs that an older version saved with the scanned folders,
@@ -615,15 +492,10 @@ enum DiscoveryEvent {
 pub struct LocalCodePilot {
     page: Page,
     projects: Vec<Project>,
-    processes: Vec<ProjectProcess>,
-    running_processes: HashMap<String, RunningProcess>,
-    assigned_ports: HashMap<String, Port>,
-    port_conflicts: HashMap<String, PortConflict>,
-    process_failures: HashMap<String, ProcessFailure>,
-    port_termination: Option<PortTerminationRequest>,
+    /// The managed processes and their ports (T025).
+    managed: ManagedProcesses,
     project_environments: HashMap<PathBuf, ProjectEnvironment>,
     focused_project: Option<PathBuf>,
-    terminal_process: Option<String>,
     dependency_installs: HashMap<PathBuf, DependencyInstallSession>,
     dependency_terminal: Option<PathBuf>,
     environment_plan_request: Option<(PathBuf, Receiver<Result<InstallationPlan, String>>)>,
@@ -727,15 +599,9 @@ impl LocalCodePilot {
         Self {
             page,
             projects: cached_projects,
-            processes: Vec::new(),
-            running_processes: HashMap::new(),
-            assigned_ports: HashMap::new(),
-            port_conflicts: HashMap::new(),
-            process_failures: HashMap::new(),
-            port_termination: None,
+            managed: ManagedProcesses::default(),
             project_environments: HashMap::new(),
             focused_project,
-            terminal_process: None,
             dependency_installs: HashMap::new(),
             dependency_terminal: None,
             environment_plan_request: None,
@@ -829,6 +695,7 @@ impl LocalCodePilot {
 
     fn record_process_history(&mut self, id: &str) {
         let Some(process) = self
+            .managed
             .processes
             .iter()
             .find(|process| process.id == id)
@@ -836,7 +703,7 @@ impl LocalCodePilot {
         else {
             return;
         };
-        let running = self.running_processes.get(id);
+        let running = self.managed.running.get(id);
         let logs = running
             .map(|running| {
                 let skip = running.logs.len().saturating_sub(200);
@@ -850,6 +717,7 @@ impl LocalCodePilot {
             });
         let existing = self.workspace_state.service(id).cloned();
         let port = self
+            .managed
             .assigned_ports
             .get(id)
             .copied()
@@ -929,26 +797,9 @@ impl LocalCodePilot {
         }
     }
 
-    /// Managed processes that would end if the app closed now.
-    fn active_runs(&self) -> Vec<ActiveRun> {
-        self.processes
-            .iter()
-            .filter(|process| {
-                matches!(
-                    process.state,
-                    ProcessState::Starting | ProcessState::Running
-                )
-            })
-            .map(|process| ActiveRun {
-                id: process.id.clone(),
-                pid: process.process_id,
-            })
-            .collect()
-    }
-
     /// "Atualizar agora": with projects running, ask first (CA-5); otherwise download.
     fn request_update_install(&mut self, update: &UpdateInfo, ctx: egui::Context) {
-        let active = self.active_runs();
+        let active = self.managed.active_runs();
         self.update_session.request_install(update, &active, ctx);
     }
 
@@ -973,7 +824,7 @@ impl LocalCodePilot {
     }
 
     fn poll_update_install(&mut self, ctx: &egui::Context) {
-        let active = self.active_runs();
+        let active = self.managed.active_runs();
         if let Some(prepared) = self.update_session.poll_install(&active, ctx) {
             self.launch_update(&prepared, ctx);
         }
@@ -1358,10 +1209,10 @@ impl LocalCodePilot {
                 self.refresh_containers(ctx.clone());
             }
             Ok(DiscoveryEvent::Processes(processes)) => {
-                self.processes = processes;
-                self.assigned_ports.clear();
-                self.port_conflicts.clear();
-                self.process_failures.clear();
+                self.managed.processes = processes;
+                self.managed.assigned_ports.clear();
+                self.managed.port_conflicts.clear();
+                self.managed.failures.clear();
             }
             Ok(DiscoveryEvent::Environments(environments)) => {
                 self.project_environments = environments;
@@ -1381,7 +1232,7 @@ impl LocalCodePilot {
     }
 
     fn refresh_projects(&mut self, ctx: &egui::Context) {
-        if self.has_active_processes() {
+        if self.managed.has_active_processes() {
             self.notify("Pare os processos ativos antes de atualizar os projetos");
             return;
         }
@@ -1399,7 +1250,7 @@ impl LocalCodePilot {
     }
 
     fn add_scan_root(&mut self, ctx: &egui::Context, path: PathBuf) {
-        if self.has_active_processes() {
+        if self.managed.has_active_processes() {
             self.notify("Pare os processos ativos antes de adicionar uma pasta");
             return;
         }
@@ -1423,7 +1274,7 @@ impl LocalCodePilot {
     }
 
     fn remove_scan_root(&mut self, ctx: &egui::Context, path: &Path) {
-        if self.has_active_processes() {
+        if self.managed.has_active_processes() {
             self.notify("Pare os processos ativos antes de remover uma pasta");
             return;
         }
@@ -1442,7 +1293,7 @@ impl LocalCodePilot {
     }
 
     fn reset_scan_roots(&mut self, ctx: &egui::Context) {
-        if self.has_active_processes() {
+        if self.managed.has_active_processes() {
             self.notify("Pare os processos ativos antes de restaurar as pastas");
             return;
         }
@@ -1465,7 +1316,7 @@ impl LocalCodePilot {
     }
 
     fn projects_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let has_active_processes = self.has_active_processes();
+        let has_active_processes = self.managed.has_active_processes();
         let scanning = self.discovery.is_some();
         let can_change_roots = !scanning && !has_active_processes;
         let mut add_folder = false;
@@ -1648,19 +1499,13 @@ impl LocalCodePilot {
         self.project_catalog(ui);
     }
 
-    fn port_is_available(&self, port: Port) -> bool {
-        !self
-            .assigned_ports
-            .values()
-            .any(|assigned| *assigned == port)
-            && matches!(inspect_tcp_port(port), PortAvailability::Available)
-    }
-
     fn find_available_port_after(&self, preferred: Port) -> Option<Port> {
         (1..=20).find_map(|offset| {
             let value = preferred.value().checked_add(offset)?;
             let candidate = Port::new(value)?;
-            self.port_is_available(candidate).then_some(candidate)
+            self.managed
+                .port_is_available(candidate)
+                .then_some(candidate)
         })
     }
 
@@ -1668,7 +1513,12 @@ impl LocalCodePilot {
     /// Commands the person wrote are theirs and never ask.
     fn unconfirmed_commands(&self, ids: &[String]) -> Vec<command_trust::PendingCommand> {
         ids.iter()
-            .filter_map(|id| self.processes.iter().find(|process| process.id == *id))
+            .filter_map(|id| {
+                self.managed
+                    .processes
+                    .iter()
+                    .find(|process| process.id == *id)
+            })
             .filter(|process| !custom_commands::is_custom(process))
             .map(command_trust::pending_command)
             .filter(|command| {
@@ -1740,7 +1590,12 @@ impl LocalCodePilot {
     }
 
     fn start_process(&mut self, id: &str) {
-        let Some(index) = self.processes.iter().position(|process| process.id == id) else {
+        let Some(index) = self
+            .managed
+            .processes
+            .iter()
+            .position(|process| process.id == id)
+        else {
             self.notify("O comando selecionado não está mais disponível");
             return;
         };
@@ -1749,17 +1604,18 @@ impl LocalCodePilot {
             return;
         }
         if self
-            .running_processes
+            .managed
+            .running
             .get(id)
             .is_some_and(|running| !running.finished)
         {
             self.notify(format!(
                 "{} já está em execução",
-                self.processes[index].name
+                self.managed.processes[index].name
             ));
             return;
         }
-        let project_path = self.processes[index].project_path.clone();
+        let project_path = self.managed.processes[index].project_path.clone();
         let pending = self.unconfirmed_commands(&[id.to_owned()]);
         if self.ask_before_running(
             &project_path,
@@ -1768,12 +1624,12 @@ impl LocalCodePilot {
         ) {
             return;
         }
-        let process = self.processes[index].clone();
+        let process = self.managed.processes[index].clone();
         if !process.working_directory.is_dir() {
-            self.processes[index].state = ProcessState::Failed;
-            self.processes[index].process_id = None;
-            self.processes[index].exit_code = None;
-            self.process_failures.insert(
+            self.managed.processes[index].state = ProcessState::Failed;
+            self.managed.processes[index].process_id = None;
+            self.managed.processes[index].exit_code = None;
+            self.managed.failures.insert(
                 id.to_owned(),
                 ProcessFailure::FolderMissing(process.working_directory.clone()),
             );
@@ -1785,10 +1641,10 @@ impl LocalCodePilot {
             return;
         }
         if find_executable(&process.program, self.environment_path.as_deref()).is_none() {
-            self.processes[index].state = ProcessState::Failed;
-            self.processes[index].process_id = None;
-            self.processes[index].exit_code = None;
-            self.process_failures.insert(
+            self.managed.processes[index].state = ProcessState::Failed;
+            self.managed.processes[index].process_id = None;
+            self.managed.processes[index].exit_code = None;
+            self.managed.failures.insert(
                 id.to_owned(),
                 ProcessFailure::ProgramMissing(process.program.clone()),
             );
@@ -1801,21 +1657,21 @@ impl LocalCodePilot {
         let mut assigned_port = None;
         let mut alternative_port = None;
         if let Some(port) = process.expected_port {
-            if self.port_is_available(port) {
+            if self.managed.port_is_available(port) {
                 assigned_port = Some(port);
-                self.port_conflicts.remove(id);
+                self.managed.port_conflicts.remove(id);
             } else if process.port_override.is_some()
                 && let Some(available_port) = self.find_available_port_after(port)
             {
                 assigned_port = Some(available_port);
                 alternative_port = Some(available_port);
-                self.port_conflicts.remove(id);
+                self.managed.port_conflicts.remove(id);
             } else {
                 let owner = match inspect_tcp_port(port) {
                     PortAvailability::Occupied { owner } => owner,
                     PortAvailability::Available => None,
                 };
-                self.process_failures.insert(
+                self.managed.failures.insert(
                     id.to_owned(),
                     ProcessFailure::PortTaken {
                         port,
@@ -1823,20 +1679,20 @@ impl LocalCodePilot {
                     },
                 );
                 let conflict = PortConflict { port, owner };
-                self.processes[index].state = ProcessState::Failed;
-                self.processes[index].process_id = None;
-                self.processes[index].exit_code = None;
+                self.managed.processes[index].state = ProcessState::Failed;
+                self.managed.processes[index].process_id = None;
+                self.managed.processes[index].exit_code = None;
                 self.notify(port_conflict_message(&process.name, &conflict));
-                self.port_conflicts.insert(id.to_owned(), conflict);
+                self.managed.port_conflicts.insert(id.to_owned(), conflict);
                 self.record_process_history(id);
                 return;
             }
         }
-        self.processes[index].state = ProcessState::Starting;
-        self.processes[index].exit_code = None;
-        self.process_failures.remove(id);
+        self.managed.processes[index].state = ProcessState::Starting;
+        self.managed.processes[index].exit_code = None;
+        self.managed.failures.remove(id);
         if let Some(port) = assigned_port {
-            self.assigned_ports.insert(id.to_owned(), port);
+            self.managed.assigned_ports.insert(id.to_owned(), port);
         }
         let mut command =
             process_command_on_port(&process, alternative_port, self.environment_path.as_deref());
@@ -1847,7 +1703,7 @@ impl LocalCodePilot {
 
         match command.spawn() {
             Ok(mut child) => {
-                self.port_conflicts.remove(id);
+                self.managed.port_conflicts.remove(id);
                 let process_id = child.id();
                 let (sender, output) = mpsc::channel();
                 if let Some(stdout) = child.stdout.take() {
@@ -1866,7 +1722,7 @@ impl LocalCodePilot {
                     ));
                 }
                 let now = Instant::now();
-                self.running_processes.insert(
+                self.managed.running.insert(
                     id.to_owned(),
                     RunningProcess {
                         child,
@@ -1886,13 +1742,13 @@ impl LocalCodePilot {
                         last_listener_probe: None,
                     },
                 );
-                self.processes[index].state = if assigned_port.is_some() {
+                self.managed.processes[index].state = if assigned_port.is_some() {
                     ProcessState::Starting
                 } else {
                     ProcessState::Running
                 };
-                self.processes[index].process_id = Some(process_id);
-                self.processes[index].exit_code = None;
+                self.managed.processes[index].process_id = Some(process_id);
+                self.managed.processes[index].exit_code = None;
                 if let (Some(preferred), Some(selected)) = (process.expected_port, alternative_port)
                 {
                     self.notify(format!(
@@ -1913,11 +1769,11 @@ impl LocalCodePilot {
                 self.record_process_history(id);
             }
             Err(error) => {
-                self.assigned_ports.remove(id);
-                self.processes[index].state = ProcessState::Failed;
-                self.processes[index].process_id = None;
-                self.processes[index].exit_code = None;
-                self.process_failures.insert(
+                self.managed.assigned_ports.remove(id);
+                self.managed.processes[index].state = ProcessState::Failed;
+                self.managed.processes[index].process_id = None;
+                self.managed.processes[index].exit_code = None;
+                self.managed.failures.insert(
                     id.to_owned(),
                     ProcessFailure::SpawnFailed(error.to_string()),
                 );
@@ -1931,7 +1787,7 @@ impl LocalCodePilot {
     }
 
     fn stop_process(&mut self, id: &str) {
-        let Some(running) = self.running_processes.get_mut(id) else {
+        let Some(running) = self.managed.running.get_mut(id) else {
             return;
         };
         if running.finished {
@@ -1939,9 +1795,14 @@ impl LocalCodePilot {
         }
         terminate_process(&mut running.child);
         running.finished = true;
-        self.assigned_ports.remove(id);
-        self.process_failures.remove(id);
-        if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
+        self.managed.assigned_ports.remove(id);
+        self.managed.failures.remove(id);
+        if let Some(process) = self
+            .managed
+            .processes
+            .iter_mut()
+            .find(|process| process.id == id)
+        {
             process.state = ProcessState::Stopped;
             process.process_id = None;
             process.exit_code = None;
@@ -1978,7 +1839,7 @@ impl LocalCodePilot {
                     .map(|project| {
                         inspect_project_environment(
                             project,
-                            &self.processes,
+                            &self.managed.processes,
                             self.environment_path.as_deref(),
                         )
                     })
@@ -1994,8 +1855,11 @@ impl LocalCodePilot {
         }
         // Every new command of the project in one confirmation, before anything happens
         // (not even the SQLite file is created).
-        let pending =
-            self.unconfirmed_commands(&project_process_ids(&self.processes, project_path, false));
+        let pending = self.unconfirmed_commands(&project_process_ids(
+            &self.managed.processes,
+            project_path,
+            false,
+        ));
         if self.ask_before_running(
             project_path,
             pending,
@@ -2047,10 +1911,15 @@ impl LocalCodePilot {
                 }
             }
         }
-        let process_ids = project_process_ids(&self.processes, project_path, false);
+        let process_ids = project_process_ids(&self.managed.processes, project_path, false);
         let pending_processes: Vec<_> = process_ids
             .iter()
-            .filter_map(|id| self.processes.iter().find(|process| process.id == *id))
+            .filter_map(|id| {
+                self.managed
+                    .processes
+                    .iter()
+                    .find(|process| process.id == *id)
+            })
             .cloned()
             .collect();
         let mut first_conflict = None;
@@ -2058,12 +1927,12 @@ impl LocalCodePilot {
             let Some(port) = process.expected_port else {
                 continue;
             };
-            if !self.port_is_available(port) && process.port_override.is_none() {
+            if !self.managed.port_is_available(port) && process.port_override.is_none() {
                 let owner = match inspect_tcp_port(port) {
                     PortAvailability::Occupied { owner } => owner,
                     PortAvailability::Available => None,
                 };
-                self.process_failures.insert(
+                self.managed.failures.insert(
                     process.id.clone(),
                     ProcessFailure::PortTaken {
                         port,
@@ -2072,6 +1941,7 @@ impl LocalCodePilot {
                 );
                 let conflict = PortConflict { port, owner };
                 if let Some(process) = self
+                    .managed
                     .processes
                     .iter_mut()
                     .find(|candidate| candidate.id == process.id)
@@ -2080,11 +1950,12 @@ impl LocalCodePilot {
                     process.process_id = None;
                     process.exit_code = None;
                 }
-                self.port_conflicts
+                self.managed
+                    .port_conflicts
                     .insert(process.id.clone(), conflict.clone());
                 first_conflict.get_or_insert_with(|| (process.name.clone(), conflict));
             } else {
-                self.port_conflicts.remove(&process.id);
+                self.managed.port_conflicts.remove(&process.id);
             }
         }
         if let Some((process_name, conflict)) = first_conflict {
@@ -2104,7 +1975,7 @@ impl LocalCodePilot {
     }
 
     fn stop_project(&mut self, project_path: &Path) {
-        let process_ids = project_process_ids(&self.processes, project_path, true);
+        let process_ids = project_process_ids(&self.managed.processes, project_path, true);
         for process_id in process_ids {
             self.stop_process(&process_id);
         }
@@ -2272,12 +2143,13 @@ impl LocalCodePilot {
                     {
                         let refreshed_processes =
                             project_processes(project, &self.workspace_state.custom_commands);
-                        self.processes
+                        self.managed
+                            .processes
                             .retain(|process| process.project_path != project_path);
-                        self.processes.extend(refreshed_processes);
+                        self.managed.processes.extend(refreshed_processes);
                         let environment = inspect_project_environment(
                             project,
-                            &self.processes,
+                            &self.managed.processes,
                             self.environment_path.as_deref(),
                         );
                         let ready = environment.is_ready();
@@ -2443,7 +2315,7 @@ impl LocalCodePilot {
                     project_path,
                     inspect_project_environment(
                         project,
-                        &self.processes,
+                        &self.managed.processes,
                         self.environment_path.as_deref(),
                     ),
                 );
@@ -2458,7 +2330,7 @@ impl LocalCodePilot {
     }
 
     fn request_port_owner_termination(&mut self, id: &str) {
-        let Some(conflict) = self.port_conflicts.get(id).cloned() else {
+        let Some(conflict) = self.managed.port_conflicts.get(id).cloned() else {
             self.notify("A porta já está livre. Tente iniciar o serviço novamente.");
             return;
         };
@@ -2468,7 +2340,7 @@ impl LocalCodePilot {
             );
             return;
         }
-        self.port_termination = Some(PortTerminationRequest {
+        self.managed.port_termination = Some(PortTerminationRequest {
             process_id: id.to_owned(),
             conflict,
         });
@@ -2480,14 +2352,14 @@ impl LocalCodePilot {
         };
         match inspect_tcp_port(request.conflict.port) {
             PortAvailability::Available => {
-                self.port_conflicts.remove(&request.process_id);
+                self.managed.port_conflicts.remove(&request.process_id);
                 self.notify("A porta já foi liberada. Tentando iniciar o serviço...");
                 self.start_process(&request.process_id);
             }
             PortAvailability::Occupied {
                 owner: Some(current_owner),
             } if current_owner.process_id != owner.process_id => {
-                self.process_failures.insert(
+                self.managed.failures.insert(
                     request.process_id.clone(),
                     ProcessFailure::PortTaken {
                         port: request.conflict.port,
@@ -2498,13 +2370,14 @@ impl LocalCodePilot {
                     port: request.conflict.port,
                     owner: Some(current_owner),
                 };
-                self.port_conflicts
+                self.managed
+                    .port_conflicts
                     .insert(request.process_id.clone(), conflict.clone());
                 self.notify(port_conflict_message("O serviço", &conflict));
             }
             PortAvailability::Occupied { .. } => match terminate_process_tree(owner.process_id) {
                 Ok(()) => {
-                    self.port_conflicts.remove(&request.process_id);
+                    self.managed.port_conflicts.remove(&request.process_id);
                     self.notify(format!(
                         "PID {} encerrado. Tentando iniciar o serviço...",
                         owner.process_id
@@ -2517,11 +2390,11 @@ impl LocalCodePilot {
     }
 
     fn show_port_termination_confirmation(&mut self, root_ui: &mut egui::Ui) {
-        let Some(request) = self.port_termination.clone() else {
+        let Some(request) = self.managed.port_termination.clone() else {
             return;
         };
         let Some(owner) = request.conflict.owner.as_ref() else {
-            self.port_termination = None;
+            self.managed.port_termination = None;
             return;
         };
         let process_name = owner
@@ -2575,10 +2448,10 @@ impl LocalCodePilot {
             });
 
         if confirm {
-            self.port_termination = None;
+            self.managed.port_termination = None;
             self.terminate_port_owner_and_retry(&request);
         } else if cancel || !open {
-            self.port_termination = None;
+            self.managed.port_termination = None;
         }
     }
 
@@ -2589,6 +2462,7 @@ impl LocalCodePilot {
             return;
         }
         let runs: Vec<(String, &'static str)> = self
+            .managed
             .processes
             .iter()
             .filter(|process| {
@@ -2661,7 +2535,7 @@ impl LocalCodePilot {
             });
         let escape = root_ui.input(|input| input.key_pressed(egui::Key::Escape));
         if confirm {
-            let active = self.active_runs();
+            let active = self.managed.active_runs();
             match self.update_session.confirmation.take() {
                 Some(UpdateConfirmation::BeforeDownload(update)) => {
                     self.update_session.confirmed_runs = active;
@@ -2727,7 +2601,7 @@ impl LocalCodePilot {
     }
 
     fn clear_process_logs(&mut self, id: &str) {
-        if let Some(running) = self.running_processes.get_mut(id) {
+        if let Some(running) = self.managed.running.get_mut(id) {
             running.logs.clear();
             self.record_process_history(id);
             self.notify("Saída do processo limpa");
@@ -2741,21 +2615,23 @@ impl LocalCodePilot {
     }
 
     fn show_terminal(&mut self, root_ui: &mut egui::Ui) {
-        let Some(process_id) = self.terminal_process.clone() else {
+        let Some(process_id) = self.managed.terminal.clone() else {
             return;
         };
         let Some(process) = self
+            .managed
             .processes
             .iter()
             .find(|process| process.id == process_id)
             .cloned()
         else {
-            self.terminal_process = None;
+            self.managed.terminal = None;
             return;
         };
         let process_history = self.workspace_state.service(&process_id).cloned();
         let (logs, finished) = self
-            .running_processes
+            .managed
+            .running
             .get(&process_id)
             .map(|running| {
                 (
@@ -2769,12 +2645,17 @@ impl LocalCodePilot {
                     .map(|history| (history.logs.clone(), true))
             })
             .unwrap_or_default();
-        let assigned_port = self.assigned_ports.get(&process_id).copied().or_else(|| {
-            process_history
-                .as_ref()
-                .and_then(|history| history.port)
-                .and_then(Port::new)
-        });
+        let assigned_port = self
+            .managed
+            .assigned_ports
+            .get(&process_id)
+            .copied()
+            .or_else(|| {
+                process_history
+                    .as_ref()
+                    .and_then(|history| history.port)
+                    .and_then(Port::new)
+            });
         let failure_suggestion = (process.state == ProcessState::Failed
             || process_history
                 .as_ref()
@@ -2923,7 +2804,7 @@ impl LocalCodePilot {
             self.stop_process(&process_id);
         }
         if !open {
-            self.terminal_process = None;
+            self.managed.terminal = None;
         }
     }
 
@@ -3428,19 +3309,15 @@ impl LocalCodePilot {
         }
     }
 
-    fn has_active_processes(&self) -> bool {
-        self.running_processes
-            .values()
-            .any(|running| !running.finished)
-    }
-
     fn poll_processes(&mut self, ctx: &egui::Context) {
         let process_states: HashMap<_, _> = self
+            .managed
             .processes
             .iter()
             .map(|process| (process.id.clone(), process.state))
             .collect();
         let http_process_ids: HashSet<_> = self
+            .managed
             .processes
             .iter()
             .filter(|process| {
@@ -3451,14 +3328,14 @@ impl LocalCodePilot {
             })
             .map(|process| process.id.clone())
             .collect();
-        let assigned_ports = self.assigned_ports.clone();
+        let assigned_ports = self.managed.assigned_ports.clone();
         let mut state_updates = Vec::new();
         let mut ready_updates = Vec::new();
         let mut history_updates = Vec::new();
         let mut discovered_ports = Vec::new();
         let mut has_running_process = false;
         let now = Instant::now();
-        for (id, running) in &mut self.running_processes {
+        for (id, running) in &mut self.managed.running {
             if let Some(receiver) = &running.http_health_receiver {
                 match receiver.try_recv() {
                     Ok(result) => {
@@ -3747,7 +3624,7 @@ impl LocalCodePilot {
             }
         }
         for (id, port) in discovered_ports {
-            if let Some(running) = self.running_processes.get_mut(&id) {
+            if let Some(running) = self.managed.running.get_mut(&id) {
                 running.logs.push_back(format!(
                     "[LocalCodePilot] O processo está ouvindo na porta {}.",
                     port.value()
@@ -3759,11 +3636,12 @@ impl LocalCodePilot {
                     )));
                 }
             }
-            self.assigned_ports.insert(id.clone(), port);
+            self.managed.assigned_ports.insert(id.clone(), port);
             history_updates.push(id);
         }
         for (id, port) in ready_updates {
             let notification = self
+                .managed
                 .processes
                 .iter_mut()
                 .find(|process| process.id == id)
@@ -3778,16 +3656,21 @@ impl LocalCodePilot {
             self.record_process_history(&id);
         }
         for (id, state, exit_code, failure) in state_updates {
-            self.assigned_ports.remove(&id);
+            self.managed.assigned_ports.remove(&id);
             match &failure {
                 Some(failure) => {
-                    self.process_failures.insert(id.clone(), failure.clone());
+                    self.managed.failures.insert(id.clone(), failure.clone());
                 }
                 None => {
-                    self.process_failures.remove(&id);
+                    self.managed.failures.remove(&id);
                 }
             }
-            if let Some(process) = self.processes.iter_mut().find(|process| process.id == id) {
+            if let Some(process) = self
+                .managed
+                .processes
+                .iter_mut()
+                .find(|process| process.id == id)
+            {
                 process.state = state;
                 process.process_id = None;
                 process.exit_code = exit_code;
@@ -3830,6 +3713,7 @@ impl LocalCodePilot {
             });
         }
         let matching_processes = self
+            .managed
             .processes
             .iter()
             .filter(|process| {
@@ -3846,6 +3730,7 @@ impl LocalCodePilot {
             })
             .count();
         let visible_process_count = self
+            .managed
             .processes
             .iter()
             .filter(|process| {
@@ -3924,7 +3809,8 @@ impl LocalCodePilot {
         projects.sort_by_key(|project| {
             if self.focused_project.as_ref() == Some(&project.path) {
                 0
-            } else if !project_process_ids(&self.processes, &project.path, true).is_empty() {
+            } else if !project_process_ids(&self.managed.processes, &project.path, true).is_empty()
+            {
                 1
             } else {
                 2
@@ -3947,6 +3833,7 @@ impl LocalCodePilot {
                     .contains(&query)
                 || project.display_stack().to_lowercase().contains(&query);
             let mut commands: Vec<_> = self
+                .managed
                 .processes
                 .iter()
                 .filter(|process| process.project_path == project.path)
@@ -3969,12 +3856,13 @@ impl LocalCodePilot {
                 continue;
             }
             let project_command_count = self
+                .managed
                 .processes
                 .iter()
                 .filter(|process| process.project_path == project.path)
                 .count();
             let active_command_count =
-                project_process_ids(&self.processes, &project.path, true).len();
+                project_process_ids(&self.managed.processes, &project.path, true).len();
             let environment = self
                 .project_environments
                 .get(&project.path)
@@ -4147,13 +4035,13 @@ impl LocalCodePilot {
                     }
                     ui.add_space(10.0);
                     for command in commands {
-                        let port_conflict = self.port_conflicts.get(&command.id).cloned();
-                        let assigned_port = self.assigned_ports.get(&command.id).copied();
+                        let port_conflict = self.managed.port_conflicts.get(&command.id).cloned();
+                        let assigned_port = self.managed.assigned_ports.get(&command.id).copied();
                         let process_history = self.workspace_state.service(&command.id).cloned();
                         let failure_suggestion = (command.state == ProcessState::Failed
                             && port_conflict.is_none())
                         .then(|| {
-                            self.running_processes
+                            self.managed.running
                                 .get(&command.id)
                                 .map(|running| running.logs.iter().cloned().collect::<Vec<_>>())
                                 .or_else(|| {
@@ -4167,7 +4055,7 @@ impl LocalCodePilot {
                         let server_url = if command.state == ProcessState::Running
                             && process_exposes_application_url(project, &command)
                         {
-                            self.running_processes
+                            self.managed.running
                                 .get(&command.id)
                                 .and_then(|running| {
                                     assigned_port
@@ -4194,7 +4082,8 @@ impl LocalCodePilot {
                             None
                         };
                         let (http_health, http_health_checking) = self
-                            .running_processes
+                            .managed
+                            .running
                             .get(&command.id)
                             .map(|running| {
                                 let health = server_url.as_ref().and_then(|server_url| {
@@ -4242,14 +4131,14 @@ impl LocalCodePilot {
                                         runtime_badge(ui, state_label, state_color);
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if (self.running_processes.contains_key(&command.id)
+                                        if (self.managed.running.contains_key(&command.id)
                                             || process_history
                                                 .as_ref()
                                                 .is_some_and(|history| !history.logs.is_empty()))
                                             && ui
                                                 .button(RichText::new(format!(
                                                     "{TERMINAL}  {}",
-                                                    if self.running_processes.contains_key(&command.id) {
+                                                    if self.managed.running.contains_key(&command.id) {
                                                         "Abrir terminal"
                                                     } else {
                                                         "Últimos logs"
@@ -4489,7 +4378,7 @@ impl LocalCodePilot {
                                         );
                                     }
                                 });
-                                if let Some(running) = self.running_processes.get(&command.id)
+                                if let Some(running) = self.managed.running.get(&command.id)
                                     && !running.logs.is_empty()
                                 {
                                     ui.add_space(4.0);
@@ -4543,7 +4432,7 @@ impl LocalCodePilot {
                 self.dependency_terminal = Some(path);
             }
             Some(ProcessAction::ClearLogs(id)) => self.clear_process_logs(&id),
-            Some(ProcessAction::ViewLogs(id)) => self.terminal_process = Some(id),
+            Some(ProcessAction::ViewLogs(id)) => self.managed.terminal = Some(id),
             Some(ProcessAction::OpenUrl(url)) => {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
                 self.notify(format!("Abrindo {url}"));
@@ -4821,6 +4710,7 @@ impl eframe::App for LocalCodePilot {
 impl Drop for LocalCodePilot {
     fn drop(&mut self) {
         let active_ids: Vec<_> = self
+            .managed
             .processes
             .iter()
             .filter(|process| {
@@ -4832,13 +4722,18 @@ impl Drop for LocalCodePilot {
             .map(|process| process.id.clone())
             .collect();
         for id in &active_ids {
-            if let Some(process) = self.processes.iter_mut().find(|process| process.id == *id) {
+            if let Some(process) = self
+                .managed
+                .processes
+                .iter_mut()
+                .find(|process| process.id == *id)
+            {
                 process.state = ProcessState::Stopped;
             }
             self.record_process_history(id);
         }
         self.persist_workspace_state(true);
-        for running in self.running_processes.values_mut() {
+        for running in self.managed.running.values_mut() {
             if !running.finished {
                 terminate_process(&mut running.child);
             }
