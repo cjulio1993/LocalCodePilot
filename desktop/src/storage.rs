@@ -233,6 +233,34 @@ fn remove_leftover_temporaries(path: &Path) {
     let _ = fs::remove_file(temporary_path(&backup_path(path)));
 }
 
+/// Keeps a full copy of `path` as `<file><suffix>` (or `<file><suffix>-<n>` when that name holds
+/// something else) and checks that it matches. If no checked copy can be made, writing to
+/// `path` is refused from now on, so the original is never replaced. Returns whether the copy
+/// exists.
+pub fn keep_copy_or_protect(path: &Path, suffix: &str) -> bool {
+    let kept = fs::read(path).ok().is_some_and(|original| {
+        (1..100).any(|n| {
+            let candidate = if n == 1 {
+                with_suffix(path, suffix)
+            } else {
+                with_suffix(path, &format!("{suffix}-{n}"))
+            };
+            match fs::read(&candidate) {
+                Ok(existing) => existing == original,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    write_synced(&candidate, &original, Step::KeepCopy).is_ok()
+                        && fs::read(&candidate).is_ok_and(|copy| copy == original)
+                }
+                Err(_) => false,
+            }
+        })
+    });
+    if !kept {
+        protect(path);
+    }
+    kept
+}
+
 fn protect(path: &Path) {
     if let Ok(mut protected) = PROTECTED.lock() {
         protected
@@ -291,6 +319,7 @@ enum Step {
     RenameBackup,
     RenameCurrent,
     Preserve,
+    KeepCopy,
 }
 
 #[cfg(not(test))]
@@ -496,6 +525,39 @@ mod tests {
         assert!(recovery.preserved.is_empty());
         assert!(write(&file, b"ok:1", valid).is_err());
         assert_eq!(fs::read(&file).unwrap(), b"corrompido");
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_made_blocks_every_write_to_the_original() {
+        let folder = Folder::new("copia-falha");
+        let file = folder.file();
+        fs::write(&file, b"ok:de-uma-versao-nova").unwrap();
+        fail_at(Some(Step::KeepCopy));
+        assert!(!keep_copy_or_protect(&file, ".versao-9"));
+        fail_at(None);
+        assert!(write(&file, b"ok:antigo", valid).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"ok:de-uma-versao-nova");
+    }
+
+    #[test]
+    fn the_copy_takes_another_name_when_the_first_holds_something_else() {
+        let folder = Folder::new("copia-nome");
+        let file = folder.file();
+        fs::write(&file, b"ok:novo").unwrap();
+        fs::write(with_suffix(&file, ".versao-9"), b"outra coisa").unwrap();
+        assert!(keep_copy_or_protect(&file, ".versao-9"));
+        assert_eq!(
+            fs::read(with_suffix(&file, ".versao-9-2")).unwrap(),
+            b"ok:novo"
+        );
+        assert_eq!(
+            fs::read(with_suffix(&file, ".versao-9")).unwrap(),
+            b"outra coisa"
+        );
+        // A second opening finds the same copy and does not make another.
+        assert!(keep_copy_or_protect(&file, ".versao-9"));
+        assert!(!with_suffix(&file, ".versao-9-3").exists());
+        write(&file, b"ok:antigo", valid).unwrap();
     }
 
     #[test]

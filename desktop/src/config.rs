@@ -3,7 +3,7 @@ use localcodepilot_core::{custom_commands::CustomCommand, projects::Project};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
-    env, fs, io,
+    env, io,
     path::{Path, PathBuf},
 };
 
@@ -361,7 +361,8 @@ fn load_workspace_state_from(path: &Path) -> (WorkspaceState, Option<storage::Re
     let (state, recovery) = storage::read(path, parse_workspace_state).split();
     let state = state.unwrap_or_default();
     if state.schema_version > WORKSPACE_SCHEMA_VERSION {
-        keep_newer_version_copy(path, state.schema_version);
+        // Without a checked copy, the file of the newer version is never written over.
+        storage::keep_copy_or_protect(path, &format!(".versao-{}", state.schema_version));
     }
     (migrate_workspace_state(state), recovery)
 }
@@ -370,19 +371,8 @@ fn parse_workspace_state(bytes: &[u8]) -> Result<WorkspaceState, String> {
     serde_json::from_slice(bytes).map_err(|error| json_error(&error))
 }
 
-/// A newer version of the app saved this file (the person went back to an older one). Its
-/// known fields are read; before anything is written, the whole file is kept as
-/// `<file>.versao-<n>` so the fields this version does not know are not lost.
-fn keep_newer_version_copy(path: &Path, version: u32) {
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(".versao-{version}"));
-    let copy = PathBuf::from(name);
-    if !copy.exists() {
-        let _ = fs::copy(path, copy);
-    }
-}
-
-/// Brings a state saved by any earlier version to the current schema, one version at a time.
+/// Brings a state saved by any earlier version to the current schema. A state saved by a
+/// newer version keeps its known fields; the whole file was copied to `<file>.versao-<n>`.
 /// Versions 1 to 3 only added fields, which `#[serde(default)]` fills; a future change of
 /// meaning gets its own step here.
 fn migrate_workspace_state(mut state: WorkspaceState) -> WorkspaceState {
@@ -477,7 +467,7 @@ fn home_directory() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::SystemTime;
+    use std::{fs, time::SystemTime};
 
     const DAY: u64 = 24 * 60 * 60;
 
