@@ -14,6 +14,8 @@ mod language_ui;
 mod notice;
 #[path = "project_ui.rs"]
 mod project_ui;
+#[path = "recovery_ui.rs"]
+mod recovery_ui;
 
 use crate::{
     config, theme, update_progress_ui,
@@ -826,6 +828,8 @@ pub struct LocalCodePilot {
     discovery: Option<Receiver<DiscoveryEvent>>,
     workspace_state: config::WorkspaceState,
     workspace_dirty: bool,
+    /// The configuration recovery notice is shown at the top until closed (T021).
+    config_recovery_notice: bool,
     last_workspace_save: Instant,
     workspace_save_error_reported: bool,
     update_check: Option<Receiver<Result<Option<UpdateInfo>, UpdateFailure>>>,
@@ -861,14 +865,25 @@ impl LocalCodePilot {
         theme::configure(&cc.egui_ctx);
         theme::install_fonts(&cc.egui_ctx);
         let default_source = FilesystemProjectSource::common_locations();
+        let (loaded_roots, roots_recovery) = config::load_scan_roots();
         let (saved_roots, scan_root_migration) =
-            migrate_scan_roots(config::load_scan_roots(), default_source.roots());
+            migrate_scan_roots(loaded_roots, default_source.roots());
         let configured_roots = saved_roots.unwrap_or_else(|| default_source.roots().to_vec());
         let source = FilesystemProjectSource::new(configured_roots);
         let scan_roots = source.roots().to_vec();
         let cached_projects = config::load_project_cache();
         let environment_path = refreshed_environment_path().ok();
-        let mut workspace_state = config::load_workspace_state();
+        let (mut workspace_state, state_recovery) = config::load_workspace_state();
+        let recoveries = state_recovery
+            .into_iter()
+            .chain(roots_recovery)
+            .collect::<Vec<_>>();
+        let config_recovery =
+            config::ConfigRecovery::from_recoveries(&recoveries, unix_timestamp());
+        let config_recovery_notice = config_recovery.is_some();
+        if config_recovery.is_some() {
+            workspace_state.config_recovery = config_recovery;
+        }
         // Older versions saved logs unmasked and without a time limit.
         let saved_logs_changed =
             workspace_state.mask_saved_logs() | workspace_state.expire_old_logs(unix_timestamp());
@@ -941,7 +956,8 @@ impl LocalCodePilot {
             scan_root_migration,
             discovery: Some(receiver),
             workspace_state,
-            workspace_dirty: recovered_preparation || saved_logs_changed,
+            workspace_dirty: recovered_preparation || saved_logs_changed || config_recovery_notice,
+            config_recovery_notice,
             last_workspace_save: Instant::now(),
             workspace_save_error_reported: false,
             update_check,
@@ -4918,6 +4934,7 @@ impl LocalCodePilot {
     }
 
     fn settings_page(&mut self, ui: &mut egui::Ui) {
+        self.config_recovery_section(ui);
         let available_update = self.available_update.clone();
         let automatic_update = available_update
             .as_ref()
@@ -5131,6 +5148,7 @@ impl LocalCodePilot {
             )
             .show(root_ui, |ui| {
                 self.show_update_banner(ui);
+                self.config_recovery_banner(ui);
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Overview => self.overview(ui),
                     Page::Projects => self.projects_page(&ctx, ui),

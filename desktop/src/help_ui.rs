@@ -58,6 +58,9 @@ const INTRO: &str = "Encontre um projeto, confira seu estado e escolha a próxim
 
 const PROBLEMS: &str = "problemas";
 
+/// Approved in T021: what happens when the configuration files cannot be read.
+const CONFIG_RECOVERY_HELP: &str = "Se não for possível ler seus projetos e configurações, o aplicativo preserva os arquivos. Quando existe uma cópia válida, restaura essa cópia automaticamente. Sem cópia válida, alguns dados podem estar ausentes; use Abrir pasta no aviso para encontrar os arquivos preservados. A descoberta de projetos não recupera favoritos, histórico, comandos personalizados nem confirmações.";
+
 /// Common situations, shown as buttons above the sections.
 const SHORTCUTS: &[(&str, Target)] = &[
     ("O site não abre", Target::Block("site-nao-abre")),
@@ -157,6 +160,10 @@ const SECTIONS: &[HelpSection] = &[
                     "O site não abre",
                     "confira se o projeto está Rodando, o selo do site e o que aparece em Ver logs.",
                 ),
+            ),
+            Block::Anchor(
+                "configuracoes-ilegiveis",
+                &Block::Text(CONFIG_RECOVERY_HELP),
             ),
         ],
         link: None,
@@ -754,6 +761,13 @@ mod tests {
         ] {
             assert!(text.contains(fact), "a Ajuda não diz: {fact}");
         }
+    }
+
+    #[test]
+    fn help_explains_configuration_recovery_without_promising_lost_data() {
+        assert!(all_text().contains(CONFIG_RECOVERY_HELP));
+        assert!(CONFIG_RECOVERY_HELP.contains("não recupera favoritos"));
+        assert!(sections_found("arquivos preservados").contains(&PROBLEMS));
     }
 
     #[test]
