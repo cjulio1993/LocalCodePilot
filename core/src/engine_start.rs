@@ -68,6 +68,17 @@ pub enum DefaultMachine {
     Ambiguous,
 }
 
+/// The connection the Podman CLI uses by default, from `podman system connection list`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PodmanConnection {
+    /// No connection is configured (no machine yet, or Podman on Linux talking locally).
+    NoneConfigured,
+    /// The default connection belongs to this machine (`<machine>` or `<machine>-root`).
+    Machine(String),
+    /// Anything else: a remote host, another machine, or a list that could not be read.
+    Other,
+}
+
 /// Read-only facts gathered to plan a start.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartFacts {
@@ -80,6 +91,14 @@ pub struct StartFacts {
     pub podman_default: Option<DefaultMachine>,
     /// `DOCKER_HOST` or `CONTAINER_HOST` is set: the CLI may point elsewhere.
     pub host_override: bool,
+    /// The endpoint of the active Docker context, such as `npipe:////./pipe/dockerDesktopLinuxEngine`.
+    pub docker_endpoint: Option<String>,
+    pub podman_connection: Option<PodmanConnection>,
+}
+
+/// Whether a Docker endpoint is this computer's own daemon (a named pipe or a Unix socket).
+pub fn is_local_docker_endpoint(endpoint: &str) -> bool {
+    endpoint.starts_with("npipe://") || endpoint.starts_with("unix://")
 }
 
 pub const PODMAN_DEFAULT_MACHINE: &str = "podman-machine-default";
@@ -133,6 +152,27 @@ pub fn plan_start(
         return None;
     }
     let has_unit = |unit: &str| facts.systemd_user_units.iter().any(|known| known == unit);
+    // The CLI must point to this computer's default target, or the start would act on
+    // something else than what the person is shown.
+    let target_is_default = match engine {
+        ContainerEngine::Docker => facts
+            .docker_endpoint
+            .as_deref()
+            .is_some_and(is_local_docker_endpoint),
+        ContainerEngine::Podman => match (&facts.podman_connection, &facts.podman_default, os) {
+            (Some(PodmanConnection::NoneConfigured), _, HostOs::Linux) => true,
+            (Some(PodmanConnection::NoneConfigured), Some(DefaultMachine::NotCreated), _) => true,
+            (
+                Some(PodmanConnection::Machine(connection)),
+                Some(DefaultMachine::Stopped(machine)),
+                _,
+            ) => connection == machine || *connection == format!("{machine}-root"),
+            _ => false,
+        },
+    };
+    if !target_is_default {
+        return None;
+    }
     match (engine, os) {
         (ContainerEngine::Docker, HostOs::Windows | HostOs::MacOs) => {
             if facts.docker_desktop_cli {
@@ -195,7 +235,80 @@ mod tests {
             systemd_user_units: vec!["docker-desktop.service".into()],
             podman_default: Some(DefaultMachine::Stopped(PODMAN_DEFAULT_MACHINE.into())),
             host_override: false,
+            docker_endpoint: Some("npipe:////./pipe/dockerDesktopLinuxEngine".into()),
+            podman_connection: Some(PodmanConnection::Machine(PODMAN_DEFAULT_MACHINE.into())),
         }
+    }
+
+    #[test]
+    fn a_cli_pointing_elsewhere_plans_no_start() {
+        let docker = |endpoint: Option<&str>| {
+            let facts = StartFacts {
+                docker_endpoint: endpoint.map(str::to_owned),
+                ..facts()
+            };
+            plan_start(
+                ContainerEngine::Docker,
+                HostOs::Windows,
+                InfoFailure::Stopped,
+                &facts,
+            )
+        };
+        assert!(docker(Some("npipe:////./pipe/dockerDesktopLinuxEngine")).is_some());
+        assert!(docker(Some("unix:///var/run/docker.sock")).is_some());
+        assert_eq!(docker(Some("tcp://10.0.0.5:2376")), None);
+        assert_eq!(docker(Some("ssh://deploy@servidor")), None);
+        assert_eq!(docker(None), None, "an unreadable context is not proof");
+
+        let podman = |connection: Option<PodmanConnection>, machine: DefaultMachine, os: HostOs| {
+            let facts = StartFacts {
+                podman_connection: connection,
+                podman_default: Some(machine),
+                ..facts()
+            };
+            plan_start(ContainerEngine::Podman, os, InfoFailure::Stopped, &facts)
+        };
+        let stopped = || DefaultMachine::Stopped(PODMAN_DEFAULT_MACHINE.into());
+        let machine = |name: &str| Some(PodmanConnection::Machine(name.into()));
+        assert!(podman(machine(PODMAN_DEFAULT_MACHINE), stopped(), HostOs::Windows).is_some());
+        assert!(
+            podman(
+                machine("podman-machine-default-root"),
+                stopped(),
+                HostOs::Windows
+            )
+            .is_some()
+        );
+        assert_eq!(
+            podman(machine("outra-maquina"), stopped(), HostOs::Windows),
+            None
+        );
+        assert_eq!(
+            podman(Some(PodmanConnection::Other), stopped(), HostOs::MacOs),
+            None
+        );
+        assert_eq!(
+            podman(None, stopped(), HostOs::Windows),
+            None,
+            "an unreadable list is not proof"
+        );
+        // No connection yet is expected only when the machine does not exist.
+        assert!(
+            podman(
+                Some(PodmanConnection::NoneConfigured),
+                DefaultMachine::NotCreated,
+                HostOs::Windows
+            )
+            .is_some()
+        );
+        assert_eq!(
+            podman(
+                Some(PodmanConnection::NoneConfigured),
+                stopped(),
+                HostOs::Windows
+            ),
+            None
+        );
     }
 
     #[test]
@@ -352,6 +465,7 @@ mod tests {
         );
         let podman = StartFacts {
             systemd_user_units: vec!["podman.socket".into()],
+            podman_connection: Some(PodmanConnection::NoneConfigured),
             ..facts()
         };
         assert_eq!(
@@ -368,8 +482,16 @@ mod tests {
     #[test]
     fn podman_uses_only_the_default_machine_and_says_when_it_downloads() {
         let podman = |machine: DefaultMachine| {
+            let connection = match &machine {
+                DefaultMachine::NotCreated => PodmanConnection::NoneConfigured,
+                DefaultMachine::Stopped(name) | DefaultMachine::Running(name) => {
+                    PodmanConnection::Machine(name.clone())
+                }
+                DefaultMachine::Ambiguous => PodmanConnection::Other,
+            };
             let facts = StartFacts {
                 podman_default: Some(machine),
+                podman_connection: Some(connection),
                 ..facts()
             };
             plan_start(

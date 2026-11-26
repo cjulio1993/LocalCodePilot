@@ -5,7 +5,9 @@
 
 use crate::installations::{configure_background_command, find_executable};
 use localcodepilot_core::containers::ContainerEngine;
-use localcodepilot_core::engine_start::{DefaultMachine, EngineStart, StartFacts};
+use localcodepilot_core::engine_start::{
+    DefaultMachine, EngineStart, PodmanConnection, StartFacts,
+};
 use std::{
     env,
     ffi::OsStr,
@@ -20,6 +22,8 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// A new Podman machine downloads its image first.
 pub const CREATE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Each read-only query, including the readiness checks, ends within this time.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Why a start did not leave the engine ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,8 +135,30 @@ pub fn gather_start_facts(path: Option<&OsStr>) -> StartFacts {
     } else {
         Vec::new()
     };
+    let docker_endpoint = run_quietly(
+        "docker",
+        &[
+            "context",
+            "inspect",
+            "--format",
+            "{{.Endpoints.docker.Host}}",
+        ],
+        path,
+    )
+    .ok()
+    .map(|output| output.trim().to_owned())
+    .filter(|endpoint| !endpoint.is_empty());
+    let podman_connection = run_quietly(
+        "podman",
+        &["system", "connection", "list", "--format", "json"],
+        path,
+    )
+    .ok()
+    .map(|output| default_podman_connection(&output));
     StartFacts {
         docker_desktop_cli,
+        docker_endpoint,
+        podman_connection,
         docker_desktop_app: docker_desktop_app(),
         systemd_user_units,
         podman_default,
@@ -167,6 +193,32 @@ pub fn default_podman_machine(output: &str) -> Option<DefaultMachine> {
     } else {
         DefaultMachine::Stopped(name)
     })
+}
+
+/// The default connection in `podman system connection list --format json`.
+pub fn default_podman_connection(output: &str) -> PodmanConnection {
+    let Ok(connections) = serde_json::from_str::<Vec<serde_json::Value>>(output) else {
+        return PodmanConnection::Other;
+    };
+    if connections.is_empty() {
+        return PodmanConnection::NoneConfigured;
+    }
+    let Some(default) = connections.iter().find(|connection| {
+        connection
+            .get("Default")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    }) else {
+        return PodmanConnection::Other;
+    };
+    let is_machine = default
+        .get("IsMachine")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    match default.get("Name").and_then(serde_json::Value::as_str) {
+        Some(name) if is_machine => PodmanConnection::Machine(name.to_owned()),
+        _ => PodmanConnection::Other,
+    }
 }
 
 /// Unit names in the first column of `systemctl list-unit-files --no-legend`.
@@ -209,11 +261,49 @@ fn run_quietly(program: &str, args: &[&str], path: Option<&OsStr>) -> Result<Str
         command.env("PATH", path);
     }
     configure_background_command(&mut command);
-    let output = command.output().map_err(|error| error.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdout = child.stdout.take().map(|mut stdout| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+            text
+        })
+    });
+    let stderr = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
+            text
+        })
+    });
+    let started = Instant::now();
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if started.elapsed() < QUERY_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
+            _ => {
+                let _ = crate::ports::terminate_process_tree(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{program} não respondeu em {} s",
+                    QUERY_TIMEOUT.as_secs()
+                ));
+            }
+        }
+    };
+    let stdout = stdout
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    if success {
+        Ok(stdout)
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+        Err(stderr.trim().to_owned())
     }
 }
 
@@ -321,6 +411,8 @@ mod tests {
         ready_after: Option<Duration>,
         compose: bool,
         now: Duration,
+        /// Each readiness check takes this long, as a query that hangs until its time limit.
+        check_takes: Duration,
     }
 
     impl EngineRunner for FakeRunner {
@@ -336,6 +428,7 @@ mod tests {
             Ok(())
         }
         fn readiness(&mut self, _: ContainerEngine) -> Readiness {
+            self.now += self.check_takes;
             match self.ready_after {
                 Some(after) if self.now >= after && self.compose => Readiness::Ready,
                 Some(after) if self.now >= after => Readiness::EngineOnly,
@@ -437,6 +530,42 @@ mod tests {
             wait_until_ready(ContainerEngine::Podman, START_TIMEOUT, &mut without_compose),
             Err(StartFailure::ComposeMissing)
         );
+    }
+
+    #[test]
+    fn checks_that_hang_until_their_limit_still_end_the_wait_in_time() {
+        let mut hanging = FakeRunner {
+            check_takes: QUERY_TIMEOUT,
+            ..FakeRunner::default()
+        };
+        assert_eq!(
+            wait_until_ready(ContainerEngine::Docker, START_TIMEOUT, &mut hanging),
+            Err(StartFailure::TimedOut)
+        );
+        // Bounded: the last check started before the limit and took at most QUERY_TIMEOUT.
+        assert!(hanging.now <= START_TIMEOUT + QUERY_TIMEOUT + POLL_INTERVAL);
+    }
+
+    #[test]
+    fn reads_the_default_podman_connection() {
+        // Trimmed `podman system connection list --format json` from Podman 6.1.4 on Windows.
+        let machine = r#"[{"Name":"podman-machine-default","URI":"ssh://user@127.0.0.1:62034/run/user/1000/podman/podman.sock","IsMachine":true,"Default":true},{"Name":"podman-machine-default-root","IsMachine":true,"Default":false}]"#;
+        assert_eq!(
+            default_podman_connection(machine),
+            PodmanConnection::Machine("podman-machine-default".into())
+        );
+        let remote = r#"[{"Name":"servidor","URI":"ssh://deploy@10.0.0.5/run/podman/podman.sock","IsMachine":false,"Default":true}]"#;
+        assert_eq!(default_podman_connection(remote), PodmanConnection::Other);
+        let no_default = r#"[{"Name":"podman-machine-default","IsMachine":true,"Default":false}]"#;
+        assert_eq!(
+            default_podman_connection(no_default),
+            PodmanConnection::Other
+        );
+        assert_eq!(
+            default_podman_connection("[]"),
+            PodmanConnection::NoneConfigured
+        );
+        assert_eq!(default_podman_connection("Error"), PodmanConnection::Other);
     }
 
     #[test]
