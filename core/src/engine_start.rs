@@ -94,6 +94,10 @@ pub struct StartFacts {
     /// The endpoint of the active Docker context, such as `npipe:////./pipe/dockerDesktopLinuxEngine`.
     pub docker_endpoint: Option<String>,
     pub podman_connection: Option<PodmanConnection>,
+    /// The current user's home folder and runtime folder (`XDG_RUNTIME_DIR`), to tell this
+    /// user's Docker socket from another user's.
+    pub user_home: Option<String>,
+    pub user_runtime_dir: Option<String>,
 }
 
 /// Whether `endpoint` is the daemon that `start` brings up. Docker Desktop on Windows listens
@@ -101,8 +105,20 @@ pub struct StartFacts {
 /// `.docker` folder (`/var/run/docker.sock` is its link on macOS); rootless Docker, on the
 /// socket in `/run/user/<id>`. Any other endpoint, even on this computer, is someone else's
 /// daemon, and starting Docker Desktop would not make it answer.
-pub fn docker_endpoint_matches(start: &EngineStart, os: HostOs, endpoint: &str) -> bool {
+pub fn docker_endpoint_matches(
+    start: &EngineStart,
+    os: HostOs,
+    endpoint: &str,
+    facts: &StartFacts,
+) -> bool {
     let socket = endpoint.strip_prefix("unix://");
+    // The socket must be this user's own: `systemctl --user` and Docker Desktop start only
+    // the current user's daemon. Without the folder to compare, nothing is proven.
+    let in_home = |suffix: &str| {
+        facts.user_home.as_deref().is_some_and(|home| {
+            socket == Some(format!("{}{suffix}", home.trim_end_matches('/')).as_str())
+        })
+    };
     match (start, os) {
         (EngineStart::DockerDesktopCli | EngineStart::DockerDesktopApp(_), HostOs::Windows) => {
             matches!(
@@ -110,15 +126,17 @@ pub fn docker_endpoint_matches(start: &EngineStart, os: HostOs, endpoint: &str) 
                 "npipe:////./pipe/dockerDesktopLinuxEngine" | "npipe:////./pipe/docker_engine"
             )
         }
-        (EngineStart::DockerDesktopCli | EngineStart::DockerDesktopApp(_), HostOs::MacOs) => socket
-            .is_some_and(|path| {
-                path == "/var/run/docker.sock" || path.ends_with("/.docker/run/docker.sock")
-            }),
-        (EngineStart::SystemdUser(unit), HostOs::Linux) if unit == "docker-desktop" => {
-            socket.is_some_and(|path| path.ends_with("/.docker/desktop/docker.sock"))
+        (EngineStart::DockerDesktopCli | EngineStart::DockerDesktopApp(_), HostOs::MacOs) => {
+            socket == Some("/var/run/docker.sock") || in_home("/.docker/run/docker.sock")
         }
-        (EngineStart::SystemdUser(unit), HostOs::Linux) if unit == "docker" => socket
-            .is_some_and(|path| path.starts_with("/run/user/") && path.ends_with("/docker.sock")),
+        (EngineStart::SystemdUser(unit), HostOs::Linux) if unit == "docker-desktop" => {
+            in_home("/.docker/desktop/docker.sock")
+        }
+        (EngineStart::SystemdUser(unit), HostOs::Linux) if unit == "docker" => {
+            facts.user_runtime_dir.as_deref().is_some_and(|runtime| {
+                socket == Some(format!("{}/docker.sock", runtime.trim_end_matches('/')).as_str())
+            })
+        }
         _ => false,
     }
 }
@@ -195,7 +213,7 @@ pub fn plan_start(
     let plan = plan_for_target(engine, os, facts)?;
     if engine == ContainerEngine::Docker {
         let endpoint = facts.docker_endpoint.as_deref()?;
-        if !docker_endpoint_matches(&plan, os, endpoint) {
+        if !docker_endpoint_matches(&plan, os, endpoint, facts) {
             return None;
         }
     }
@@ -268,6 +286,8 @@ mod tests {
             host_override: false,
             docker_endpoint: Some("npipe:////./pipe/dockerDesktopLinuxEngine".into()),
             podman_connection: Some(PodmanConnection::Machine(PODMAN_DEFAULT_MACHINE.into())),
+            user_home: Some("/home/dev".into()),
+            user_runtime_dir: Some("/run/user/1000".into()),
         }
     }
 
@@ -413,43 +433,80 @@ mod tests {
 
     #[test]
     fn each_docker_start_accepts_only_the_endpoint_it_brings_up() {
+        let matches = |start: &EngineStart, os: HostOs, endpoint: &str| {
+            docker_endpoint_matches(start, os, endpoint, &facts())
+        };
         let desktop = EngineStart::DockerDesktopCli;
-        assert!(docker_endpoint_matches(
+        assert!(matches(
             &desktop,
             HostOs::MacOs,
-            "unix:///Users/dev/.docker/run/docker.sock"
+            "unix:///home/dev/.docker/run/docker.sock"
         ));
-        assert!(docker_endpoint_matches(
+        assert!(matches(
             &desktop,
             HostOs::MacOs,
             "unix:///var/run/docker.sock"
         ));
-        assert!(!docker_endpoint_matches(
+        assert!(!matches(
             &desktop,
             HostOs::MacOs,
-            "unix:///Users/dev/.colima/default/docker.sock"
+            "unix:///Users/outra/.docker/run/docker.sock"
+        ));
+        assert!(!matches(
+            &desktop,
+            HostOs::MacOs,
+            "unix:///home/dev/.colima/default/docker.sock"
         ));
         let linux_desktop = EngineStart::SystemdUser("docker-desktop".into());
-        assert!(docker_endpoint_matches(
+        assert!(matches(
             &linux_desktop,
             HostOs::Linux,
             "unix:///home/dev/.docker/desktop/docker.sock"
         ));
-        assert!(!docker_endpoint_matches(
+        assert!(!matches(
+            &linux_desktop,
+            HostOs::Linux,
+            "unix:///home/outra/.docker/desktop/docker.sock"
+        ));
+        assert!(!matches(
             &linux_desktop,
             HostOs::Linux,
             "unix:///var/run/docker.sock"
         ));
         let rootless = EngineStart::SystemdUser("docker".into());
-        assert!(docker_endpoint_matches(
+        assert!(matches(
             &rootless,
             HostOs::Linux,
             "unix:///run/user/1000/docker.sock"
         ));
-        assert!(!docker_endpoint_matches(
+        // Another user's socket: `systemctl --user` would start ours, not theirs.
+        assert!(!matches(
+            &rootless,
+            HostOs::Linux,
+            "unix:///run/user/1001/docker.sock"
+        ));
+        assert!(!matches(
             &rootless,
             HostOs::Linux,
             "unix:///var/run/docker.sock"
+        ));
+        // Without the user's folders nothing can be proven.
+        let unknown = StartFacts {
+            user_home: None,
+            user_runtime_dir: None,
+            ..facts()
+        };
+        assert!(!docker_endpoint_matches(
+            &rootless,
+            HostOs::Linux,
+            "unix:///run/user/1000/docker.sock",
+            &unknown
+        ));
+        assert!(!docker_endpoint_matches(
+            &linux_desktop,
+            HostOs::Linux,
+            "unix:///home/dev/.docker/desktop/docker.sock",
+            &unknown
         ));
 
         // Through plan_start: the system daemon on Linux is never started by the app.

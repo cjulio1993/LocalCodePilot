@@ -159,6 +159,10 @@ pub fn gather_start_facts(path: Option<&OsStr>) -> StartFacts {
         docker_desktop_cli,
         docker_endpoint,
         podman_connection,
+        user_home: env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .map(|home| home.to_string_lossy().into_owned()),
+        user_runtime_dir: env::var_os("XDG_RUNTIME_DIR")
+            .map(|runtime| runtime.to_string_lossy().into_owned()),
         docker_desktop_app: docker_desktop_app(),
         systemd_user_units,
         podman_default,
