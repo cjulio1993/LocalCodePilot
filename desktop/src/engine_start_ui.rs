@@ -18,6 +18,8 @@ pub(super) struct EngineStartRequest {
     /// The project to start once the engine answers, with its command per engine.
     project: Option<String>,
     resume: Vec<(ContainerEngine, ContainerCommand)>,
+    /// The control that opened the confirmation, focused again when it closes.
+    origin: Option<egui::Id>,
 }
 
 /// A start running in the background.
@@ -61,6 +63,25 @@ pub(super) fn stopped_sentence(engine: ContainerEngine) -> String {
 
 pub(super) fn progress_sentence(engine: ContainerEngine) -> String {
     format!("Iniciando o {engine}…")
+}
+
+/// "Iniciando o {motor}…", announced when it appears.
+pub(super) fn progress_line(ui: &mut egui::Ui, engine: ContainerEngine) {
+    ui.horizontal(|ui| {
+        ui.spinner();
+        let sentence = progress_sentence(engine);
+        let label = announced(
+            ui.label(RichText::new(&sentence).strong()),
+            egui::Role::Label,
+            &sentence,
+        );
+        notice::mark_live(ui, label.id);
+    });
+}
+
+/// Lines for "Detalhes técnicos": commands and error output, with secrets masked.
+pub(super) fn technical_lines(lines: &[String]) -> Vec<String> {
+    crate::secrets::mask_lines(lines)
 }
 
 /// The reason after "Não foi possível ligar o {motor}.".
@@ -170,6 +191,7 @@ impl LocalCodePilot {
         choices: Vec<ContainerEngine>,
         project: Option<String>,
         resume: Vec<(ContainerEngine, ContainerCommand)>,
+        origin: Option<egui::Id>,
     ) {
         let Some(engine) = choices.first().copied() else {
             return;
@@ -183,6 +205,7 @@ impl LocalCodePilot {
             engine,
             project,
             resume,
+            origin,
         });
     }
 
@@ -236,7 +259,9 @@ impl LocalCodePilot {
                             .find(|diagnosis| diagnosis.engine == request.engine)
                             && let Some(failure) = &diagnosis.failure
                         {
-                            ui.label(RichText::new(failure).color(theme::MUTED).size(12.0));
+                            for line in technical_lines(std::slice::from_ref(failure)) {
+                                ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+                            }
                         }
                     });
                 ui.add_space(10.0);
@@ -264,6 +289,14 @@ impl LocalCodePilot {
         }
         if confirm || cancel || !open {
             forget_first_focus(root_ui);
+        }
+        // Closed without starting: the focus goes back to the control that opened it.
+        if (cancel || !open)
+            && let Some(origin) = request.origin
+        {
+            root_ui
+                .ctx()
+                .memory_mut(|memory| memory.request_focus(origin));
         }
         if confirm {
             // The plan of the engine chosen in the dialog.
@@ -337,7 +370,7 @@ impl LocalCodePilot {
                 self.container_state.engine_start.failure = Some(EngineStartFailure {
                     engine: job.engine,
                     sentence: failure_sentence(job.engine, job.resume.is_some(), &reason),
-                    technical,
+                    technical: technical_lines(&technical),
                 });
                 self.refresh_containers(ctx.clone());
             }
@@ -395,6 +428,18 @@ fn run_engine_start(
 ) -> Result<(), StartFailure> {
     #[cfg(feature = "engine-start-test")]
     if let Ok(outcome) = std::env::var("LOCALCODEPILOT_TEST_ENGINE_START") {
+        // Each simulated start is written down, so a test can prove none ran before the
+        // confirmation or after "Agora não".
+        if let Ok(log) = std::env::var("LOCALCODEPILOT_TEST_ENGINE_START_LOG") {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log)
+            {
+                let _ = writeln!(file, "{engine} {}", plan.commands().join(" && "));
+            }
+        }
         std::thread::sleep(Duration::from_secs(8));
         return match outcome.as_str() {
             "ok" => Ok(()),
@@ -455,6 +500,82 @@ mod tests {
             .is_empty()
         );
         assert!(start_choices(&unsafe_docker, &[], ContainerEngine::Docker).is_empty());
+    }
+
+    #[test]
+    fn technical_details_never_show_secrets_from_the_error_output() {
+        let lines = technical_lines(&[
+            "podman machine start podman-machine-default".to_owned(),
+            "Error: DOCKER_PASSWORD=senha-ficticia-1 rejected".to_owned(),
+            "pull https://usuario:senha-ficticia-2@registro.exemplo/img failed".to_owned(),
+            "Authorization: Bearer token-ficticio-3".to_owned(),
+        ])
+        .join("\n");
+        for secret in ["senha-ficticia-1", "senha-ficticia-2", "token-ficticio-3"] {
+            assert!(!lines.contains(secret), "{secret} appeared: {lines}");
+        }
+        assert!(lines.contains("podman machine start podman-machine-default"));
+    }
+
+    #[test]
+    fn progress_and_failure_are_live_regions_for_screen_readers() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut live = vec![];
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                progress_line(ui, ContainerEngine::Docker);
+                notice::Notice::new(
+                    egui::Id::unique("falha-teste"),
+                    "Não foi possível ligar o Docker.",
+                )
+                .live()
+                .show(
+                    ui,
+                    notice::NoticeParts {
+                        resolve: None,
+                        details: None,
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            if let Some(update) = output.platform_output.accesskit_update {
+                let nodes = update
+                    .nodes
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashMap<_, _>>();
+                // egui keeps the text of a label in its text runs.
+                let text = |node: &egui::accesskit::Node| {
+                    node.label()
+                        .or(node.value())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            node.children()
+                                .iter()
+                                .filter_map(|child| nodes.get(child))
+                                .filter_map(|child| child.value().or(child.label()))
+                                .collect::<String>()
+                        })
+                };
+                live = update
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.live() == Some(egui::accesskit::Live::Polite))
+                    .map(|(_, node)| text(node))
+                    .collect();
+            }
+        }
+        assert!(
+            live.iter()
+                .any(|label| label.contains("Iniciando o Docker")),
+            "{live:?}"
+        );
+        assert!(
+            live.iter()
+                .any(|label| label.contains("Não foi possível ligar o Docker")),
+            "{live:?}"
+        );
     }
 
     #[test]

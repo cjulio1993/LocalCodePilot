@@ -12,7 +12,7 @@ Docker e Podman são verificados independentemente:
 - `info`: acesso ao motor;
 - `compose version`: disponibilidade do plugin ou provedor Compose.
 
-O aplicativo não instala ferramentas nem inicia VMs. O provedor Compose do Podman precisa estar instalado separadamente quando não estiver disponível.
+Essas consultas não instalam nem iniciam nada. O aplicativo não instala ferramentas; quando o Docker ou o Podman está instalado e comprovadamente parado, ele pode ligar o motor depois da sua confirmação (veja Preparação guiada dos motores). O provedor Compose do Podman precisa estar instalado separadamente quando não estiver disponível.
 
 ### Proteção contra conflitos de nome Compose
 
@@ -89,7 +89,7 @@ O comando CLI continua sendo somente diagnóstico e mostra os comandos propostos
 - O usuário ainda pode iniciar diretamente; para projetos desconhecidos, execute **Validar configuração** primeiro.
 - Um Dockerfile isolado oferece somente build, sem nomear a imagem nem oferecer `run`.
 - A parada usa `stop`; não há remoção de containers, redes ou volumes.
-- O app não instala Docker/Podman, não inicia Docker Desktop ou máquinas Podman e não aceita entrada interativa no comando; ele apenas orienta esses passos.
+- O app não instala Docker/Podman e não aceita entrada interativa no comando. Ele só liga o Docker Desktop, a máquina padrão do Podman ou o serviço do usuário depois da confirmação **Ligar o {motor}?**, e só quando o motor instalado está comprovadamente parado; a instalação continua orientada pelos passos e links oficiais.
 - A orientação não verifica virtualização no firmware nem espaço em disco; esses requisitos aparecem como texto e nos links oficiais.
 - O CI valida os fluxos reais de comandos Docker e Podman (`config`, `up`, `ps`, `logs`, `stop` e `build`) com um projeto mínimo. No Windows 11, Docker Desktop passou pela interface em `config`, `up`, `ps`, logs, `stop`, build e cancelamento. Podman 6.1.4 passou pela interface em `config`, `up`, `ps`, logs e `stop`; o build passou pela CLI.
 

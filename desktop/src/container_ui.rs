@@ -1,7 +1,9 @@
 use super::*;
 #[path = "engine_start_ui.rs"]
 mod engine_start_ui;
-use engine_start_ui::{EngineStartState, progress_sentence, start_choices, stopped_sentence};
+use engine_start_ui::{
+    EngineStartState, progress_line, start_choices, stopped_sentence, technical_lines,
+};
 use localcodepilot_core::compose_safety::{
     BlockedAction, ComposeEnvironment, ComposeName, ComposeSafety, ComposeVolume,
     classify_environment, explain, guard_container_action, guard_environment_action,
@@ -321,6 +323,7 @@ type EngineStartAsk = (
     Vec<ContainerEngine>,
     String,
     Vec<(ContainerEngine, ContainerCommand)>,
+    egui::Id,
 );
 
 #[derive(Default)]
@@ -1520,15 +1523,7 @@ impl LocalCodePilot {
             }
             if self.container_state.engine_start.starting(diagnosis.engine) {
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    let sentence = progress_sentence(diagnosis.engine);
-                    announced(
-                        ui.label(RichText::new(&sentence).strong()),
-                        egui::Role::Label,
-                        &sentence,
-                    );
-                });
+                progress_line(ui, diagnosis.engine);
                 continue;
             }
             let Some(mut message) = engine_message(diagnosis) else {
@@ -1587,13 +1582,18 @@ impl LocalCodePilot {
                     }
                 }
                 if let Some(error) = &diagnosis.failure {
-                    notice::detail_line(ui, error);
+                    for line in technical_lines(std::slice::from_ref(error)) {
+                        notice::detail_line(ui, &line);
+                    }
                 }
                 for line in failure.iter().flat_map(|failure| &failure.technical) {
                     notice::detail_line(ui, line);
                 }
             };
-            if notice.show(
+            if failure.is_some() {
+                notice = notice.live();
+            }
+            let shown = notice.show_response(
                 ui,
                 notice::NoticeParts {
                     resolve: if guidance.is_some() {
@@ -1603,9 +1603,10 @@ impl LocalCodePilot {
                     },
                     details: Some(&mut details),
                 },
-            ) {
+            );
+            if shown.action {
                 if diagnosis.start.is_some() {
-                    start_engine = Some(diagnosis.engine);
+                    start_engine = Some((diagnosis.engine, shown.action_id));
                 } else {
                     check_engines = true;
                 }
@@ -1615,8 +1616,8 @@ impl LocalCodePilot {
             self.refresh_containers(ui.ctx().clone());
         }
         // Containers turns on only the engine: no project is started from here.
-        if let Some(engine) = start_engine {
-            self.request_engine_start(vec![engine], None, vec![]);
+        if let Some((engine, origin)) = start_engine {
+            self.request_engine_start(vec![engine], None, vec![], origin);
         }
         if let Some(command) = copied {
             self.notify(format!("Comando copiado: {command}"));
@@ -1990,8 +1991,8 @@ impl LocalCodePilot {
         if requests.check_again {
             self.refresh_containers(ui.ctx().clone());
         }
-        if let Some((choices, project, resume)) = requests.engine_start {
-            self.request_engine_start(choices, Some(project), resume);
+        if let Some((choices, project, resume, origin)) = requests.engine_start {
+            self.request_engine_start(choices, Some(project), resume, Some(origin));
         }
         if let Some(snippet) = requests.snippet {
             self.notify(format!("Trecho copiado: {snippet}"));
@@ -2204,7 +2205,8 @@ impl LocalCodePilot {
                         })
                         .collect();
                     notice::open(ui.ctx(), container_group_id(group.root));
-                    requests.engine_start = Some((start_choices.clone(), context.clone(), resume));
+                    requests.engine_start =
+                        Some((start_choices.clone(), context.clone(), resume, response.id));
                 }
             } else if let Some(blocked) = blocked {
                 response.on_disabled_hover_text(format!("Bloqueado: {}", blocked.summary));
