@@ -2659,6 +2659,8 @@ mod tests {
             engine,
             state,
             compose_available: true,
+            start: None,
+            failure: None,
         };
         let both = [
             diagnosis(ContainerEngine::Docker, EngineState::Ready),
@@ -2684,6 +2686,8 @@ mod tests {
             engine: ContainerEngine::Docker,
             state,
             compose_available,
+            start: None,
+            failure: None,
         };
         assert_eq!(engine_message(&diagnosis(EngineState::Ready, true)), None);
         let missing = engine_message(&diagnosis(EngineState::Missing, false)).unwrap();
@@ -2719,6 +2723,8 @@ mod tests {
             engine: ContainerEngine::Docker,
             state,
             compose_available: false,
+            start: None,
+            failure: None,
         };
         let missing = [engine(EngineState::Ready), engine(EngineState::Missing)];
         assert!(rereads_registry_path(ContainerRefresh::Full, &missing));

@@ -1,3 +1,4 @@
+use crate::engine_start::gather_start_facts;
 use crate::installations::{configure_background_command, find_executable};
 use localcodepilot_core::compose_safety::{
     BlockedAction, ComposeEnvironment, ComposeName, ComposeVolume, classify_environment,
@@ -8,6 +9,7 @@ use localcodepilot_core::containers::{
     ContainerAction, ContainerCommand, ContainerEngine, ContainerProject, EngineDiagnosis,
     EngineState, RuntimeContainer,
 };
+use localcodepilot_core::engine_start::{InfoFailure, classify_info_failure, plan_start};
 use localcodepilot_core::paths::plain_path;
 use localcodepilot_core::ports::strip_terminal_sequences;
 use std::{
@@ -64,7 +66,7 @@ pub fn inspect_container_host(path: Option<&OsStr>) -> ContainerHostFacts {
         os,
         wsl_ready: match wsl_ready {
             Some(ProbeResult::Success) => Some(true),
-            Some(ProbeResult::Missing | ProbeResult::Failed) => Some(false),
+            Some(ProbeResult::Missing | ProbeResult::Failed(_)) => Some(false),
             Some(ProbeResult::TimedOut) | None => None,
         },
         podman_machine,
@@ -506,19 +508,35 @@ impl Drop for ContainerExecution {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ProbeResult {
     Missing,
     Success,
-    Failed,
+    /// The error output, capped, for telling a stopped engine from other failures.
+    Failed(String),
     TimedOut,
 }
 
 /// Read-only queries. No install, VM start, pull, build or container lifecycle action.
 pub fn inspect_container_engines(path: Option<&OsStr>) -> Vec<EngineDiagnosis> {
+    let os = HostOs::current();
+    let mut facts = None;
     [ContainerEngine::Docker, ContainerEngine::Podman]
         .into_iter()
-        .map(|engine| diagnose_engine(engine, |args| probe(engine.program(), args, path)))
+        .map(|engine| {
+            let mut diagnosis = diagnose_engine(engine, |args| probe(engine.program(), args, path));
+            if diagnosis.state == EngineState::Unavailable
+                && let Some(stderr) = &diagnosis.failure
+            {
+                let failure = classify_info_failure(engine, os, stderr);
+                if failure == InfoFailure::Stopped {
+                    // Only read-only queries: nothing is started here.
+                    let facts = facts.get_or_insert_with(|| gather_start_facts(path));
+                    diagnosis.start = plan_start(engine, os, failure, facts);
+                }
+            }
+            diagnosis
+        })
         .collect()
 }
 
@@ -696,20 +714,36 @@ fn diagnose_engine(
                 _ => EngineState::QueryFailed,
             },
             compose_available: false,
+            start: None,
+            failure: None,
         };
     }
-    let state = match run(&["info"]) {
-        ProbeResult::Success => EngineState::Ready,
-        ProbeResult::TimedOut => EngineState::TimedOut,
-        _ => EngineState::Unavailable,
+    let (state, failure) = match run(&["info"]) {
+        ProbeResult::Success => (EngineState::Ready, None),
+        ProbeResult::TimedOut => (EngineState::TimedOut, None),
+        ProbeResult::Failed(stderr) => (EngineState::Unavailable, Some(stderr)),
+        ProbeResult::Missing => (EngineState::Unavailable, None),
     };
     let compose_available = run(&["compose", "version"]) == ProbeResult::Success;
     EngineDiagnosis {
         engine,
         state,
         compose_available,
+        start: None,
+        failure,
     }
 }
+
+/// The error output of a finished query, at most `PROBE_STDERR_LIMIT` bytes.
+fn read_capped_stderr(child: &mut std::process::Child) -> String {
+    let mut bytes = Vec::new();
+    if let Some(stderr) = child.stderr.take() {
+        let _ = stderr.take(PROBE_STDERR_LIMIT).read_to_end(&mut bytes);
+    }
+    strip_terminal_sequences(String::from_utf8_lossy(&bytes).trim())
+}
+
+const PROBE_STDERR_LIMIT: u64 = 4096;
 
 fn probe(program: &str, args: &[&str], path: Option<&OsStr>) -> ProbeResult {
     let Some(executable) = find_executable(program, path) else {
@@ -720,13 +754,13 @@ fn probe(program: &str, args: &[&str], path: Option<&OsStr>) -> ProbeResult {
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     if let Some(path) = path {
         command.env("PATH", path);
     }
     configure_background_command(&mut command);
     let Ok(mut child) = command.spawn() else {
-        return ProbeResult::Failed;
+        return ProbeResult::Failed(String::new());
     };
     let started = Instant::now();
     loop {
@@ -735,7 +769,7 @@ fn probe(program: &str, args: &[&str], path: Option<&OsStr>) -> ProbeResult {
                 return if status.success() {
                     ProbeResult::Success
                 } else {
-                    ProbeResult::Failed
+                    ProbeResult::Failed(read_capped_stderr(&mut child))
                 };
             }
             Ok(None) if started.elapsed() < PROBE_TIMEOUT => {
@@ -746,7 +780,7 @@ fn probe(program: &str, args: &[&str], path: Option<&OsStr>) -> ProbeResult {
                 let _ = child.kill();
                 let _ = child.wait();
                 return if result.is_err() {
-                    ProbeResult::Failed
+                    ProbeResult::Failed(String::new())
                 } else {
                     ProbeResult::TimedOut
                 };
@@ -1321,7 +1355,7 @@ mod tests {
         for engine in [ContainerEngine::Docker, ContainerEngine::Podman] {
             let unavailable = diagnose_engine(engine, |args| {
                 if args == ["info"] {
-                    ProbeResult::Failed
+                    ProbeResult::Failed(String::new())
                 } else {
                     ProbeResult::Success
                 }
@@ -1330,7 +1364,7 @@ mod tests {
             assert!(unavailable.compose_available);
             let ready = diagnose_engine(engine, |args| {
                 if args == ["compose", "version"] {
-                    ProbeResult::Failed
+                    ProbeResult::Failed(String::new())
                 } else {
                     ProbeResult::Success
                 }
