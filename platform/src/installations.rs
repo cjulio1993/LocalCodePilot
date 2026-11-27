@@ -29,6 +29,11 @@ const DART_PACKAGE_ID: &str = "Google.DartSDK";
 const BABASHKA_PACKAGE_ID: &str = "Babashka.Babashka";
 const STACK_PACKAGE_ID: &str = "commercialhaskell.stack";
 const ZIG_PACKAGE_ID: &str = "zig.zig";
+/// Build tools of C/C++ projects (T028.02). The Meson installer brings Ninja with it.
+pub const BUILD_TOOL_PACKAGES: [(&str, &str, &str); 2] = [
+    ("cmake", "Kitware.CMake", "CMake"),
+    ("meson", "mesonbuild.meson", "Meson"),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramInventory {
@@ -133,6 +138,26 @@ impl WindowsWingetProvider {
             version_constraint,
             working_directory,
             matches,
+        )
+    }
+
+    /// The latest CMake or Meson from winget, for a C/C++ project that compiles before it
+    /// runs (T028.02).
+    pub fn resolve_build_tool_installation(
+        &self,
+        program: &str,
+        working_directory: &Path,
+    ) -> Result<InstallationStep, String> {
+        let (_, package_id, display_name) = BUILD_TOOL_PACKAGES
+            .iter()
+            .find(|(name, ..)| *name == program)
+            .ok_or_else(|| format!("Não há pacote conhecido para {program}"))?;
+        self.resolve_package_installation(
+            package_id,
+            display_name,
+            "a versão mais recente",
+            working_directory,
+            |_, _| Some(true),
         )
     }
 

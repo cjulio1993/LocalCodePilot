@@ -74,6 +74,7 @@ impl CustomCommand {
             exit_code: None,
             expected_port: self.port.and_then(Port::new),
             port_override: None,
+            prepare: Vec::new(),
         }
     }
 }

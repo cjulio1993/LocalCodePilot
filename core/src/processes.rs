@@ -36,6 +36,26 @@ pub struct ManagedProcess {
     pub process_id: Option<u32>,
 }
 
+/// A command that must finish before the process starts, such as configuring and compiling a
+/// C/C++ project (T028.02). Its output goes to the process logs, and a failure keeps the
+/// process from starting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrepareStep {
+    pub program: String,
+    pub args: Vec<String>,
+    /// The step is skipped when this file exists (a build folder already configured).
+    pub skip_if_exists: Option<PathBuf>,
+}
+
+impl PrepareStep {
+    pub fn command_line(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectProcess {
     pub id: String,
@@ -50,6 +70,8 @@ pub struct ProjectProcess {
     pub exit_code: Option<i32>,
     pub expected_port: Option<Port>,
     pub port_override: Option<PortOverride>,
+    /// Steps that run, in order, before the process (compile before run).
+    pub prepare: Vec<PrepareStep>,
 }
 
 impl ProjectProcess {
@@ -127,6 +149,7 @@ mod tests {
             exit_code: None,
             expected_port: Port::new(5173),
             port_override: Some(port_override),
+            prepare: Vec::new(),
         }
     }
 

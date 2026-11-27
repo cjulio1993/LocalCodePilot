@@ -1,3 +1,5 @@
+#[path = "build_steps.rs"]
+mod build_steps;
 #[path = "command_trust.rs"]
 mod command_trust;
 #[path = "command_ui.rs"]
@@ -448,11 +450,10 @@ impl ProjectEnvironment {
                 requirement.status,
                 RequirementStatus::Missing | RequirementStatus::Incompatible { .. }
             )
-        }) || self
-            .missing_programs
-            .iter()
-            .any(|program| matches!(program.as_str(), "composer" | "pnpm" | "yarn" | "bun"))
-            || !self.missing_php_extensions.is_empty()
+        }) || self.missing_programs.iter().any(|program| {
+            matches!(program.as_str(), "composer" | "pnpm" | "yarn" | "bun")
+                || is_build_tool(program)
+        }) || !self.missing_php_extensions.is_empty()
     }
 
     fn legacy_laravel_constraint(&self) -> Option<&str> {
@@ -1660,6 +1661,12 @@ impl LocalCodePilot {
             ));
             return;
         }
+        if !process.prepare.is_empty() && !self.managed.built.remove(id) {
+            self.managed.build_logs.remove(id);
+            let repaint = self.repaint.clone();
+            self.start_build(index, &repaint);
+            return;
+        }
         if find_executable(&process.program, self.environment_path.as_deref()).is_none() {
             self.managed.processes[index].state = ProcessState::Failed;
             self.managed.processes[index].process_id = None;
@@ -1807,6 +1814,10 @@ impl LocalCodePilot {
     }
 
     fn stop_process(&mut self, id: &str) {
+        if self.stop_build(id) {
+            self.notify("Compilação interrompida");
+            return;
+        }
         let Some(running) = self.managed.running.get_mut(id) else {
             return;
         };
@@ -4206,6 +4217,14 @@ impl LocalCodePilot {
                                                     false,
                                                     egui::Button::new("Iniciando..."),
                                                 );
+                                                // The compilation can be interrupted (T028.02).
+                                                if self.managed.builds.contains_key(&command.id)
+                                                    && ui.button("Parar").clicked()
+                                                {
+                                                    action = Some(ProcessAction::Stop(
+                                                        command.id.clone(),
+                                                    ));
+                                                }
                                             }
                                             ProcessState::Stopped | ProcessState::Completed | ProcessState::Failed => {
                                                 let start = ui.add_enabled(
@@ -4403,6 +4422,29 @@ impl LocalCodePilot {
                                         );
                                     }
                                 });
+                                if !self.managed.running.contains_key(&command.id)
+                                    && let Some(logs) = self
+                                        .managed
+                                        .build_logs
+                                        .get(&command.id)
+                                        .or_else(|| self.managed.builds.get(&command.id).map(|job| &job.logs))
+                                    && !logs.is_empty()
+                                {
+                                    ui.add_space(4.0);
+                                    egui::CollapsingHeader::new(format!("Saída ({})", logs.len()))
+                                        .id_salt(format!("build-logs-{}", command.id))
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            egui::ScrollArea::vertical()
+                                                .max_height(160.0)
+                                                .stick_to_bottom(true)
+                                                .show(ui, |ui| {
+                                                    for line in logs {
+                                                        ui.label(RichText::new(line).monospace().size(10.0));
+                                                    }
+                                                });
+                                        });
+                                }
                                 if let Some(running) = self.managed.running.get(&command.id)
                                     && !running.logs.is_empty()
                                 {
@@ -4708,6 +4750,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_dependency_installs(ctx);
         self.poll_laravel_migration(ctx);
         self.poll_processes(ctx);
+        self.poll_builds(ctx);
         self.poll_update_check();
         self.poll_update_install(ctx);
         self.poll_migrations();
@@ -5093,6 +5136,7 @@ fn run_laravel_migration_command(
         exit_code: None,
         expected_port: None,
         port_override: None,
+        prepare: Vec::new(),
     };
     let mut child = process_command(&process)
         .current_dir(plain_path(working_directory))
@@ -5337,6 +5381,33 @@ fn resolve_environment_plan_with_tools_directory(
                 },
             });
         }
+    }
+
+    // CMake or Meson for a C/C++ project that compiles before it runs (T028.02).
+    for program in environment
+        .missing_programs
+        .iter()
+        .filter(|program| is_build_tool(program))
+    {
+        steps.push(WindowsWingetProvider.resolve_build_tool_installation(program, project_path)?);
+        steps.push(InstallationStep {
+            label: "Atualizar o ambiente do LocalCodePilot".into(),
+            detail: format!("Recarregar o PATH depois da instalação de {program}"),
+            source: Some("Windows".into()),
+            requires_elevation: false,
+            kind: InstallationStepKind::RefreshEnvironment,
+        });
+        steps.push(InstallationStep {
+            label: format!("Validar {program}"),
+            detail: "Confirmar que o programa responde".into(),
+            source: None,
+            requires_elevation: false,
+            kind: InstallationStepKind::VerifyCommand {
+                program: program.clone(),
+                args: vec!["--version".into()],
+                version_constraint: None,
+            },
+        });
     }
 
     if environment
@@ -6305,10 +6376,60 @@ fn process_command_on_port(
     }
 }
 
+/// A line of a program's output. Most tools write UTF-8; Windows tools without a console of
+/// their own (MSBuild, cl) write in the OEM code page, so "versão" arrived as "vers�o".
+fn decode_output(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    #[cfg(windows)]
+    if let Some(text) = decode_oem(bytes) {
+        return text;
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(windows)]
+fn decode_oem(bytes: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
+    let length = i32::try_from(bytes.len()).ok()?;
+    // SAFETY: the input pointer and length describe `bytes`; the first call writes nothing
+    // and returns the size, the second writes at most `wide.len()` units.
+    let size = unsafe {
+        MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), length, std::ptr::null_mut(), 0)
+    };
+    if size <= 0 {
+        return None;
+    }
+    let mut wide = vec![0u16; usize::try_from(size).ok()?];
+    let written = unsafe {
+        MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), length, wide.as_mut_ptr(), size)
+    };
+    if written <= 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(
+        &wide[..usize::try_from(written).ok()?],
+    ))
+}
+
+fn is_build_tool(program: &str) -> bool {
+    localcodepilot_platform::installations::BUILD_TOOL_PACKAGES
+        .iter()
+        .any(|(name, ..)| *name == program)
+}
+
 fn spawn_output_reader(reader: impl Read + Send + 'static, sender: mpsc::Sender<String>) {
     std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            let line = strip_terminal_sequences(&line);
+        // Not `lines()`: it stops at the first line that is not UTF-8, and tools such as
+        // MSBuild write in the console code page ("Gerando Código..."), so the rest of the
+        // output was lost.
+        let mut reader = BufReader::new(reader);
+        let mut bytes = Vec::new();
+        while matches!(reader.read_until(b'\n', &mut bytes), Ok(read) if read > 0) {
+            let text = decode_output(&bytes);
+            let line = strip_terminal_sequences(text.trim_end_matches(['\r', '\n']));
+            bytes.clear();
             if sender.send(line).is_err() {
                 break;
             }
@@ -6888,10 +7009,21 @@ fn inspect_project_environment_with_inventory(
         .find_map(read_laravel_constraint);
 
     for process in &project_processes {
-        if find_executable(&process.program, environment_path).is_none()
-            && !missing_programs.contains(&process.program)
-        {
-            missing_programs.push(process.program.clone());
+        let programs = if process.prepare.is_empty() {
+            vec![process.program.clone()]
+        } else {
+            process
+                .prepare
+                .iter()
+                .map(|step| step.program.clone())
+                .collect()
+        };
+        for program in programs {
+            if find_executable(&program, environment_path).is_none()
+                && !missing_programs.contains(&program)
+            {
+                missing_programs.push(program);
+            }
         }
 
         let uses_node = matches!(process.program.as_str(), "npm" | "pnpm" | "yarn" | "bun");
@@ -7263,7 +7395,15 @@ fn inspect_project_environment_with_inventory(
                         || "pasta do projeto".to_owned(),
                         |relative| relative.display().to_string(),
                     );
-                (process.name.clone(), process.command_line(), folder)
+                // Compile steps come first, as the confirmation shows them (T028.02).
+                let command = process
+                    .prepare
+                    .iter()
+                    .map(localcodepilot_core::processes::PrepareStep::command_line)
+                    .chain(std::iter::once(process.command_line()))
+                    .collect::<Vec<_>>()
+                    .join(" → ");
+                (process.name.clone(), command, folder)
             })
             .collect(),
     }
@@ -7676,6 +7816,27 @@ fn technology_color(technology: TechnologyKind) -> Color32 {
         TechnologyKind::Flutter => Color32::from_rgb(84, 197, 248),
         TechnologyKind::StaticSite => Color32::from_rgb(70, 180, 140),
         TechnologyKind::Containers => Color32::from_rgb(90, 160, 240),
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    #[test]
+    fn output_lines_keep_utf8_and_do_not_stop_at_other_encodings() {
+        assert_eq!(super::decode_output("versão".as_bytes()), "versão");
+        // "versão" in code page 850 (Windows consoles in Portuguese) is not UTF-8.
+        let oem = super::decode_output(b"vers\xc6o");
+        assert!(oem.starts_with("vers") && oem.ends_with('o'));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        super::spawn_output_reader(
+            std::io::Cursor::new(b"um\r\nvers\xc6o\ntr\xc3\xaas\n".to_vec()),
+            sender,
+        );
+        let lines = receiver.iter().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "um");
+        assert_eq!(lines[2], "três");
     }
 }
 
@@ -8128,6 +8289,25 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_cmake_or_meson_is_prepared_with_the_environment() {
+        let environment = ProjectEnvironment {
+            command_count: 1,
+            missing_programs: vec!["cmake".into()],
+            ..ProjectEnvironment::default()
+        };
+        assert!(environment.needs_environment_preparation());
+        assert_eq!(
+            environment.can_prepare_environment(),
+            cfg!(target_os = "windows")
+        );
+        assert!(super::is_build_tool("cmake") && super::is_build_tool("meson"));
+        assert!(!super::is_build_tool("gcc"));
+        let packages = localcodepilot_platform::installations::BUILD_TOOL_PACKAGES;
+        assert!(packages.contains(&("cmake", "Kitware.CMake", "CMake")));
+        assert!(packages.contains(&("meson", "mesonbuild.meson", "Meson")));
+    }
+
+    #[test]
     fn prepares_pnpm_with_corepack_before_dependencies() {
         let project_path = PathBuf::from("project");
         let environment = ProjectEnvironment {
@@ -8223,6 +8403,7 @@ mod tests {
             exit_code: None,
             expected_port: None,
             port_override: None,
+            prepare: Vec::new(),
         };
 
         let environment = inspect_project_environment(&project, &[process], Some(OsStr::new("")));
@@ -8300,6 +8481,7 @@ mod tests {
             exit_code: None,
             expected_port: None,
             port_override: None,
+            prepare: Vec::new(),
         };
         let missing_runtime = inspect_project_environment(&project, &[process], None);
         assert_eq!(
@@ -8320,6 +8502,7 @@ mod tests {
             exit_code: None,
             expected_port: Some(Port::new(5173).unwrap()),
             port_override: None,
+            prepare: Vec::new(),
         };
         let no_dependencies =
             inspect_project_environment(&project, std::slice::from_ref(&node_process), None);
@@ -8470,6 +8653,7 @@ mod tests {
             exit_code: None,
             expected_port: None,
             port_override: None,
+            prepare: Vec::new(),
         };
         let processes = vec![
             process("backend", &project_path, ProcessState::Stopped),
@@ -8504,6 +8688,7 @@ mod tests {
             exit_code: None,
             expected_port: Some(Port::new(5173).unwrap()),
             port_override: None,
+            prepare: Vec::new(),
         };
 
         assert!(process_matches_search(&process, Some(&project), "laravel"));
@@ -8533,6 +8718,7 @@ mod tests {
             exit_code: None,
             expected_port: Some(Port::new(5173).unwrap()),
             port_override: None,
+            prepare: Vec::new(),
         };
 
         assert!(!process_exposes_application_url(&project, &process));
