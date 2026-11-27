@@ -37,7 +37,20 @@ pub fn inspect_tcp_port(port: Port) -> PortAvailability {
     let ipv4 = loopback_port_available(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let ipv6 = loopback_port_available(IpAddr::V6(Ipv6Addr::LOCALHOST), port);
     if matches!(ipv4, Some(false)) || matches!(ipv6, Some(false)) {
-        PortAvailability::Occupied { owner: None }
+        // Outside Windows the owner comes from lsof or ss, which see the processes of this
+        // user. Without it, the app could never tell its own database server (T029) from
+        // another program on the port.
+        #[cfg(not(target_os = "windows"))]
+        let owner = local_listeners()
+            .into_iter()
+            .find(|(listener, _)| *listener == port.value())
+            .map(|(_, process_id)| PortOwner {
+                process_id,
+                process_name: process_name(process_id),
+            });
+        #[cfg(target_os = "windows")]
+        let owner = None;
+        PortAvailability::Occupied { owner }
     } else {
         PortAvailability::Available
     }
