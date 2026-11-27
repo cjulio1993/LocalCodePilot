@@ -38,7 +38,7 @@ use crate::{
     updates::session::{ActiveRun, UpdateConfirmation, UpdateSession},
     updates::{self, UpdateFailure, UpdateInfo},
 };
-use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke};
+use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Stroke};
 use egui_phosphor::regular::{
     ARROW_SQUARE_OUT, BOOK_OPEN, CARET_DOUBLE_LEFT, CARET_DOUBLE_RIGHT, CIRCLE, CODE_SIMPLE, CUBE,
     FOLDER_OPEN, GEAR, LAYOUT, PLAY, PLUS, STAR, TERMINAL,
@@ -4987,7 +4987,10 @@ impl LocalCodePilot {
                     .inner_margin(Margin::same(margin)),
             )
             .show(root_ui, |ui| {
-                self.show_update_banner(ui);
+                // The overview shows the update notice after its sections (T037.04).
+                if self.page != Page::Overview {
+                    self.show_update_banner(ui);
+                }
                 self.config_recovery_banner(ui);
                 if self.page.is_service() {
                     self.services_tabs(ui);
