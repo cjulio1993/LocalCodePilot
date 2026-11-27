@@ -1194,10 +1194,13 @@ impl LocalCodePilot {
         }
     }
 
+    /// The overview (T037.04): what needs attention first, then what runs, then recent
+    /// projects, then the update notice. No big counters: the counts are in the titles, and
+    /// "Ver todos" opens Projetos with the matching filter.
     pub(super) fn overview_page(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Visão geral").strong().size(24.0));
         ui.label(
-            RichText::new("O que está rodando, o que precisa de atenção e o que está parado.")
+            RichText::new("O que precisa de atenção, o que está rodando e os projetos recentes.")
                 .color(theme::MUTED)
                 .size(theme::TEXT_BODY),
         );
@@ -1205,40 +1208,41 @@ impl LocalCodePilot {
         let summaries = self.summaries();
         let folders = self.distinguishing_folders();
         let folder = |project: &Project| folders.get(&project.path).map(String::as_str);
-        let count = |filter: ProjectFilter| {
-            summaries
-                .iter()
-                .filter(|(_, summary)| filter.matches(summary.state))
-                .count()
-        };
         let mut action = None;
         let mut open_filter = None;
-        ui.horizontal_wrapped(|ui| {
-            for (filter, label, color) in [
-                (ProjectFilter::Running, "Rodando", theme::SUCCESS),
-                (ProjectFilter::Problem, "Com problema", theme::WARNING),
-                (ProjectFilter::Stopped, "Parados", theme::MUTED),
-            ] {
-                if counter(ui, label, count(filter), color)
-                    .on_hover_text("Ver estes projetos na aba Projetos")
-                    .clicked()
-                {
-                    open_filter = Some(filter);
-                }
-            }
-        });
-        ui.add_space(18.0);
 
         if self.projects.is_empty() {
             self.overview_without_projects(ui);
+            self.show_update_banner(ui);
             return;
         }
+
+        let problems = summaries
+            .iter()
+            .filter(|(_, summary)| summary.state == ProjectState::Problem)
+            .collect::<Vec<_>>();
+        if section_header(ui, "Com problema", problems.len()) {
+            open_filter = Some(ProjectFilter::Problem);
+        }
+        if problems.is_empty() {
+            empty_hint(ui, "Nenhum problema encontrado.");
+        }
+        for (project, summary) in &problems {
+            if let Some(selected) =
+                project_row(ui, project, summary, folder(project), RowDetails::Hide)
+            {
+                action = Some(selected);
+            }
+        }
+        ui.add_space(18.0);
 
         let running = summaries
             .iter()
             .filter(|(_, summary)| ProjectFilter::Running.matches(summary.state))
             .collect::<Vec<_>>();
-        section_title(ui, "Rodando", running.len());
+        if section_header(ui, "Rodando agora", running.len()) {
+            open_filter = Some(ProjectFilter::Running);
+        }
         if running.is_empty() {
             empty_hint(ui, "Nenhum projeto rodando agora.");
             if let Some((project, summary)) = summaries.iter().find(|(project, summary)| {
@@ -1269,23 +1273,6 @@ impl LocalCodePilot {
         }
         ui.add_space(18.0);
 
-        let problems = summaries
-            .iter()
-            .filter(|(_, summary)| summary.state == ProjectState::Problem)
-            .collect::<Vec<_>>();
-        section_title(ui, "Com problema", problems.len());
-        if problems.is_empty() {
-            empty_hint(ui, "Nenhum problema encontrado.");
-        }
-        for (project, summary) in &problems {
-            if let Some(selected) =
-                project_row(ui, project, summary, folder(project), RowDetails::Hide)
-            {
-                action = Some(selected);
-            }
-        }
-        ui.add_space(18.0);
-
         let recent_stopped = summaries
             .iter()
             .filter(|(project, summary)| {
@@ -1294,7 +1281,12 @@ impl LocalCodePilot {
             })
             .take(5)
             .collect::<Vec<_>>();
-        section_title(ui, "Parados recentes", recent_stopped.len());
+        if section_header(ui, "Projetos recentes", recent_stopped.len()) {
+            open_filter = Some(ProjectFilter::Stopped);
+        }
+        if recent_stopped.is_empty() {
+            empty_hint(ui, "Nenhum projeto parado recentemente.");
+        }
         for (project, summary) in &recent_stopped {
             if let Some(selected) =
                 project_row(ui, project, summary, folder(project), RowDetails::Hide)
@@ -1302,9 +1294,9 @@ impl LocalCodePilot {
                 action = Some(selected);
             }
         }
-        if ui.button("Ver todos os parados").clicked() {
-            open_filter = Some(ProjectFilter::Stopped);
-        }
+        ui.add_space(18.0);
+        // The update notice comes last here; the other pages show it at the top.
+        self.show_update_banner(ui);
 
         if let Some(filter) = open_filter {
             self.workspace_state.project_filter = filter.key().to_owned();
@@ -1546,33 +1538,29 @@ fn stop_action(project: &Project, summary: &ProjectSummary) -> ProjectCardAction
     }
 }
 
-fn counter(ui: &mut egui::Ui, label: &str, count: usize, color: Color32) -> egui::Response {
-    let inner = Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::BORDER))
-        .corner_radius(10)
-        .inner_margin(Margin::symmetric(16, 10))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(count.to_string())
-                        .strong()
-                        .size(22.0)
-                        .color(color),
-                );
-                ui.label(RichText::new(label).size(14.0));
-            });
-        });
-    inner.response.interact(Sense::click())
-}
-
-fn section_title(ui: &mut egui::Ui, title: &str, count: usize) {
-    ui.label(
-        RichText::new(format!("{title} ({count})"))
-            .strong()
-            .size(theme::TEXT_TITLE),
-    );
+/// A section of the overview: its title with the count, and "Ver todos" on the right, which
+/// opens Projetos with the matching filter. Returns whether "Ver todos" was clicked.
+fn section_header(ui: &mut egui::Ui, title: &str, count: usize) -> bool {
+    let clicked = ui
+        .horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("{title} ({count})"))
+                    .strong()
+                    .size(theme::TEXT_TITLE),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                announced(
+                    ui.link("Ver todos"),
+                    egui::Role::Link,
+                    &format!("Ver todos: {title}"),
+                )
+                .clicked()
+            })
+            .inner
+        })
+        .inner;
     ui.add_space(6.0);
+    clicked
 }
 
 use super::components::empty_hint;
