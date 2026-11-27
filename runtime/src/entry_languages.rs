@@ -109,36 +109,111 @@ fn cpp_entry(folder: &Path) -> Entry {
         .map(|target| target.name().to_owned())
         .collect::<Vec<_>>();
     match names.as_slice() {
-        [] if makefile_runs(folder) => Entry::One("make run".into()),
-        [] => Entry::None,
+        [] if cfg!(windows) => Entry::None,
+        [] => match makefile_run(folder) {
+            MakeRun::One { .. } => Entry::One("make run".into()),
+            MakeRun::Ambiguous(candidates) => Entry::Many(candidates),
+            MakeRun::None => Entry::None,
+        },
         [one] => Entry::One(one.clone()),
         _ => Entry::Many(names),
     }
 }
 
-/// A Makefile in the folder that declares a `run` target, on macOS and Linux (Windows has no
-/// make of its own: a task of its own, decided by the founder). Only an explicit `run:` counts:
-/// the app does not guess which of the Makefile's targets is the program.
+/// A Makefile's `run` target on macOS and Linux (Windows has no make of its own: a task of its
+/// own, decided by the founder). Only an unequivocal `run` counts: the app does not guess which
+/// of the Makefile's targets is the program.
 fn makefile_runs(folder: &Path) -> bool {
-    if cfg!(windows) {
-        return false;
-    }
-    makefile_has_run_target(folder)
+    !cfg!(windows) && matches!(makefile_run(folder), MakeRun::One { .. })
 }
 
-fn makefile_has_run_target(folder: &Path) -> bool {
-    ["GNUmakefile", "makefile", "Makefile"].iter().any(|name| {
-        fs::read_to_string(folder.join(name)).is_ok_and(|text| {
-            text.lines().any(|line| {
-                // A rule line: `run:` or `run :` at the start, not `run := value`.
-                let Some(rest) = line.strip_prefix("run") else {
-                    return false;
-                };
-                let rest = rest.trim_start();
-                rest.starts_with(':') && !rest.starts_with(":=")
-            })
-        })
-    })
+/// What `make run` would run in a folder, read from its Makefile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MakeRun {
+    /// No Makefile, no `run` rule, or rules the app cannot see (`include`).
+    None,
+    /// One Makefile with exactly one `run` rule: the rule as written (target line and recipe)
+    /// and the whole Makefile, which the first-run confirmation binds.
+    One { rule: String, makefile: String },
+    /// More than one Makefile name, or more than one `run` rule: the person picks.
+    Ambiguous(Vec<String>),
+}
+
+const MAKEFILE_NAMES: [&str; 3] = ["GNUmakefile", "makefile", "Makefile"];
+
+/// Reads the folder's Makefile and finds its `run` rule. The names come from the folder
+/// listing, so `makefile` and `Makefile` on a case-insensitive disk are one file, not two.
+pub fn makefile_run(folder: &Path) -> MakeRun {
+    let mut names = fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter(|name| MAKEFILE_NAMES.contains(&name.as_str()))
+        .collect::<Vec<_>>();
+    names.sort();
+    let name = match names.as_slice() {
+        [] => return MakeRun::None,
+        [name] => name.clone(),
+        _ => return MakeRun::Ambiguous(names),
+    };
+    let Ok(text) = fs::read_to_string(folder.join(&name)) else {
+        return MakeRun::None;
+    };
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut rules = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with('\t') {
+            continue;
+        }
+        let code = line.split('#').next().unwrap_or_default().trim();
+        let directive = code.split_whitespace().next().unwrap_or_default();
+        // Rules from another file: what run does cannot be read here.
+        if matches!(directive, "include" | "-include" | "sinclude") {
+            return MakeRun::None;
+        }
+        let Some((targets, rest)) = code.split_once(':') else {
+            continue;
+        };
+        // `run := x`, `run ::= x`, `x = a:b` and `run: X = y` set variables, not rules.
+        if targets.contains('=') || rest.starts_with('=') || rest.starts_with(":=") {
+            continue;
+        }
+        let rest = rest.strip_prefix(':').unwrap_or(rest);
+        if rest.split(';').next().unwrap_or_default().contains('=') {
+            continue;
+        }
+        if targets.split_whitespace().any(|target| target == "run") {
+            rules.push(index);
+        }
+    }
+    match rules.as_slice() {
+        [] => MakeRun::None,
+        [start] => {
+            let mut rule = vec![lines[*start]];
+            for line in &lines[start + 1..] {
+                if line.starts_with('\t') || line.trim().is_empty() {
+                    rule.push(line);
+                } else {
+                    break;
+                }
+            }
+            while rule.last().is_some_and(|line| line.trim().is_empty()) {
+                rule.pop();
+            }
+            MakeRun::One {
+                rule: rule.join("\n"),
+                makefile: text.clone(),
+            }
+        }
+        _ => MakeRun::Ambiguous(
+            rules
+                .iter()
+                .map(|index| format!("{name}: run (linha {})", index + 1))
+                .collect(),
+        ),
+    }
 }
 
 /// Leiningen runs the namespace in `:main`.
@@ -541,29 +616,73 @@ mod tests {
     }
 
     #[test]
-    fn only_an_explicit_run_target_of_a_makefile_starts() {
+    fn only_an_unequivocal_run_target_of_a_makefile_starts() {
         let make = Folder::new("make-run");
         make.file(
             "Makefile",
-            "CC=cc\nall: loja\nloja: main.c\n\t$(CC) -o loja main.c\nrun: loja\n\t./loja\n",
+            "CC=cc\n.PHONY: run\nall: loja\nloja: main.c\n\t$(CC) -o loja main.c\n\nrun: loja # inicia\n\t./loja\n\nclean:\n\trm -f loja\n",
         )
         .file("main.c", "int main(){return 0;}")
         .file("util.c", "");
-        assert!(makefile_has_run_target(&make.0));
+        let MakeRun::One { rule, makefile } = makefile_run(&make.0) else {
+            panic!("{:?}", makefile_run(&make.0));
+        };
+        assert_eq!(rule, "run: loja # inicia\n\t./loja");
+        assert!(makefile.contains("clean:"));
         let started = commands(&make.project(&[RuntimeKind::Cpp]));
         if cfg!(windows) {
             assert!(started.is_empty());
         } else {
             assert_eq!(started, vec!["make run"]);
         }
-        // No run target, or only a variable named run: nothing is guessed.
+
+        // No run rule, or only variables named run: nothing is guessed.
         let no_run = Folder::new("make-sem-run");
         no_run
-            .file("Makefile", "run := ./loja\nall:\n\tcc -o loja main.c\n")
+            .file(
+                "Makefile",
+                "run := ./loja\nrun ::= x\nrun: CFLAGS = -g\nX = a:run\nall:\n\tcc -o loja main.c\n",
+            )
             .file("main.c", "")
             .file("util.c", "");
-        assert!(!makefile_has_run_target(&no_run.0));
+        assert_eq!(makefile_run(&no_run.0), MakeRun::None);
         assert!(commands(&no_run.project(&[RuntimeKind::Cpp])).is_empty());
+
+        // Two run rules: the person picks.
+        let twice = Folder::new("make-dois-run");
+        twice
+            .file("Makefile", "run: a\n\t./a\nrun test: b\n\t./b\n")
+            .file("main.c", "")
+            .file("util.c", "");
+        assert_eq!(
+            makefile_run(&twice.0),
+            MakeRun::Ambiguous(vec![
+                "Makefile: run (linha 1)".into(),
+                "Makefile: run (linha 3)".into()
+            ])
+        );
+        let project = twice.project(&[RuntimeKind::Cpp]);
+        assert!(commands(&project).is_empty());
+        assert_eq!(has_ambiguous_entry(&project), !cfg!(windows));
+
+        // Two Makefile names (make would pick one silently): the person picks.
+        let two_files = Folder::new("make-dois-arquivos");
+        two_files
+            .file("GNUmakefile", "run:\n\t./a\n")
+            .file("Makefile", "run:\n\t./b\n");
+        if matches!(makefile_run(&two_files.0), MakeRun::Ambiguous(_)) {
+            assert!(commands(&two_files.project(&[RuntimeKind::Cpp])).is_empty());
+        } else {
+            panic!("{:?}", makefile_run(&two_files.0));
+        }
+
+        // Rules from an included file cannot be read here: nothing is started.
+        let included = Folder::new("make-include");
+        included
+            .file("Makefile", "include regras.mk\nrun:\n\t./a\n")
+            .file("regras.mk", "run:\n\t./b\n");
+        assert_eq!(makefile_run(&included.0), MakeRun::None);
+
         // CMake wins over a Makefile beside it.
         let both = Folder::new("make-e-cmake");
         both.file("Makefile", "run:\n\t./x\n")
