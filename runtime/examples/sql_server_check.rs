@@ -115,8 +115,8 @@ fn main() -> ExitCode {
         ok &= passed;
     };
     let server =
-        match sql_server_container::prepare(&root, kind, &engine, port, &vault, None, || {
-            println!("imagem baixada")
+        match sql_server_container::prepare(&root, kind, &engine, port, &vault, None, |step| {
+            println!("etapa: {step:?}")
         }) {
             Ok(server) => server,
             Err(error) => {

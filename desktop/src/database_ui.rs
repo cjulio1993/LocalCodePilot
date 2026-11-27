@@ -2155,8 +2155,10 @@ fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) ->
         request.port,
         &SystemVault,
         path,
-        || {
-            let _ = sender.send(JobEvent::Step(DatabaseStep::StartingServer));
+        |step| {
+            if step == sql_server_container::ContainerStep::Creating {
+                let _ = sender.send(JobEvent::Step(DatabaseStep::StartingServer));
+            }
         },
     ) {
         Ok(server) => server,

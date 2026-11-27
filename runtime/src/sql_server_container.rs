@@ -603,6 +603,23 @@ fn finish_password_change(server: &SqlServerContainer, vault: &dyn Vault) -> Res
     Ok(())
 }
 
+/// The steps of a preparation after the image download, for the card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerStep {
+    /// The downloaded image is checked against the pinned digest.
+    Verifying,
+    /// The container is created and the administrator password replaced.
+    Creating,
+}
+
+/// Whether the engine's copy of `image` (`image inspect` → RepoDigests) is the pinned one.
+fn image_matches(repo_digests: &str, image: &str) -> bool {
+    let Some(digest) = image.split('@').nth(1) else {
+        return false;
+    };
+    repo_digests.contains(digest)
+}
+
 /// Creates the app's container of `kind` on `port` and leaves it running with the final
 /// administrator password. For SQL Server, the person accepted the license terms before this
 /// is called.
@@ -613,7 +630,7 @@ pub fn prepare(
     port: u16,
     vault: &dyn Vault,
     path: Option<&OsStr>,
-    pulled: impl Fn(),
+    step: impl Fn(ContainerStep),
 ) -> Result<SqlServerContainer, String> {
     let server = SqlServerContainer {
         id: new_id()?,
@@ -623,7 +640,27 @@ pub fn prepare(
         stop_failed: false,
     };
     engine_command(engine, &["pull", kind.image()], path, COMMAND_TIMEOUT)?;
-    pulled();
+    // The engine pulls by digest; the app still confirms the copy it will run is that one.
+    step(ContainerStep::Verifying);
+    let digests = engine_command(
+        engine,
+        &[
+            "image",
+            "inspect",
+            "--format",
+            "{{json .RepoDigests}}",
+            kind.image(),
+        ],
+        path,
+        Duration::from_secs(60),
+    )?;
+    if !image_matches(&digests, kind.image()) {
+        return Err(format!(
+            "a imagem baixada do {} não confere com o digest fixado; nada foi criado",
+            kind.name()
+        ));
+    }
+    step(ContainerStep::Creating);
     let initial = new_password()?;
     vault.save_new(&server.initial_target(), kind.admin_user(), &initial)?;
     save(root, &server)?;
@@ -940,6 +977,21 @@ mod tests {
                 ContainerState::NotOurs(_)
             ));
         }
+    }
+
+    #[test]
+    fn only_the_pinned_digest_is_accepted_after_the_download() {
+        let digest = POSTGRES_IMAGE.split('@').nth(1).unwrap();
+        assert!(image_matches(
+            &format!("[\"postgres@{digest}\",\"docker.io/library/postgres@{digest}\"]"),
+            POSTGRES_IMAGE
+        ));
+        assert!(!image_matches(
+            "[\"postgres@sha256:0000000000000000000000000000000000000000000000000000000000000000\"]",
+            POSTGRES_IMAGE
+        ));
+        assert!(!image_matches("[]", POSTGRES_IMAGE));
+        assert!(!image_matches("[\"x\"]", "postgres:19"));
     }
 
     #[test]
