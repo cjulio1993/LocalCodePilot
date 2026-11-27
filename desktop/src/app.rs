@@ -997,7 +997,7 @@ impl LocalCodePilot {
                                     .color(theme::SUCCESS.gamma_multiply(opacity))
                                     .size(8.0),
                             );
-                            ui.add(
+                            let label = ui.add(
                                 egui::Label::new(
                                     RichText::new(message)
                                         .color(theme::TEXT.gamma_multiply(opacity))
@@ -1005,6 +1005,8 @@ impl LocalCodePilot {
                                 )
                                 .wrap(),
                             );
+                            // Screen readers announce each new notification (T027 CA-11).
+                            notice::mark_live(ui, label.id);
                         });
                     });
             });

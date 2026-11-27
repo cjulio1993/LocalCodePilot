@@ -410,6 +410,7 @@ impl LocalCodePilot {
     }
 
     fn run_migrations(&mut self, project: &Path, ctx: &egui::Context) {
+        self.notify(RUNNING);
         let (sender, receiver) = mpsc::channel();
         let path = self.environment_path.clone();
         let directory = project.to_path_buf();
@@ -643,10 +644,15 @@ mod tests {
     fn the_offer_needs_a_proven_destination() {
         let local = laravel_project(
             "local",
-            "APP_ENV=local\nDB_CONNECTION=mysql\nDB_DATABASE=loja\n",
+            "APP_ENV=local\nDB_CONNECTION=mysql\nDB_DATABASE=loja\nDB_PASSWORD=senha-ficticia-1\n",
         );
         let mysql = |host: &str| [requirement(DatabaseEngine::MySql, Some(host), None)];
-        assert!(laravel_target(&local, &mysql("127.0.0.1")).is_some());
+        let target = laravel_target(&local, &mysql("127.0.0.1")).unwrap();
+        assert!(target.destination.contains("banco loja"));
+        assert!(
+            !target.destination.contains("senha-ficticia-1"),
+            "the password never shows"
+        );
         assert!(laravel_target(&local, &mysql("localhost")).is_some());
         assert_eq!(
             laravel_target(&local, &mysql("db.empresa.exemplo")),
