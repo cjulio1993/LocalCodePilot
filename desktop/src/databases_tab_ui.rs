@@ -7,6 +7,16 @@
 use super::*;
 use localcodepilot_runtime::databases::DatabaseEngine;
 
+/// "Parar" asked in Serviços > Bancos de dados, waiting for the confirmation: the project
+/// used to run the job, the server, its engine and the projects that use it.
+#[derive(Debug, Clone)]
+pub(super) struct DatabaseStopRequest {
+    project: PathBuf,
+    server: database_ui::ManagedInfo,
+    engine: &'static str,
+    projects: Vec<String>,
+}
+
 /// One server, or one SQLite file, and the projects that use it.
 struct DatabaseEntry {
     engine: DatabaseEngine,
@@ -183,10 +193,19 @@ impl LocalCodePilot {
                                 .size(theme::TEXT_DETAIL),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if let Some(target) = &can_stop
+                            if let Some((path, server)) = &can_stop
                                 && ui.button("Parar").clicked()
                             {
-                                stop = Some(target.clone());
+                                stop = Some((
+                                    path.clone(),
+                                    server.clone(),
+                                    entry.engine.label(),
+                                    entry
+                                        .projects
+                                        .iter()
+                                        .map(|(_, name)| name.clone())
+                                        .collect(),
+                                ));
                             }
                             if let Some(path) = &remote
                                 && ui.button("Testar conexão").clicked()
@@ -244,8 +263,37 @@ impl LocalCodePilot {
                 });
             ui.add_space(4.0);
         }
-        if let Some((path, server)) = stop {
-            self.stop_managed_server(&path, server);
+        if let Some((project, server, engine, projects)) = stop {
+            self.database_stop_request = Some(DatabaseStopRequest {
+                project,
+                server,
+                engine,
+                projects,
+            });
+        }
+        // Nothing stops before the person confirms (T037.06, CA-9).
+        if let Some(request) = self.database_stop_request.clone() {
+            let consequence = format!(
+                "O servidor {} deste computador será parado. Projetos que o usam: {}. Os dados continuam guardados, e Iniciar no projeto liga o servidor de novo.",
+                request.engine,
+                request.projects.join(", ")
+            );
+            match (components::Confirmation {
+                id: "database-stop",
+                title: "Parar o banco de dados?",
+                consequence: &consequence,
+                confirm: "Parar o banco de dados",
+                destructive: false,
+            })
+            .show(ui.ctx(), |_| {})
+            {
+                Some(components::Choice::Confirm) => {
+                    self.database_stop_request = None;
+                    self.stop_managed_server(&request.project, request.server);
+                }
+                Some(components::Choice::Cancel) => self.database_stop_request = None,
+                None => {}
+            }
         }
         if let Some((path, requirement)) = test {
             self.test_remote_requirement(&path, requirement);

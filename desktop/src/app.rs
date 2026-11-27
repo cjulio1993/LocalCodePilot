@@ -554,6 +554,8 @@ pub struct LocalCodePilot {
     last_services_tab: Page,
     /// Rows of Serviços > Processos with their details open (T037.02).
     expanded_processes: HashSet<String>,
+    /// "Parar" of Serviços > Bancos de dados, waiting for the confirmation (T037.06).
+    database_stop_request: Option<databases_tab_ui::DatabaseStopRequest>,
     projects: Vec<Project>,
     /// The managed processes and their ports (T025).
     managed: ManagedProcesses,
@@ -700,6 +702,7 @@ impl LocalCodePilot {
             page,
             projects: cached_projects,
             expanded_processes: HashSet::new(),
+            database_stop_request: None,
             last_services_tab: if page.is_service() {
                 page
             } else {
