@@ -216,7 +216,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Onde ficam os dados",
-                "na pasta do LocalCodePilot: %LOCALAPPDATA%\\LocalCodePilot\\bancos no Windows, ~/Library/Application Support/LocalCodePilot/bancos no macOS e ~/.local/share/localcodepilot/bancos no Linux. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar o servidor; os dados permanecem e voltam no próximo Iniciar.",
+                "na pasta do LocalCodePilot: %LOCALAPPDATA%\\LocalCodePilot\\bancos no Windows, ~/Library/Application Support/LocalCodePilot/bancos no macOS e ~/.local/share/localcodepilot/bancos no Linux. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar os servidores que preparou, mesmo se o preparo ainda estiver em andamento. Os dados permanecem guardados. Se algum banco continuar rodando, você verá um aviso na próxima abertura.",
             ),
             Block::Item(
                 "Servidor que você já tem",
@@ -760,7 +760,8 @@ mod tests {
             "usa a imagem oficial em container, fixada por digest conferido",
             "~/Library/Application Support/LocalCodePilot/bancos",
             "%LOCALAPPDATA%\\LocalCodePilot\\bancos",
-            "os dados permanecem",
+            "Os dados permanecem guardados",
+            "mesmo se o preparo ainda estiver em andamento",
             "termos de licença da Microsoft",
             "só em computadores x64",
             "A senha nunca é mostrada.",

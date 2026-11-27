@@ -483,6 +483,9 @@ pub(super) struct DatabaseState {
     pub remote_tests: HashMap<PathBuf, ConnectionTest>,
     /// Servers left running by the last close were looked at.
     checked_left_running: bool,
+    /// The app's containers found running at start, checked off the first frame (an engine
+    /// that is off may take long to answer): (session id, kind, flagged by a failed close).
+    left_running_containers: Option<Receiver<Vec<(String, ContainerKind, bool)>>>,
 }
 
 /// What the card shows about the project's database beyond its state.
@@ -958,6 +961,7 @@ impl LocalCodePilot {
             self.database.checked_left_running = true;
             self.check_databases_left_running();
         }
+        self.poll_left_running_containers();
         let mut finished = vec![];
         for (project, job) in &mut self.database.jobs {
             loop {
@@ -1570,13 +1574,19 @@ impl LocalCodePilot {
         }
     }
 
-    /// On close: the clean shutdown of every server the app started. One that does not stop
-    /// in time is left running and remembered, never forced.
+    /// On close: the clean shutdown of every server the app started, and of every other server
+    /// or container proven to be the app's that is still running (one whose first preparation
+    /// was interrupted by this close, T031). One that does not stop in time is left running and
+    /// remembered, never forced.
     pub(super) fn stop_session_databases(&mut self) {
         let Some(root) = database_root() else {
             return;
         };
-        for id in std::mem::take(&mut self.database.session_servers) {
+        let mut ids = std::mem::take(&mut self.database.session_servers);
+        ids.extend(running_app_servers(&root, self.environment_path.as_deref()));
+        ids.sort();
+        ids.dedup();
+        for id in ids {
             if let Some(id) = sql_id(&id) {
                 if let Some(server) = sql_server_container::load_registry(&root)
                     .into_iter()
@@ -1601,46 +1611,108 @@ impl LocalCodePilot {
     }
 
     /// At start: a server that did not stop when the app last closed is reported only if it
-    /// is still the app's and still running; otherwise the mark is cleared.
+    /// is still the app's and still running; otherwise the mark is cleared. A server of the app
+    /// that is running without the mark (the app closed during its first preparation, or did
+    /// not close normally) is reported the same way and stopped at the next close (T031).
     pub(super) fn check_databases_left_running(&mut self) {
         let Some(root) = database_root() else {
             return;
         };
         for server in database_servers::load_registry(&root)
             .into_iter()
-            .filter(|server| server.stop_failed)
+            .filter(|server| server.stop_failed || server.process_id.is_some())
         {
             match database_servers::recognize(&server) {
                 Recognition::Managed => {
                     self.database.session_servers.push(server.id.clone());
-                    self.notify(
-                        "O banco de dados não parou quando o aplicativo foi fechado e ainda está rodando.",
-                    );
+                    self.notify_important(left_running_notice(server.stop_failed, None));
                 }
                 Recognition::NotRunning | Recognition::Existing { .. } => {
                     let _ = database_servers::mark_stop_failed(&root, &server, false);
                 }
             }
         }
-        for server in sql_server_container::load_registry(&root)
-            .into_iter()
-            .filter(|server| server.stop_failed)
-        {
-            if sql_server_container::state(&server, self.environment_path.as_deref())
-                == Ok(ContainerState::Running)
-            {
-                self.database
-                    .session_servers
-                    .push(format!("{SQL_PREFIX}{}", server.id));
-                self.notify(format!(
-                    "O {} não parou quando o aplicativo foi fechado e ainda está rodando.",
-                    kind_name(server.kind)
-                ));
-            } else {
-                let _ = sql_server_container::mark_stop_failed(&root, &server, false);
+        // Containers: every one of the app's, on a thread, so an engine that is off and slow
+        // to answer never holds the first frame.
+        let containers = sql_server_container::load_registry(&root);
+        if containers.is_empty() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let path = self.environment_path.clone();
+        std::thread::spawn(move || {
+            let mut running = vec![];
+            for server in containers {
+                if sql_server_container::state(&server, path.as_deref())
+                    == Ok(ContainerState::Running)
+                {
+                    running.push((
+                        format!("{SQL_PREFIX}{}", server.id),
+                        server.kind,
+                        server.stop_failed,
+                    ));
+                } else if server.stop_failed {
+                    let _ = sql_server_container::mark_stop_failed(&root, &server, false);
+                }
             }
+            let _ = sender.send(running);
+        });
+        self.database.left_running_containers = Some(receiver);
+    }
+
+    fn poll_left_running_containers(&mut self) {
+        let Some(receiver) = &self.database.left_running_containers else {
+            return;
+        };
+        let Ok(running) = receiver.try_recv() else {
+            return;
+        };
+        self.database.left_running_containers = None;
+        for (id, kind, flagged) in running {
+            if !self.database.session_servers.contains(&id) {
+                self.database.session_servers.push(id);
+            }
+            self.notify_important(left_running_notice(flagged, Some(kind)));
         }
     }
+}
+
+/// The notice at start for a server or container of the app that is still running: the one
+/// after a close that could not stop it, or the one for a server left running without that
+/// mark (the app closed during a first preparation or did not close normally, T031).
+fn left_running_notice(flagged: bool, kind: Option<ContainerKind>) -> String {
+    match (flagged, kind) {
+        (true, None) => {
+            "O banco de dados não parou quando o aplicativo foi fechado e ainda está rodando."
+                .into()
+        }
+        (true, Some(kind)) => format!(
+            "O {} não parou quando o aplicativo foi fechado e ainda está rodando.",
+            kind_name(kind)
+        ),
+        (false, _) => "Um banco de dados do LocalCodePilot continuou rodando após o fechamento anterior. Ao fechar o aplicativo, tentaremos pará-lo normalmente; seus dados permanecerão guardados.".into(),
+    }
+}
+
+/// Servers and containers proven to be the app's that are running now, as session ids: the
+/// same proofs as everywhere else (PID, start time, program, data folder and PID file for a
+/// server; name, label and pinned image for a container). Anything else is never touched.
+fn running_app_servers(root: &Path, path: Option<&std::ffi::OsStr>) -> Vec<String> {
+    let mut ids: Vec<String> = database_servers::load_registry(root)
+        .into_iter()
+        .filter(|server| server.process_id.is_some())
+        .filter(|server| database_servers::recognize(server) == Recognition::Managed)
+        .map(|server| server.id)
+        .collect();
+    ids.extend(
+        sql_server_container::load_registry(root)
+            .into_iter()
+            .filter(|server| {
+                sql_server_container::state(server, path) == Ok(ContainerState::Running)
+            })
+            .map(|server| format!("{SQL_PREFIX}{}", server.id)),
+    );
+    ids
 }
 
 const PREPARE_FOCUS: &str = "database-prepare-confirmation";
@@ -3115,6 +3187,24 @@ mod tests {
         let postgres = stopped_server(DatabaseEngine::PostgreSql, "localhost", None);
         assert_eq!(postgres.not_preparable_here(), None);
         assert_eq!(postgres.container_start_note().is_some(), !cfg!(windows));
+    }
+
+    #[test]
+    fn a_server_left_running_is_told_in_plain_words() {
+        assert_eq!(
+            left_running_notice(true, None),
+            "O banco de dados não parou quando o aplicativo foi fechado e ainda está rodando."
+        );
+        assert_eq!(
+            left_running_notice(true, Some(ContainerKind::PostgreSql)),
+            "O PostgreSQL não parou quando o aplicativo foi fechado e ainda está rodando."
+        );
+        let unflagged = "Um banco de dados do LocalCodePilot continuou rodando após o fechamento anterior. Ao fechar o aplicativo, tentaremos pará-lo normalmente; seus dados permanecerão guardados.";
+        assert_eq!(left_running_notice(false, None), unflagged);
+        assert_eq!(
+            left_running_notice(false, Some(ContainerKind::SqlServer)),
+            unflagged
+        );
     }
 
     #[test]
