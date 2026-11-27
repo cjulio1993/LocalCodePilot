@@ -1,6 +1,7 @@
-//! C/C++ projects built with CMake or Meson (T028.02): "Iniciar" configures, compiles and runs
-//! the project's only executable. The build folder lives in the app's cache, never inside the
-//! project, and the executable always lands in `<build>/bin` (CMake) or `<build>` (Meson).
+//! C/C++ projects built with CMake or Meson (T028.02) or Visual Studio (T033.01): "Iniciar"
+//! configures, compiles and runs the project's only executable. The build folder lives in the
+//! app's cache, never inside the project, and the executable always lands in `<build>/bin`
+//! (CMake, Visual Studio) or `<build>` (Meson).
 
 use localcodepilot_core::{paths::plain_path, processes::PrepareStep};
 use sha2::{Digest, Sha256};
@@ -9,11 +10,32 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The executable target of a CMake or Meson project.
+/// The executable target of a CMake, Meson or Visual Studio project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildTarget {
     CMake(String),
     Meson(String),
+    /// A `.vcxproj` that builds an application (Windows, T033.01).
+    VisualStudio(VisualStudioProject),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisualStudioProject {
+    /// The `.vcxproj` file.
+    pub file: PathBuf,
+    /// The executable's name, without `.exe`.
+    pub name: String,
+    /// `x64` when the project has `Debug|x64`, otherwise `Win32`.
+    pub platform: String,
+}
+
+impl BuildTarget {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::CMake(name) | Self::Meson(name) => name,
+            Self::VisualStudio(project) => &project.name,
+        }
+    }
 }
 
 /// Targets declared with `add_executable(<name> ...)` (CMake) or `executable('<name>', ...)`
@@ -31,7 +53,137 @@ pub fn build_targets(folder: &Path) -> Vec<BuildTarget> {
             .map(BuildTarget::Meson)
             .collect();
     }
-    Vec::new()
+    visual_studio_applications(folder)
+        .into_iter()
+        .map(BuildTarget::VisualStudio)
+        .collect()
+}
+
+/// The applications of a Visual Studio project in `folder`: the projects a `.sln` lists
+/// (when there is one solution), or the `.vcxproj` files beside it. Libraries and projects
+/// without a `Debug` configuration are left out.
+pub fn visual_studio_applications(folder: &Path) -> Vec<VisualStudioProject> {
+    let mut files: Vec<PathBuf> = vec![];
+    let entries: Vec<PathBuf> = fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    let with_extension = |extension: &str| {
+        let mut found: Vec<&PathBuf> = entries
+            .iter()
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|found| found.eq_ignore_ascii_case(extension))
+            })
+            .collect();
+        found.sort();
+        found
+    };
+    let solutions = with_extension("sln");
+    if let [solution] = solutions.as_slice() {
+        if let Ok(text) = fs::read_to_string(solution) {
+            files = solution_projects(&text)
+                .into_iter()
+                .map(|relative| folder.join(relative))
+                .collect();
+        }
+    } else if solutions.is_empty() {
+        files = with_extension("vcxproj").into_iter().cloned().collect();
+    } else {
+        // Two solutions: which one is the project is not the app's to guess.
+        return vec![];
+    }
+    files
+        .iter()
+        .filter_map(|file| {
+            let text = fs::read_to_string(file).ok()?;
+            vcxproj_application(file, &text)
+        })
+        .collect()
+}
+
+/// The `.vcxproj` paths a solution lists (`Project("{...}") = "Name", "dir\\x.vcxproj", ...`).
+fn solution_projects(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .filter(|line| line.trim_start().starts_with("Project("))
+        .filter_map(|line| {
+            let path = line.split(',').nth(1)?.trim().trim_matches('"');
+            path.to_ascii_lowercase()
+                .ends_with(".vcxproj")
+                .then(|| PathBuf::from(path.replace('\\', "/")))
+        })
+        .collect()
+}
+
+/// The application a `.vcxproj` builds, if it builds one.
+fn vcxproj_application(file: &Path, text: &str) -> Option<VisualStudioProject> {
+    if !text.contains("<ConfigurationType>Application</ConfigurationType>") {
+        return None;
+    }
+    let platform = if text.contains("Include=\"Debug|x64\"") {
+        "x64"
+    } else if text.contains("Include=\"Debug|Win32\"") {
+        "Win32"
+    } else {
+        return None;
+    };
+    // <TargetName> or <ProjectName> when they are plain names; the file name otherwise.
+    let tag = |name: &str| {
+        let open = format!("<{name}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find('<')? + start;
+        let value = text[start..end].trim();
+        (!value.is_empty() && !value.contains('$')).then(|| value.to_owned())
+    };
+    let name = tag("TargetName")
+        .or_else(|| tag("ProjectName"))
+        .or_else(|| {
+            file.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })?;
+    Some(VisualStudioProject {
+        file: file.to_path_buf(),
+        name,
+        platform: platform.into(),
+    })
+}
+
+/// MSBuild from the Visual Studio installed here, found by Microsoft's `vswhere` (MSBuild is
+/// not on the PATH). Windows only; read once.
+pub fn msbuild() -> Option<PathBuf> {
+    static FOUND: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            if !cfg!(windows) {
+                return None;
+            }
+            let installer = env::var_os("ProgramFiles(x86)")
+                .map(PathBuf::from)?
+                .join("Microsoft Visual Studio")
+                .join("Installer")
+                .join("vswhere.exe");
+            let mut command = std::process::Command::new(installer);
+            command.args([
+                "-latest",
+                "-products",
+                "*",
+                "-requires",
+                "Microsoft.Component.MSBuild",
+                "-find",
+                "MSBuild\\**\\Bin\\MSBuild.exe",
+            ]);
+            localcodepilot_platform::installations::configure_background_command(&mut command);
+            let output = command.output().ok()?;
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+        })
+        .clone()
 }
 
 /// The file without `#` comments, so a commented-out `add_executable` or `executable` is
@@ -260,6 +412,37 @@ pub fn build_plan(
             ],
             build.join(executable_name(name)),
         ),
+        BuildTarget::VisualStudio(target) => {
+            // Forward slashes: MSBuild takes them, and a trailing backslash would escape the
+            // closing quote of the argument. The output and the intermediate files both go to
+            // the app's build folder: nothing is written inside the project.
+            let slash = |path: &Path| plain_path(path).to_string_lossy().replace('\\', "/");
+            let stem = target
+                .file
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| target.name.clone());
+            let program = msbuild()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "MSBuild.exe".into());
+            (
+                vec![PrepareStep {
+                    program,
+                    args: vec![
+                        plain_path(&target.file).to_string_lossy().into_owned(),
+                        "/nologo".into(),
+                        "/v:minimal".into(),
+                        "/m".into(),
+                        "/p:Configuration=Debug".into(),
+                        format!("/p:Platform={}", target.platform),
+                        format!("/p:OutDir={}/bin/", slash(build)),
+                        format!("/p:IntDir={}/obj/{stem}/", slash(build)),
+                    ],
+                    skip_if_exists: None,
+                }],
+                build.join("bin").join(format!("{}.exe", target.name)),
+            )
+        }
     }
 }
 
@@ -304,6 +487,73 @@ mod tests {
             cmake_executables(&without_comments(two, true)),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn visual_studio_applications_come_from_the_vcxproj_or_the_solution() {
+        let folder = std::env::temp_dir().join(format!("lcp-vs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(folder.join("app")).unwrap();
+        let application = |name: &str| {
+            format!(
+                "<Project><ItemGroup><ProjectConfiguration Include=\"Debug|x64\"/></ItemGroup><PropertyGroup><ConfigurationType>Application</ConfigurationType><TargetName>{name}</TargetName></PropertyGroup></Project>"
+            )
+        };
+        let library = "<Project><ItemGroup><ProjectConfiguration Include=\"Debug|Win32\"/></ItemGroup><PropertyGroup><ConfigurationType>StaticLibrary</ConfigurationType></PropertyGroup></Project>";
+        // One .vcxproj beside the folder: that application.
+        fs::write(folder.join("loja.vcxproj"), application("loja")).unwrap();
+        let found = visual_studio_applications(&folder);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "loja");
+        assert_eq!(found[0].platform, "x64");
+        // A solution decides: one application among its projects, a library is left out.
+        fs::write(folder.join("app/servidor.vcxproj"), application("servidor")).unwrap();
+        fs::write(folder.join("app/util.vcxproj"), library).unwrap();
+        fs::write(
+            folder.join("loja.sln"),
+            "Project(\"{8BC9CEB8}\") = \"servidor\", \"app\\servidor.vcxproj\", \"{1}\"\nEndProject\nProject(\"{8BC9CEB8}\") = \"util\", \"app\\util.vcxproj\", \"{2}\"\nEndProject\n",
+        )
+        .unwrap();
+        let found = visual_studio_applications(&folder);
+        assert_eq!(
+            found.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["servidor"]
+        );
+        // Two applications in the solution: both listed, the caller does not pick.
+        fs::write(
+            folder.join("loja.sln"),
+            "Project(\"{8BC9CEB8}\") = \"servidor\", \"app\\servidor.vcxproj\", \"{1}\"\nEndProject\nProject(\"{8BC9CEB8}\") = \"loja\", \"loja.vcxproj\", \"{2}\"\nEndProject\n",
+        )
+        .unwrap();
+        assert_eq!(visual_studio_applications(&folder).len(), 2);
+        // A library alone is no program.
+        assert!(vcxproj_application(Path::new("x.vcxproj"), library).is_none());
+        // A name built from a macro falls back to the file name.
+        let macro_name = "<Project><ItemGroup><ProjectConfiguration Include=\"Debug|Win32\"/></ItemGroup><ConfigurationType>Application</ConfigurationType><TargetName>$(ProjectName)_d</TargetName></Project>";
+        let project = vcxproj_application(Path::new("C:/p/calc.vcxproj"), macro_name).unwrap();
+        assert_eq!(project.name, "calc");
+        assert_eq!(project.platform, "Win32");
+        let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn msbuild_builds_debug_into_the_apps_folder_and_runs_the_exe_from_bin() {
+        let target = BuildTarget::VisualStudio(VisualStudioProject {
+            file: PathBuf::from("P/loja.vcxproj"),
+            name: "loja".into(),
+            platform: "x64".into(),
+        });
+        let (steps, program) = build_plan(Path::new("P"), &target, Path::new("B"));
+        assert_eq!(steps.len(), 1);
+        let line = steps[0].args.join(" ");
+        assert!(
+            line.contains("/p:Configuration=Debug /p:Platform=x64"),
+            "{line}"
+        );
+        assert!(line.contains("/p:OutDir=B/bin/"), "{line}");
+        assert!(line.contains("/p:IntDir=B/obj/loja/"), "{line}");
+        assert_eq!(program, Path::new("B").join("bin").join("loja.exe"));
+        assert_eq!(target.name(), "loja");
     }
 
     #[test]

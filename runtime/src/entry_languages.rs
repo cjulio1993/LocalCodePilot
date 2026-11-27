@@ -105,10 +105,7 @@ fn cpp_entry(folder: &Path) -> Entry {
     let targets = crate::build_languages::build_targets(folder);
     let names = targets
         .iter()
-        .map(|target| match target {
-            crate::build_languages::BuildTarget::CMake(name)
-            | crate::build_languages::BuildTarget::Meson(name) => name.clone(),
-        })
+        .map(|target| target.name().to_owned())
         .collect::<Vec<_>>();
     match names.as_slice() {
         [] => Entry::None,
@@ -288,6 +285,9 @@ pub(super) fn detect_entry_process(project: &Project, processes: &mut Vec<Projec
                 let name = match target {
                     crate::build_languages::BuildTarget::CMake(_) => "Compilar e executar (CMake)",
                     crate::build_languages::BuildTarget::Meson(_) => "Compilar e executar (Meson)",
+                    crate::build_languages::BuildTarget::VisualStudio(_) => {
+                        "Compilar e executar (Visual Studio)"
+                    }
                 };
                 push_process(
                     processes,
