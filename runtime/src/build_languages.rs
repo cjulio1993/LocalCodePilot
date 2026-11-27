@@ -119,16 +119,12 @@ fn solution_projects(text: &str) -> Vec<PathBuf> {
 
 /// The application a `.vcxproj` builds, if it builds one.
 fn vcxproj_application(file: &Path, text: &str) -> Option<VisualStudioProject> {
-    if !text.contains("<ConfigurationType>Application</ConfigurationType>") {
-        return None;
-    }
-    let platform = if text.contains("Include=\"Debug|x64\"") {
-        "x64"
-    } else if text.contains("Include=\"Debug|Win32\"") {
-        "Win32"
-    } else {
-        return None;
-    };
+    // The Debug configuration the app builds must itself be an application: a project that
+    // builds a program only in Release, or a library in Debug, is not chosen.
+    let platform = ["x64", "Win32"].into_iter().find(|platform| {
+        text.contains(&format!("Include=\"Debug|{platform}\""))
+            && debug_configuration_type(text, platform).as_deref() == Some("Application")
+    })?;
     // <TargetName> or <ProjectName> when they are plain names; the file name otherwise.
     let tag = |name: &str| {
         let open = format!("<{name}>");
@@ -148,6 +144,34 @@ fn vcxproj_application(file: &Path, text: &str) -> Option<VisualStudioProject> {
         name,
         platform: platform.into(),
     })
+}
+
+/// The `<ConfigurationType>` that applies to `Debug|platform`: from a `<PropertyGroup>` whose
+/// condition names that configuration, or else from one without a condition.
+fn debug_configuration_type(text: &str, platform: &str) -> Option<String> {
+    let wanted = format!("'Debug|{platform}'");
+    let mut unconditional = None;
+    let mut rest = text;
+    while let Some(start) = rest.find("<PropertyGroup") {
+        let block = &rest[start..];
+        let end = block.find("</PropertyGroup>").unwrap_or(block.len());
+        let group = &block[..end];
+        let header = &group[..group.find('>').unwrap_or(group.len())];
+        let value = group
+            .split("<ConfigurationType>")
+            .nth(1)
+            .and_then(|after| after.split('<').next())
+            .map(|value| value.trim().to_owned());
+        if let Some(value) = value {
+            if !header.contains("Condition") {
+                unconditional.get_or_insert(value);
+            } else if header.contains(&wanted) {
+                return Some(value);
+            }
+        }
+        rest = &block[end.max(1)..];
+    }
+    unconditional
 }
 
 /// MSBuild from the Visual Studio installed here, found by Microsoft's `vswhere` (MSBuild is
@@ -528,8 +552,17 @@ mod tests {
         assert_eq!(visual_studio_applications(&folder).len(), 2);
         // A library alone is no program.
         assert!(vcxproj_application(Path::new("x.vcxproj"), library).is_none());
+        // A program only in Release (a library in Debug) is not chosen: the app builds Debug.
+        let release_only = "<Project><ItemGroup><ProjectConfiguration Include=\"Debug|x64\"/><ProjectConfiguration Include=\"Release|x64\"/></ItemGroup><PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\" Label=\"Configuration\"><ConfigurationType>StaticLibrary</ConfigurationType></PropertyGroup><PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\" Label=\"Configuration\"><ConfigurationType>Application</ConfigurationType></PropertyGroup></Project>";
+        assert!(vcxproj_application(Path::new("r.vcxproj"), release_only).is_none());
+        // Debug|x64 a library, Debug|Win32 a program: Win32 is built.
+        let win32 = "<Project><ItemGroup><ProjectConfiguration Include=\"Debug|x64\"/><ProjectConfiguration Include=\"Debug|Win32\"/></ItemGroup><PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup><PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|Win32'\"><ConfigurationType>Application</ConfigurationType></PropertyGroup></Project>";
+        assert_eq!(
+            vcxproj_application(Path::new("w.vcxproj"), win32).map(|p| p.platform),
+            Some("Win32".into())
+        );
         // A name built from a macro falls back to the file name.
-        let macro_name = "<Project><ItemGroup><ProjectConfiguration Include=\"Debug|Win32\"/></ItemGroup><ConfigurationType>Application</ConfigurationType><TargetName>$(ProjectName)_d</TargetName></Project>";
+        let macro_name = "<Project><ItemGroup><ProjectConfiguration Include=\"Debug|Win32\"/></ItemGroup><PropertyGroup><ConfigurationType>Application</ConfigurationType><TargetName>$(ProjectName)_d</TargetName></PropertyGroup></Project>";
         let project = vcxproj_application(Path::new("C:/p/calc.vcxproj"), macro_name).unwrap();
         assert_eq!(project.name, "calc");
         assert_eq!(project.platform, "Win32");
