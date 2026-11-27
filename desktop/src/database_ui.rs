@@ -3079,7 +3079,8 @@ mod tests {
             DatabaseEngine::MariaDb,
         ] {
             let status = stopped_server(engine, "127.0.0.1", None);
-            let here = database_packages::package_for_this_system(engine).is_some();
+            // A package for this system, or (PostgreSQL on macOS and Linux) a container.
+            let here = engine_preparable_here(engine);
             assert_eq!(status.app_can_prepare(), here);
             match status.not_preparable_here() {
                 None => assert!(here),
@@ -3109,13 +3110,11 @@ mod tests {
             assert!(!status.app_can_prepare());
             assert_eq!(status.not_preparable_here(), None);
         }
-        // On Windows every engine has a package; PostgreSQL has none on macOS and Linux.
-        assert_eq!(
-            stopped_server(DatabaseEngine::PostgreSql, "localhost", None)
-                .not_preparable_here()
-                .is_some(),
-            !cfg!(windows)
-        );
+        // PostgreSQL is prepared everywhere: the package on Windows, a container elsewhere
+        // (T030), where the card says Iniciar can prepare it.
+        let postgres = stopped_server(DatabaseEngine::PostgreSql, "localhost", None);
+        assert_eq!(postgres.not_preparable_here(), None);
+        assert_eq!(postgres.container_start_note().is_some(), !cfg!(windows));
     }
 
     #[test]
