@@ -132,14 +132,22 @@ fn makefile_runs(folder: &Path) -> bool {
 pub enum MakeRun {
     /// No Makefile, no `run` rule, or rules the app cannot see (`include`).
     None,
-    /// One Makefile with exactly one `run` rule: the rule as written (target line and recipe)
-    /// and the whole Makefile, which the first-run confirmation binds.
+    /// One Makefile with exactly one `run` rule: the rules `make run` runs, as written (the
+    /// explicit rules of its prerequisites first, then `run`), and the whole Makefile, which
+    /// the first-run confirmation binds.
     One { rule: String, makefile: String },
     /// More than one Makefile name, or more than one `run` rule: the person picks.
     Ambiguous(Vec<String>),
 }
 
 const MAKEFILE_NAMES: [&str; 3] = ["GNUmakefile", "makefile", "Makefile"];
+
+/// One rule of a Makefile: the line it starts on, its targets and its prerequisites.
+struct MakeRule {
+    line: usize,
+    targets: Vec<String>,
+    prerequisites: Vec<String>,
+}
 
 /// Reads the folder's Makefile and finds its `run` rule. The names come from the folder
 /// listing, so `makefile` and `Makefile` on a case-insensitive disk are one file, not two.
@@ -162,6 +170,39 @@ pub fn makefile_run(folder: &Path) -> MakeRun {
         return MakeRun::None;
     };
     let lines = text.lines().collect::<Vec<_>>();
+    let Some(rules) = make_rules(&lines) else {
+        return MakeRun::None;
+    };
+    let run = rules
+        .iter()
+        .filter(|rule| rule.targets.iter().any(|target| target == "run"))
+        .collect::<Vec<_>>();
+    match run.as_slice() {
+        [] => MakeRun::None,
+        [_] => {
+            let mut order = Vec::new();
+            visit_rule("run", &rules, &mut Vec::new(), &mut order);
+            let rule = order
+                .iter()
+                .map(|line| rule_block(&lines, *line))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            MakeRun::One {
+                rule,
+                makefile: text.clone(),
+            }
+        }
+        _ => MakeRun::Ambiguous(
+            run.iter()
+                .map(|rule| format!("{name}: run (linha {})", rule.line + 1))
+                .collect(),
+        ),
+    }
+}
+
+/// The explicit rules of a Makefile, or `None` when rules come from another file (`include`):
+/// what `run` does cannot be read here.
+fn make_rules(lines: &[&str]) -> Option<Vec<MakeRule>> {
     let mut rules = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         if line.starts_with('\t') {
@@ -169,9 +210,8 @@ pub fn makefile_run(folder: &Path) -> MakeRun {
         }
         let code = line.split('#').next().unwrap_or_default().trim();
         let directive = code.split_whitespace().next().unwrap_or_default();
-        // Rules from another file: what run does cannot be read here.
         if matches!(directive, "include" | "-include" | "sinclude") {
-            return MakeRun::None;
+            return None;
         }
         let Some((targets, rest)) = code.split_once(':') else {
             continue;
@@ -181,39 +221,56 @@ pub fn makefile_run(folder: &Path) -> MakeRun {
             continue;
         }
         let rest = rest.strip_prefix(':').unwrap_or(rest);
-        if rest.split(';').next().unwrap_or_default().contains('=') {
+        let prerequisites = rest.split(';').next().unwrap_or_default();
+        if prerequisites.contains('=') {
             continue;
         }
-        if targets.split_whitespace().any(|target| target == "run") {
-            rules.push(index);
-        }
-    }
-    match rules.as_slice() {
-        [] => MakeRun::None,
-        [start] => {
-            let mut rule = vec![lines[*start]];
-            for line in &lines[start + 1..] {
-                if line.starts_with('\t') || line.trim().is_empty() {
-                    rule.push(line);
-                } else {
-                    break;
-                }
-            }
-            while rule.last().is_some_and(|line| line.trim().is_empty()) {
-                rule.pop();
-            }
-            MakeRun::One {
-                rule: rule.join("\n"),
-                makefile: text.clone(),
-            }
-        }
-        _ => MakeRun::Ambiguous(
-            rules
-                .iter()
-                .map(|index| format!("{name}: run (linha {})", index + 1))
+        rules.push(MakeRule {
+            line: index,
+            targets: targets.split_whitespace().map(str::to_owned).collect(),
+            prerequisites: prerequisites
+                .split_whitespace()
+                .filter(|prerequisite| *prerequisite != "|")
+                .map(str::to_owned)
                 .collect(),
-        ),
+        });
     }
+    Some(rules)
+}
+
+/// The rules `make` runs for a target, prerequisites first, each once.
+fn visit_rule(target: &str, rules: &[MakeRule], seen: &mut Vec<String>, order: &mut Vec<usize>) {
+    if seen.iter().any(|done| done == target) {
+        return;
+    }
+    seen.push(target.to_owned());
+    for rule in rules
+        .iter()
+        .filter(|rule| rule.targets.iter().any(|name| name == target))
+    {
+        for prerequisite in &rule.prerequisites {
+            visit_rule(prerequisite, rules, seen, order);
+        }
+        if !order.contains(&rule.line) {
+            order.push(rule.line);
+        }
+    }
+}
+
+/// A rule as written: its target line and the recipe lines after it.
+fn rule_block(lines: &[&str], start: usize) -> String {
+    let mut block = vec![lines[start]];
+    for line in &lines[start + 1..] {
+        if line.starts_with('\t') || line.trim().is_empty() {
+            block.push(line);
+        } else {
+            break;
+        }
+    }
+    while block.last().is_some_and(|line| line.trim().is_empty()) {
+        block.pop();
+    }
+    block.join("\n")
 }
 
 /// Leiningen runs the namespace in `:main`.
@@ -627,7 +684,11 @@ mod tests {
         let MakeRun::One { rule, makefile } = makefile_run(&make.0) else {
             panic!("{:?}", makefile_run(&make.0));
         };
-        assert_eq!(rule, "run: loja # inicia\n\t./loja");
+        // The prerequisite rules run first and are shown first; main.c has no rule.
+        assert_eq!(
+            rule,
+            "loja: main.c\n\t$(CC) -o loja main.c\n\nrun: loja # inicia\n\t./loja"
+        );
         assert!(makefile.contains("clean:"));
         let started = commands(&make.project(&[RuntimeKind::Cpp]));
         if cfg!(windows) {
