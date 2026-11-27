@@ -237,6 +237,8 @@ impl DatabaseRequest {
 #[derive(Debug, Clone)]
 pub(super) struct SqlServerRequest {
     pub kind: ContainerKind,
+    /// The container that "Preparar e iniciar" creates, named already for the confirmation.
+    pub planned: SqlServerContainer,
     pub project: PathBuf,
     pub requirement: DatabaseRequirement,
     /// `docker` or `podman`.
@@ -873,8 +875,11 @@ impl LocalCodePilot {
                 details: vec![],
             });
         };
+        let planned =
+            sql_server_container::planned(kind, engine, port).map_err(DatabaseFailure::plain)?;
         Ok(SqlServerRequest {
             kind,
+            planned,
             project: project_path.to_path_buf(),
             requirement: requirement.clone(),
             engine,
@@ -1741,7 +1746,10 @@ fn sql_server_confirmation_window(
                             request.port
                         ),
                         format!("Imagem: {}", sql_server_container::IMAGE),
-                        "Container e volume: localcodepilot-mssql-<identificador>".to_owned(),
+                        format!(
+                            "Container e volume: {}",
+                            request.planned.container()
+                        ),
                         format!("Configuração: {}", display_path(&request.requirement.source)),
                         "Quem administra o motor de containers consegue ver a senha inicial do administrador, que o LocalCodePilot troca logo depois do preparo.".to_owned(),
                     ] {
@@ -1838,8 +1846,8 @@ fn postgres_confirmation_window(
                     for line in [
                         format!("PostgreSQL em 127.0.0.1:{}.", request.port),
                         format!("Imagem: {}.", sql_server_container::POSTGRES_IMAGE),
-                        "Container: localcodepilot-pg-<identificador>.".to_owned(),
-                        "Volume: localcodepilot-pg-<identificador>.".to_owned(),
+                        format!("Container: {}.", request.planned.container()),
+                        format!("Volume: {}.", request.planned.volume()),
                         format!("Configuração: {}.", display_path(&request.requirement.source)),
                         "Quem administra o motor de containers pode ver a senha inicial do administrador; o LocalCodePilot a troca logo após o preparo.".to_owned(),
                     ] {
@@ -2349,9 +2357,7 @@ fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) ->
     let _ = sender.send(JobEvent::Step(DatabaseStep::PullingImage));
     let server = match sql_server_container::prepare(
         &root,
-        request.kind,
-        request.engine,
-        request.port,
+        request.planned.clone(),
         &SystemVault,
         path,
         |step| {
@@ -2647,6 +2653,16 @@ mod tests {
         (choice, nodes)
     }
 
+    fn planned(kind: ContainerKind, engine: &str, port: u16) -> SqlServerContainer {
+        SqlServerContainer {
+            id: "a1b2c3d4e5f6".into(),
+            kind,
+            engine: engine.into(),
+            port,
+            stop_failed: false,
+        }
+    }
+
     /// Three frames of the SQL Server confirmation (a window settles its size in the first
     /// ones); `last_events` reach the last frame. Returns the accessible names, whether each
     /// is disabled, and the name of the focused widget.
@@ -2654,6 +2670,25 @@ mod tests {
         request: &mut SqlServerRequest,
         last_events: &[egui::Event],
     ) -> (SqlChoice, Vec<(String, bool)>, Option<String>) {
+        let (choice, nodes, focused, _) = confirmation_frames_at(request, last_events, 1280.0);
+        (choice, nodes, focused)
+    }
+
+    /// (choice, [(name, disabled)], focused name, [(name, right edge)]).
+    type Frames = (
+        SqlChoice,
+        Vec<(String, bool)>,
+        Option<String>,
+        Vec<(String, f64)>,
+    );
+
+    /// The same at a screen `width` wide, also returning each named node's right edge.
+    fn confirmation_frames_at(
+        request: &mut SqlServerRequest,
+        last_events: &[egui::Event],
+        width: f32,
+    ) -> Frames {
+        let mut edges = vec![];
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let mut choice = SqlChoice::Waiting;
@@ -2664,7 +2699,7 @@ mod tests {
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        egui::vec2(1280.0, 900.0),
+                        egui::vec2(width, 900.0),
                     )),
                     events: if frame == 2 {
                         last_events.to_vec()
@@ -2691,18 +2726,24 @@ mod tests {
                             .map(|name| (name.to_owned(), node.is_disabled()))
                     })
                     .collect();
+                edges = update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| Some((node.label()?.to_owned(), node.bounds()?.x1)))
+                    .collect();
             }
             if choice != SqlChoice::Waiting {
                 break;
             }
         }
-        (choice, nodes, focused)
+        (choice, nodes, focused, edges)
     }
 
     #[test]
     fn a_database_confirmation_starts_on_the_safe_choice_and_escape_cancels_it() {
         let mut request = SqlServerRequest {
             kind: ContainerKind::SqlServer,
+            planned: planned(ContainerKind::SqlServer, "podman", 14339),
             project: PathBuf::from("loja"),
             requirement: DatabaseRequirement {
                 source: PathBuf::from("loja").join(".env"),
@@ -2738,6 +2779,7 @@ mod tests {
     fn postgres_request() -> SqlServerRequest {
         SqlServerRequest {
             kind: ContainerKind::PostgreSql,
+            planned: planned(ContainerKind::PostgreSql, "docker", 5432),
             project: PathBuf::from("loja"),
             requirement: DatabaseRequirement {
                 source: PathBuf::from("loja").join(".env"),
@@ -2787,6 +2829,38 @@ mod tests {
         };
         let (choice, _, _) = sql_confirmation_frames(&mut request, &[escape]);
         assert_eq!(choice, SqlChoice::Cancel);
+    }
+
+    #[test]
+    fn the_postgres_confirmation_names_the_real_container_and_fits_a_narrow_window() {
+        let mut request = postgres_request();
+        let (_, nodes, focused, edges) = confirmation_frames_at(&mut request, &[], 360.0);
+        let text = nodes
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert_eq!(focused.as_deref(), Some("Agora não"));
+        // The whole sentence is there (wrapped, not cut), and both buttons fit on screen.
+        assert!(
+            text.contains("Ao fechar o aplicativo, o LocalCodePilot tentará parar o container."),
+            "{text}"
+        );
+        for button in ["Agora não", "Preparar e iniciar"] {
+            let edge = edges
+                .iter()
+                .find(|(name, _)| name == button)
+                .map(|(_, edge)| *edge)
+                .unwrap_or_else(|| panic!("falta {button}: {text}"));
+            assert!(edge <= 360.0, "{button} termina em {edge}");
+        }
+        // Technical details show the names the container and the volume will have.
+        let (_, _, _, _) = confirmation_frames_at(&mut request, &[], 1280.0);
+        assert_eq!(
+            request.planned.container(),
+            "localcodepilot-pg-a1b2c3d4e5f6"
+        );
+        assert_eq!(request.planned.volume(), "localcodepilot-pg-a1b2c3d4e5f6");
     }
 
     #[test]
@@ -2872,6 +2946,7 @@ mod tests {
     fn the_sql_server_terms_are_never_accepted_for_the_person() {
         let mut request = SqlServerRequest {
             kind: ContainerKind::SqlServer,
+            planned: planned(ContainerKind::SqlServer, "podman", 14339),
             project: PathBuf::from("loja"),
             requirement: DatabaseRequirement {
                 source: PathBuf::from("loja").join(".env"),
