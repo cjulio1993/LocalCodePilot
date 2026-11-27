@@ -383,8 +383,7 @@ fn parse_state(text: &str, id: &str, kind: ContainerKind) -> ContainerState {
     if label != id {
         return ContainerState::NotOurs("o rótulo do container não é o do LocalCodePilot".into());
     }
-    let image = image.split('@').next().unwrap_or_default();
-    if image.is_empty() || !kind.image().starts_with(image) {
+    if !is_pinned_image(image, kind) {
         return ContainerState::NotOurs("a imagem do container não é a fixada".into());
     }
     if running == "true" {
@@ -392,6 +391,24 @@ fn parse_state(text: &str, id: &str, kind: ContainerKind) -> ContainerState {
     } else {
         ContainerState::Stopped
     }
+}
+
+/// Whether `image` (the container's `.Config.Image`) names exactly the pinned image: the full
+/// reference with its digest, or the same reference without it, also in Docker Hub's short
+/// form (`postgres:19.0-trixie` for `docker.io/library/postgres:19.0-trixie`). A prefix, another
+/// tag or another digest is not the app's.
+fn is_pinned_image(image: &str, kind: ContainerKind) -> bool {
+    let pinned = kind.image();
+    let Some((reference, digest)) = pinned.split_once('@') else {
+        return false;
+    };
+    let short = reference.strip_prefix("docker.io/library/");
+    let (name, with_digest) = match image.split_once('@') {
+        Some((name, found)) => (name, Some(found)),
+        None => (image, None),
+    };
+    let same_name = name == reference || short.is_some_and(|short| name == short);
+    same_name && with_digest.is_none_or(|found| found == digest)
 }
 
 /// The administrator password that logs in now: the final one, or the initial one when the
@@ -707,11 +724,16 @@ pub fn prepare(
         }
         return Err(error);
     }
-    if removed.is_err() {
-        let _ = stop(&server, path);
-        return Err(
-            "o arquivo temporário com a senha não pôde ser apagado; o container foi parado".into(),
-        );
+    if let Err(removal) = removed {
+        // Say only what `inspect` confirmed about the container.
+        return Err(match stop(&server, path) {
+            Ok(()) => format!(
+                "o arquivo temporário com a senha não pôde ser apagado ({removal}); o container foi parado"
+            ),
+            Err(stop_error) => format!(
+                "{stop_error} (o arquivo temporário com a senha não pôde ser apagado: {removal})"
+            ),
+        });
     }
     if let Err(error) =
         wait_ready(&server, &initial).and_then(|()| finish_password_change(&server, vault))
@@ -963,6 +985,40 @@ mod tests {
             ),
             ContainerState::NotOurs(_)
         ));
+        // Exactly the pinned image: a prefix of it is not enough.
+        let pinned_tag = POSTGRES_IMAGE.split('@').next().unwrap();
+        assert!(pinned_tag.starts_with("docker.io/library/postgres:19"));
+        for prefix in [
+            "docker.io/library/postgres:19",
+            "docker.io/library/postgres",
+            "postgres:19.0",
+            "docker.io",
+        ] {
+            assert!(
+                matches!(
+                    parse_state(
+                        &format!("true|abc|{prefix}"),
+                        "abc",
+                        ContainerKind::PostgreSql
+                    ),
+                    ContainerState::NotOurs(_)
+                ),
+                "{prefix}"
+            );
+        }
+        assert!(is_pinned_image(
+            "postgres:19.0-trixie",
+            ContainerKind::PostgreSql
+        ));
+        assert!(!is_pinned_image(
+            "docker.io/library/postgres:19.0-trixie@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ContainerKind::PostgreSql
+        ));
+        assert!(!is_pinned_image(
+            "mcr.microsoft.com/mssql/server:2022",
+            ContainerKind::SqlServer
+        ));
+        assert!(is_pinned_image(IMAGE, ContainerKind::SqlServer));
         // PostgreSQL: its own image only, never SQL Server's or another tag.
         let pg = ContainerKind::PostgreSql;
         let pg_image = POSTGRES_IMAGE.split('@').next().unwrap();
