@@ -6551,11 +6551,13 @@ fn decode_oem(bytes: &[u8]) -> Option<String> {
     ))
 }
 
+/// The program's name without folder or extension, lowercased. Both separators count, so a
+/// Windows path saved in the workspace reads the same on any system.
 fn program_stem(program: &str) -> String {
-    Path::new(program)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
+    let name = program.rsplit(['/', '\']).next().unwrap_or(program);
+    name.rsplit_once('.')
+        .map_or(name, |(stem, _)| stem)
+        .to_lowercase()
 }
 
 fn is_msbuild(program: &str) -> bool {
