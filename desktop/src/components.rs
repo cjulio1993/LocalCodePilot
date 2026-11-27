@@ -69,6 +69,38 @@ pub(super) fn error_state(ui: &mut egui::Ui, title: &str, cause: &str, action: &
     })
 }
 
+/// A row of Configurações (T037.05): the title and a short explanation on the left, the
+/// controls on the right. Returns what the controls return.
+pub(super) fn settings_row<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    explanation: &str,
+    controls: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        let text_width = (ui.available_width() * 0.55).max(220.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(text_width, 0.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_max_width(text_width);
+                ui.label(RichText::new(title).strong().size(theme::TEXT_BODY));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(explanation)
+                            .color(theme::MUTED)
+                            .size(theme::TEXT_DETAIL),
+                    )
+                    .wrap(),
+                );
+            },
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), controls)
+            .inner
+    })
+    .inner
+}
+
 /// The line of a section with nothing in it ("Nenhum projeto rodando agora.").
 pub(super) fn empty_hint(ui: &mut egui::Ui, text: &str) {
     ui.label(
