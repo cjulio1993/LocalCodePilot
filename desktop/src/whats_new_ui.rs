@@ -56,7 +56,9 @@ pub(super) fn news_for(text: &str, version: &str) -> Result<Vec<String>, String>
 ///   that did not record it (Alpha 10 or earlier).
 ///
 /// A clean install, the same version or an older one never shows them. A failed update
-/// restores the previous version, which opens without the marker and was already seen.
+/// restores the previous version, which opens without the marker and was already seen: every
+/// version with this code records `ultima_versao_vista` on its first start, and a version
+/// without the field (Alpha 10 or earlier) has no news modal at all.
 pub(super) fn should_show(
     current: &Version,
     last_seen: Option<&str>,
