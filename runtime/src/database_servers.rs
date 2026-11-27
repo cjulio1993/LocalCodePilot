@@ -966,6 +966,10 @@ fn start_with(
     }
     server.process_id = Some(child.id());
     server.started_at = ports::process_started_at(child.id());
+    // Known from now on, not only once it is ready: if the app closes during a first
+    // preparation, the next close (or the next start of the app) still finds this server
+    // as the app's and stops it (T031).
+    save_server(root, server)?;
     // MySQL and MariaDB are ready, and have run their init file, only when they write
     // "ready for connections": MariaDB opens its port before it reads the init file.
     let ready_line = (server.engine != "postgresql").then(|| (server.log_file(), log_start));

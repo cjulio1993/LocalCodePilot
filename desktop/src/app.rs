@@ -676,6 +676,12 @@ impl LocalCodePilot {
         self.notification = Some(Notification::new(message));
     }
 
+    /// A notice that must be read: it stays longer and the routine ones that follow (such as
+    /// "projects updated" after the scan at start) do not replace it.
+    fn notify_important(&mut self, message: impl Into<String>) {
+        self.notification = Some(Notification::update_result(message));
+    }
+
     fn is_favorite(&self, path: &Path) -> bool {
         self.workspace_state
             .favorite_projects
