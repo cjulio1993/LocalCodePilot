@@ -66,7 +66,7 @@ fn target_for(requirement: &DatabaseRequirement, env: &str) -> Option<MigrationT
         let file =
             env_value(env, "DB_DATABASE").unwrap_or_else(|| "database/database.sqlite".into());
         return Some(MigrationTarget {
-            destination: format!("SQLite: {file}"),
+            destination: format!("SQLite ({file})"),
         });
     }
     if requirement.compose_service.is_some() {
@@ -470,6 +470,9 @@ impl LocalCodePilot {
                 ui.label(RichText::new(&request.name).strong());
                 ui.add_space(4.0);
                 ui.label(EXPLANATION);
+                ui.add_space(4.0);
+                // The destination is part of the decision, not a technical detail (CA-2).
+                ui.label(RichText::new(format!("Banco: {}", request.target.destination)).strong());
                 egui::CollapsingHeader::new("Detalhes técnicos")
                     .id_salt("migration-details")
                     .show(ui, |ui| {
