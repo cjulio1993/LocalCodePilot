@@ -909,6 +909,20 @@ pub fn prepare(
 /// Writes `contents` to a new file of `<root>/.temp` that only this user can read.
 fn write_private_temp(root: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
     use std::io::Write;
+    write_private_temp_with(root, name, contents, |file, bytes| {
+        file.write_all(bytes).and_then(|()| file.sync_all())
+    })
+}
+
+/// `write_private_temp` with the write itself given, so a test can make it fail: a file
+/// that could not be written completely is removed, never left behind with part of a
+/// password in it.
+fn write_private_temp_with(
+    root: &Path,
+    name: &str,
+    contents: &str,
+    write: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<PathBuf, String> {
     let temp = root.join(".temp");
     fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
     #[cfg(unix)]
@@ -923,9 +937,11 @@ fn write_private_temp(root: &Path, name: &str, contents: &str) -> Result<PathBuf
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut file = options.open(&path).map_err(|error| error.to_string())?;
-    file.write_all(contents.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| error.to_string())?;
+    if let Err(error) = write(&mut file, contents.as_bytes()) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(error.to_string());
+    }
     Ok(path)
 }
 
@@ -1212,6 +1228,24 @@ mod tests {
         ));
         assert!(!image_matches("[]", POSTGRES_IMAGE));
         assert!(!image_matches("[\"x\"]", "postgres:19"));
+    }
+
+    #[test]
+    fn a_settings_file_that_could_not_be_written_is_not_left_behind() {
+        let root = std::env::temp_dir().join(format!("lcp-env-fail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let failed = write_private_temp_with(&root, "x.env", "MYSQL_ROOT_PASSWORD=x\n", |_, _| {
+            Err(std::io::Error::other("disco cheio"))
+        });
+        assert_eq!(failed, Err("disco cheio".into()));
+        assert!(!root.join(".temp").join("x.env").exists());
+        // The normal write keeps the file, with its contents.
+        let path = write_private_temp(&root, "y.env", "MYSQL_ROOT_PASSWORD=y\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "MYSQL_ROOT_PASSWORD=y\n"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
