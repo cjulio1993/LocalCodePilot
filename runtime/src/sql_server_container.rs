@@ -1,6 +1,12 @@
-//! SQL Server in a container the app manages (Docker or Podman), for projects that use SQL
-//! Server on this computer. There is no portable SQL Server: the official Linux image runs in
-//! a container, and only after the person accepts Microsoft's license terms.
+//! Database servers in a container the app manages (Docker or Podman):
+//! - SQL Server, for projects that use it on this computer. There is no portable SQL Server:
+//!   the official Linux image runs in a container, and only after the person accepts
+//!   Microsoft's license terms (T019.06);
+//! - PostgreSQL on macOS and Linux, where no official package can be verified: the Docker
+//!   Official Image, pinned by digest (T030). Windows keeps the native package.
+//!
+//! Both kinds share everything below; only the image, the port inside the container, the
+//! data folder, the initial settings and the administrator login differ (`ContainerKind`).
 //!
 //! Agreed with product in `.internal/conversas/2026-11-20-t019-06-sql-server.md`:
 //! - pinned image (`2022-CU28-ubuntu-22.04` by digest), Developer edition, terms link of that
@@ -32,6 +38,130 @@ pub const TERMS_URL: &str = "https://www.microsoft.com/en-us/Useterms/Retail/SQL
 pub const APPROXIMATE_DOWNLOAD: &str = "cerca de 500 MB";
 /// The image once extracted by the engine (checked by `examples/sql_server_check.rs`).
 pub const APPROXIMATE_SPACE: &str = "cerca de 1,6 GB";
+
+/// PostgreSQL's Docker Official Image, pinned by the digest of its multi-platform index
+/// (linux/amd64 and linux/arm64), read from registry-1.docker.io on 2026-11-27 (T030).
+pub const POSTGRES_IMAGE: &str = "docker.io/library/postgres:19.0-trixie@sha256:4ea94de574c17f0372722806c949757050fbb1cd7648410fe45d6bba275cc00e";
+pub const POSTGRES_VERSION_LABEL: &str = "PostgreSQL 19.0";
+/// The compressed layers of the image for amd64 (162 MB) and arm64 (161 MB).
+pub const POSTGRES_APPROXIMATE_DOWNLOAD: &str = "cerca de 160 MB";
+/// The administrator role created in the container; the project gets its own role.
+pub const POSTGRES_ADMIN: &str = "localcodepilot_admin";
+pub const POSTGRES_PREPARATION_FAILED: &str =
+    "Não foi possível concluir a preparação do PostgreSQL. Seus dados foram mantidos.";
+pub const POSTGRES_STOP_NOT_CONFIRMED: &str = "Não foi possível confirmar que o PostgreSQL parou. Verifique o container na página Containers.";
+
+/// What runs in the container. Registries written before T030 have no kind: SQL Server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ContainerKind {
+    #[default]
+    #[serde(rename = "sqlserver")]
+    SqlServer,
+    #[serde(rename = "postgresql")]
+    PostgreSql,
+}
+
+impl ContainerKind {
+    pub fn image(self) -> &'static str {
+        match self {
+            Self::SqlServer => IMAGE,
+            Self::PostgreSql => POSTGRES_IMAGE,
+        }
+    }
+
+    pub fn version_label(self) -> &'static str {
+        match self {
+            Self::SqlServer => VERSION_LABEL,
+            Self::PostgreSql => POSTGRES_VERSION_LABEL,
+        }
+    }
+
+    pub fn preparation_failed(self) -> &'static str {
+        match self {
+            Self::SqlServer => PREPARATION_FAILED,
+            Self::PostgreSql => POSTGRES_PREPARATION_FAILED,
+        }
+    }
+
+    pub fn stop_not_confirmed(self) -> &'static str {
+        match self {
+            Self::SqlServer => STOP_NOT_CONFIRMED,
+            Self::PostgreSql => POSTGRES_STOP_NOT_CONFIRMED,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::SqlServer => "SQL Server",
+            Self::PostgreSql => "PostgreSQL",
+        }
+    }
+
+    /// The port the server listens on inside the container.
+    fn inner_port(self) -> u16 {
+        match self {
+            Self::SqlServer => 1433,
+            Self::PostgreSql => 5432,
+        }
+    }
+
+    /// Where the volume is mounted: the image's data folder (`/var/lib/postgresql` since the
+    /// PostgreSQL 18 images).
+    fn data_path(self) -> &'static str {
+        match self {
+            Self::SqlServer => "/var/opt/mssql",
+            Self::PostgreSql => "/var/lib/postgresql",
+        }
+    }
+
+    /// Part of the container, volume and credential names.
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::SqlServer => "mssql",
+            Self::PostgreSql => "pg",
+        }
+    }
+
+    fn credential_folder(self) -> &'static str {
+        match self {
+            Self::SqlServer => "sqlserver",
+            Self::PostgreSql => "postgresql",
+        }
+    }
+
+    fn admin_user(self) -> &'static str {
+        match self {
+            Self::SqlServer => "sa",
+            Self::PostgreSql => POSTGRES_ADMIN,
+        }
+    }
+
+    /// The settings the container starts with, through a temporary `--env-file`.
+    fn initial_settings(self, password: &str) -> String {
+        match self {
+            Self::SqlServer => {
+                format!("ACCEPT_EULA=Y\nMSSQL_PID=Developer\nMSSQL_SA_PASSWORD={password}\n")
+            }
+            Self::PostgreSql => format!(
+                "POSTGRES_USER={POSTGRES_ADMIN}\nPOSTGRES_PASSWORD={password}\nPOSTGRES_DB=postgres\n"
+            ),
+        }
+    }
+
+    /// The statement that replaces the initial administrator password with the final one.
+    fn password_change(self, password: &str) -> String {
+        match self {
+            Self::SqlServer => format!(
+                "ALTER LOGIN sa WITH PASSWORD = '{}'",
+                password.replace('\'', "''")
+            ),
+            Self::PostgreSql => format!(
+                "ALTER ROLE {POSTGRES_ADMIN} PASSWORD '{}'",
+                password.replace('\'', "''")
+            ),
+        }
+    }
+}
 const LABEL: &str = "localcodepilot.servidor";
 const REGISTRY_FILE: &str = "sqlserver.json";
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -39,6 +169,9 @@ const ADMIN_PASSWORD_MISSING: &str = "A senha de administração deste banco nã
 const NO_WORKING_PASSWORD: &str =
     "Nenhuma senha de administração guardada pelo LocalCodePilot entra neste SQL Server.";
 const CONTAINER_MISSING: &str = "O container do SQL Server deste projeto não existe mais.";
+const POSTGRES_NO_WORKING_PASSWORD: &str =
+    "Nenhuma senha de administração guardada pelo LocalCodePilot entra neste PostgreSQL.";
+const POSTGRES_CONTAINER_MISSING: &str = "O container do PostgreSQL deste projeto não existe mais.";
 /// The first sentence of a preparation that failed after the container was created.
 pub const PREPARATION_FAILED: &str =
     "Não foi possível concluir a preparação do SQL Server. Seus dados foram mantidos.";
@@ -49,6 +182,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 30);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SqlServerContainer {
     pub id: String,
+    #[serde(default)]
+    pub kind: ContainerKind,
     /// `docker` or `podman`.
     pub engine: String,
     pub port: u16,
@@ -58,19 +193,27 @@ pub struct SqlServerContainer {
 
 impl SqlServerContainer {
     pub fn container(&self) -> String {
-        format!("localcodepilot-mssql-{}", self.id)
+        format!("localcodepilot-{}-{}", self.kind.prefix(), self.id)
     }
 
     pub fn volume(&self) -> String {
-        format!("localcodepilot-mssql-{}", self.id)
+        format!("localcodepilot-{}-{}", self.kind.prefix(), self.id)
     }
 
     fn final_target(&self) -> String {
-        format!("LocalCodePilot/sqlserver/{}", self.id)
+        format!(
+            "LocalCodePilot/{}/{}",
+            self.kind.credential_folder(),
+            self.id
+        )
     }
 
     fn initial_target(&self) -> String {
-        format!("LocalCodePilot/sqlserver/{}-inicial", self.id)
+        format!(
+            "LocalCodePilot/{}/{}-inicial",
+            self.kind.credential_folder(),
+            self.id
+        )
     }
 }
 
@@ -223,13 +366,13 @@ pub fn state(server: &SqlServerContainer, path: Option<&OsStr>) -> Result<Contai
         path,
         Duration::from_secs(30),
     ) {
-        Ok(text) => Ok(parse_state(text.trim(), &server.id)),
+        Ok(text) => Ok(parse_state(text.trim(), &server.id, server.kind)),
         Err(error) if error.to_ascii_lowercase().contains("no such") => Ok(ContainerState::Missing),
         Err(error) => Err(error),
     }
 }
 
-fn parse_state(text: &str, id: &str) -> ContainerState {
+fn parse_state(text: &str, id: &str, kind: ContainerKind) -> ContainerState {
     let mut parts = text.split('|');
     let running = parts.next().unwrap_or_default();
     let label = parts.next().unwrap_or_default();
@@ -237,7 +380,8 @@ fn parse_state(text: &str, id: &str) -> ContainerState {
     if label != id {
         return ContainerState::NotOurs("o rótulo do container não é o do LocalCodePilot".into());
     }
-    if !IMAGE.starts_with(image.split('@').next().unwrap_or_default()) {
+    let image = image.split('@').next().unwrap_or_default();
+    if image.is_empty() || !kind.image().starts_with(image) {
         return ContainerState::NotOurs("a imagem do container não é a fixada".into());
     }
     if running == "true" {
@@ -269,6 +413,53 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Runs statements as the administrator of the app's container: `sa` through TDS, or the
+/// app's PostgreSQL role. Loopback only.
+fn as_admin(
+    server: &SqlServerContainer,
+    password: &str,
+    statements: &[String],
+) -> Result<(), String> {
+    match server.kind {
+        ContainerKind::SqlServer => as_sa(server, password, statements),
+        ContainerKind::PostgreSql => as_postgres_admin(server, password, statements),
+    }
+}
+
+fn as_postgres_admin(
+    server: &SqlServerContainer,
+    password: &str,
+    statements: &[String],
+) -> Result<(), String> {
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host("127.0.0.1")
+        .port(server.port)
+        .user(POSTGRES_ADMIN)
+        .password(password)
+        .dbname("postgres")
+        .connect_timeout(Duration::from_secs(10));
+    runtime()?
+        .block_on(async {
+            let (client, connection) = config
+                .connect(tokio_postgres::NoTls)
+                .await
+                .map_err(|error| error.to_string())?;
+            let driver = tokio::spawn(connection);
+            let mut result = Ok(());
+            for statement in statements {
+                if let Err(error) = client.batch_execute(statement).await {
+                    result = Err(error.to_string());
+                    break;
+                }
+            }
+            drop(client);
+            let _ = driver.await;
+            result
+        })
+        .map_err(|error: String| error.replace(password, "••••"))
+}
+
 /// Runs T-SQL as `sa` on the app's container (loopback, its own certificate accepted).
 fn as_sa(server: &SqlServerContainer, password: &str, statements: &[String]) -> Result<(), String> {
     use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -297,16 +488,21 @@ fn as_sa(server: &SqlServerContainer, password: &str, statements: &[String]) -> 
         .map_err(|error: String| error.replace(password, "••••"))
 }
 
-/// Waits until `sa` logs in with `password`.
+/// Waits until the administrator logs in with `password`.
 fn wait_ready(server: &SqlServerContainer, password: &str) -> Result<(), String> {
     let started = Instant::now();
     loop {
-        match as_sa(server, password, &[]) {
+        match as_admin(server, password, &[]) {
             Ok(()) => return Ok(()),
             Err(_) if started.elapsed() < READY_TIMEOUT => {
                 std::thread::sleep(Duration::from_secs(2))
             }
-            Err(error) => return Err(format!("o SQL Server não ficou pronto: {error}")),
+            Err(error) => {
+                return Err(format!(
+                    "o {} não ficou pronto: {error}",
+                    server.kind.name()
+                ));
+            }
         }
     }
 }
@@ -330,7 +526,7 @@ pub fn stop(server: &SqlServerContainer, path: Option<&OsStr>) -> Result<(), Str
     );
     match state(server, path)? {
         ContainerState::Stopped | ContainerState::Missing => Ok(()),
-        _ => Err(STOP_NOT_CONFIRMED.into()),
+        _ => Err(server.kind.stop_not_confirmed().into()),
     }
 }
 
@@ -351,7 +547,13 @@ pub fn start(
                 Duration::from_secs(120),
             )?;
         }
-        ContainerState::Missing => return Err(CONTAINER_MISSING.into()),
+        ContainerState::Missing => {
+            return Err(match server.kind {
+                ContainerKind::SqlServer => CONTAINER_MISSING,
+                ContainerKind::PostgreSql => POSTGRES_CONTAINER_MISSING,
+            }
+            .into());
+        }
         ContainerState::NotOurs(reason) => return Err(reason),
     }
     finish_password_change(server, vault)
@@ -366,14 +568,18 @@ fn finish_password_change(server: &SqlServerContainer, vault: &dyn Vault) -> Res
     while working.is_none() && started.elapsed() < READY_TIMEOUT {
         working = candidates
             .iter()
-            .find(|password| as_sa(server, password, &[]).is_ok())
+            .find(|password| as_admin(server, password, &[]).is_ok())
             .cloned();
         if working.is_none() {
             std::thread::sleep(Duration::from_secs(2));
         }
     }
     let Some(working) = working else {
-        return Err(NO_WORKING_PASSWORD.into());
+        return Err(match server.kind {
+            ContainerKind::SqlServer => NO_WORKING_PASSWORD,
+            ContainerKind::PostgreSql => POSTGRES_NO_WORKING_PASSWORD,
+        }
+        .into());
     };
     if let Some(initial) = vault.read(&server.initial_target())?
         && initial == working
@@ -382,28 +588,27 @@ fn finish_password_change(server: &SqlServerContainer, vault: &dyn Vault) -> Res
             Some(password) => password,
             None => {
                 let password = new_password()?;
-                vault.save_new(&server.final_target(), "sa", &password)?;
+                vault.save_new(&server.final_target(), server.kind.admin_user(), &password)?;
                 password
             }
         };
-        as_sa(
+        as_admin(
             server,
             &working,
-            &[format!(
-                "ALTER LOGIN sa WITH PASSWORD = '{}'",
-                final_password.replace('\'', "''")
-            )],
+            &[server.kind.password_change(&final_password)],
         )?;
-        as_sa(server, &final_password, &[])?;
+        as_admin(server, &final_password, &[])?;
         vault.delete(&server.initial_target())?;
     }
     Ok(())
 }
 
-/// Creates the app's SQL Server container on `port` and leaves it running with the final `sa`
-/// password. The person accepted the license terms before this is called.
+/// Creates the app's container of `kind` on `port` and leaves it running with the final
+/// administrator password. For SQL Server, the person accepted the license terms before this
+/// is called.
 pub fn prepare(
     root: &Path,
+    kind: ContainerKind,
     engine: &str,
     port: u16,
     vault: &dyn Vault,
@@ -412,26 +617,25 @@ pub fn prepare(
 ) -> Result<SqlServerContainer, String> {
     let server = SqlServerContainer {
         id: new_id()?,
+        kind,
         engine: engine.to_owned(),
         port,
         stop_failed: false,
     };
-    engine_command(engine, &["pull", IMAGE], path, COMMAND_TIMEOUT)?;
+    engine_command(engine, &["pull", kind.image()], path, COMMAND_TIMEOUT)?;
     pulled();
     let initial = new_password()?;
-    vault.save_new(&server.initial_target(), "sa", &initial)?;
+    vault.save_new(&server.initial_target(), kind.admin_user(), &initial)?;
     save(root, &server)?;
-    // The password reaches the container through a file that exists only for `run`.
-    let temp = root.join(".temp");
-    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
-    let env_file = temp.join(format!("mssql-{}.env", server.id));
-    fs::write(
-        &env_file,
-        format!("ACCEPT_EULA=Y\nMSSQL_PID=Developer\nMSSQL_SA_PASSWORD={initial}\n"),
-    )
-    .map_err(|error| error.to_string())?;
-    let published = format!("127.0.0.1:{port}:1433");
-    let mount = format!("{}:/var/opt/mssql", server.volume());
+    // The password reaches the container through a file that exists only for `run`, which
+    // only this user can read (0600 in a 0700 folder on macOS and Linux).
+    let env_file = write_private_temp(
+        root,
+        &format!("{}-{}.env", kind.prefix(), server.id),
+        &kind.initial_settings(&initial),
+    )?;
+    let published = format!("127.0.0.1:{port}:{}", kind.inner_port());
+    let mount = format!("{}:{}", server.volume(), kind.data_path());
     let label = format!("{LABEL}={}", server.id);
     let env_arg = env_file.display().to_string();
     let created = engine_command(
@@ -449,7 +653,7 @@ pub fn prepare(
             &mount,
             "--env-file",
             &env_arg,
-            IMAGE,
+            kind.image(),
         ],
         path,
         Duration::from_secs(120),
@@ -474,11 +678,34 @@ pub fn prepare(
     {
         let stopped = stop(&server, path);
         return Err(match stopped {
-            Ok(()) => format!("{PREPARATION_FAILED} ({error})"),
+            Ok(()) => format!("{} ({error})", kind.preparation_failed()),
             Err(stop_error) => format!("{stop_error} ({error})"),
         });
     }
     Ok(server)
+}
+
+/// Writes `contents` to a new file of `<root>/.temp` that only this user can read.
+fn write_private_temp(root: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let temp = root.join(".temp");
+    fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    let path = temp.join(name);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&path).map_err(|error| error.to_string())?;
+    file.write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| error.to_string())?;
+    Ok(path)
 }
 
 /// Names the app creates: letters, digits and `_`, up to 63, not starting with a digit.
@@ -514,8 +741,71 @@ pub fn ensure_project_database(
     let admin = vault
         .read(&server.final_target())?
         .ok_or(ADMIN_PASSWORD_MISSING)?;
-    as_sa(server, &admin, &project_sql(database, user, password))
-        .map_err(|error| error.replace(password, "••••"))
+    match server.kind {
+        ContainerKind::SqlServer => as_sa(server, &admin, &project_sql(database, user, password)),
+        ContainerKind::PostgreSql => postgres_project(server, &admin, database, user, password),
+    }
+    .map_err(|error| error.replace(password, "••••"))
+}
+
+/// PostgreSQL: a login role without SUPERUSER, CREATEDB or CREATEROLE, owner of the project's
+/// database, as on the native server; only what is missing is created.
+fn postgres_project(
+    server: &SqlServerContainer,
+    admin: &str,
+    database: &str,
+    user: &str,
+    password: &str,
+) -> Result<(), String> {
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host("127.0.0.1")
+        .port(server.port)
+        .user(POSTGRES_ADMIN)
+        .password(admin)
+        .dbname("postgres")
+        .connect_timeout(Duration::from_secs(10));
+    runtime()?.block_on(async {
+        let (client, connection) = config
+            .connect(tokio_postgres::NoTls)
+            .await
+            .map_err(|error| error.to_string())?;
+        let driver = tokio::spawn(connection);
+        let result = async {
+            let role = client
+                .query_opt("SELECT 1 FROM pg_roles WHERE rolname = $1", &[&user])
+                .await
+                .map_err(|error| error.to_string())?;
+            if role.is_none() {
+                client
+                    .batch_execute(&postgres_role_sql(user, password))
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            let exists = client
+                .query_opt("SELECT 1 FROM pg_database WHERE datname = $1", &[&database])
+                .await
+                .map_err(|error| error.to_string())?;
+            if exists.is_none() {
+                client
+                    .batch_execute(&format!("CREATE DATABASE \"{database}\" OWNER \"{user}\""))
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        }
+        .await;
+        drop(client);
+        let _ = driver.await;
+        result
+    })
+}
+
+fn postgres_role_sql(user: &str, password: &str) -> String {
+    format!(
+        "CREATE ROLE \"{user}\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '{}'",
+        password.replace('\'', "''")
+    )
 }
 
 /// "Corrigir conexão": the project's login takes the password configured in the project.
@@ -531,15 +821,17 @@ pub fn set_project_password(
     let admin = vault
         .read(&server.final_target())?
         .ok_or(ADMIN_PASSWORD_MISSING)?;
-    as_sa(
-        server,
-        &admin,
-        &[format!(
+    let statement = match server.kind {
+        ContainerKind::SqlServer => format!(
             "ALTER LOGIN [{user}] WITH PASSWORD = N'{}'",
             password.replace('\'', "''")
-        )],
-    )
-    .map_err(|error| error.replace(password, "••••"))
+        ),
+        ContainerKind::PostgreSql => format!(
+            "ALTER ROLE \"{user}\" PASSWORD '{}'",
+            password.replace('\'', "''")
+        ),
+    };
+    as_admin(server, &admin, &[statement]).map_err(|error| error.replace(password, "••••"))
 }
 
 /// "Criar SQL Server novo": the app lets go of this container. The container and its volume
@@ -568,6 +860,8 @@ pub fn needs_new_container(error: &str) -> bool {
         NO_WORKING_PASSWORD,
         ADMIN_PASSWORD_MISSING,
         CONTAINER_MISSING,
+        POSTGRES_NO_WORKING_PASSWORD,
+        POSTGRES_CONTAINER_MISSING,
     ]
     .iter()
     .any(|known| error.contains(known))
@@ -607,23 +901,109 @@ mod tests {
 
     #[test]
     fn only_the_apps_container_is_recognized() {
+        let sql = ContainerKind::SqlServer;
         let image = IMAGE.split('@').next().unwrap();
         assert_eq!(
-            parse_state(&format!("true|abc|{image}"), "abc"),
+            parse_state(&format!("true|abc|{image}"), "abc", sql),
             ContainerState::Running
         );
         assert_eq!(
-            parse_state(&format!("false|abc|{image}"), "abc"),
+            parse_state(&format!("false|abc|{image}"), "abc", sql),
             ContainerState::Stopped
         );
         assert!(matches!(
-            parse_state(&format!("true|outro|{image}"), "abc"),
+            parse_state(&format!("true|outro|{image}"), "abc", sql),
             ContainerState::NotOurs(_)
         ));
         assert!(matches!(
-            parse_state("true|abc|mcr.microsoft.com/mssql/server:2019-latest", "abc"),
+            parse_state(
+                "true|abc|mcr.microsoft.com/mssql/server:2019-latest",
+                "abc",
+                sql
+            ),
             ContainerState::NotOurs(_)
         ));
+        // PostgreSQL: its own image only, never SQL Server's or another tag.
+        let pg = ContainerKind::PostgreSql;
+        let pg_image = POSTGRES_IMAGE.split('@').next().unwrap();
+        assert_eq!(
+            parse_state(&format!("true|abc|{pg_image}"), "abc", pg),
+            ContainerState::Running
+        );
+        assert_eq!(
+            parse_state(&format!("true|abc|{POSTGRES_IMAGE}"), "abc", pg),
+            ContainerState::Running
+        );
+        for other in [image, "docker.io/library/postgres:16", ""] {
+            assert!(matches!(
+                parse_state(&format!("true|abc|{other}"), "abc", pg),
+                ContainerState::NotOurs(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn postgres_is_the_official_image_pinned_by_digest() {
+        assert!(POSTGRES_IMAGE.starts_with("docker.io/library/postgres:19.0-"));
+        let digest = POSTGRES_IMAGE.split("@sha256:").nth(1).unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()));
+        let kind = ContainerKind::PostgreSql;
+        assert_eq!(kind.image(), POSTGRES_IMAGE);
+        assert_eq!(kind.inner_port(), 5432);
+        let settings = kind.initial_settings("s3nha");
+        assert!(settings.contains("POSTGRES_USER=localcodepilot_admin\n"));
+        assert!(settings.contains("POSTGRES_PASSWORD=s3nha\n"));
+        assert!(!settings.contains("EULA"));
+        assert_eq!(
+            kind.password_change("a'b"),
+            "ALTER ROLE localcodepilot_admin PASSWORD 'a''b'"
+        );
+    }
+
+    #[test]
+    fn each_kind_has_its_own_names_and_old_registries_stay_sql_server() {
+        let server = |kind| SqlServerContainer {
+            id: "abc".into(),
+            kind,
+            engine: "docker".into(),
+            port: 1,
+            stop_failed: false,
+        };
+        let sql = server(ContainerKind::SqlServer);
+        assert_eq!(sql.container(), "localcodepilot-mssql-abc");
+        assert_eq!(sql.final_target(), "LocalCodePilot/sqlserver/abc");
+        let pg = server(ContainerKind::PostgreSql);
+        assert_eq!(pg.container(), "localcodepilot-pg-abc");
+        assert_eq!(pg.volume(), "localcodepilot-pg-abc");
+        assert_eq!(pg.final_target(), "LocalCodePilot/postgresql/abc");
+        assert_eq!(pg.initial_target(), "LocalCodePilot/postgresql/abc-inicial");
+        let old: Vec<SqlServerContainer> =
+            serde_json::from_str(r#"[{"id":"x","engine":"podman","port":14333}]"#).unwrap();
+        assert_eq!(old[0].kind, ContainerKind::SqlServer);
+        let saved = serde_json::to_string(&pg).unwrap();
+        assert!(saved.contains("\"kind\":\"postgresql\""));
+    }
+
+    #[test]
+    fn the_postgres_project_role_has_no_server_wide_rights() {
+        let sql = postgres_role_sql("app", "s'enha");
+        assert_eq!(
+            sql,
+            "CREATE ROLE \"app\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD 's''enha'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_initial_settings_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("lcp-pg-env-{}", std::process::id()));
+        let path = write_private_temp(&root, "pg-x.env", "POSTGRES_PASSWORD=x\n").unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&root.join(".temp")), 0o700);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

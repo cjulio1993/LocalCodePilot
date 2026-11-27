@@ -2150,6 +2150,7 @@ fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) ->
     }));
     let server = match sql_server_container::prepare(
         &root,
+        sql_server_container::ContainerKind::SqlServer,
         request.engine,
         request.port,
         &SystemVault,
@@ -2592,6 +2593,7 @@ mod tests {
         );
         // "Criar SQL Server novo" says the project starts empty and where the old data is.
         request.replaces = Some(SqlServerContainer {
+            kind: Default::default(),
             id: "abc123".into(),
             engine: "docker".into(),
             port: 14339,
