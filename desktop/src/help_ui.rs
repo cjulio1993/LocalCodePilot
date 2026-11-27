@@ -104,7 +104,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Com problema",
-                "uma instalação ou execução falhou, ou há um impedimento detectado. O cartão mostra o motivo e a próxima ação. Em Detalhes técnicos, veja a regra e o que foi encontrado; use Ver logs quando precisar investigar a saída. Depois de resolver a causa, tente iniciar novamente.",
+                "uma instalação ou execução falhou, ou há um impedimento detectado. O cartão mostra o motivo e a próxima ação. Em Detalhes técnicos, veja a regra e o que foi encontrado; use Ver logs quando precisar investigar a saída. Depois de resolver a causa, tente iniciar novamente. Para pedir suporte, use Exportar diagnóstico em Detalhes técnicos e confira o arquivo antes de compartilhá-lo.",
             ),
             Block::Text("Ao lado do endereço, um selo mostra o resultado da verificação do site:"),
             Block::Item("Site respondendo", "o endereço respondeu à verificação."),

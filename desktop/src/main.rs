@@ -5,6 +5,7 @@ mod app;
 #[path = "../build_support.rs"]
 mod build_support;
 mod config;
+mod diagnostic_export;
 mod pages;
 mod secrets;
 mod storage;

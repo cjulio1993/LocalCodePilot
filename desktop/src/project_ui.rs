@@ -873,6 +873,120 @@ impl LocalCodePilot {
         )
     }
 
+    /// "Exportar diagnóstico": the person picks where to save; Cancel writes nothing. The
+    /// file holds only the fields of `diagnostic_export::Report`, sanitized (T034).
+    fn export_diagnostic(&mut self, path: &Path) {
+        use crate::diagnostic_export::{self, Command, Database, Report};
+        let Some(project) = self
+            .projects
+            .iter()
+            .find(|project| project.path == path)
+            .cloned()
+        else {
+            return;
+        };
+        let summary = self.project_summary(&project);
+        let fallback = ProjectEnvironment::default();
+        let environment = self
+            .project_environments
+            .get(&project.path)
+            .unwrap_or(&fallback);
+        let commands = self
+            .managed
+            .processes
+            .iter()
+            .filter(|process| process.project_path == project.path)
+            .map(|process| Command {
+                name: process.name.clone(),
+                program: process.program.clone(),
+                args: process.args.clone(),
+                folder: process.working_directory.clone(),
+            })
+            .collect();
+        let mut requirements = environment
+            .runtime_requirements
+            .iter()
+            .map(|requirement| {
+                let status = match &requirement.status {
+                    RequirementStatus::Available { version, .. } => format!("instalado: {version}"),
+                    RequirementStatus::Missing => "não encontrado".into(),
+                    RequirementStatus::Incompatible {
+                        installed_version, ..
+                    } => format!("incompatível: {installed_version}"),
+                    RequirementStatus::Pending => diagnostic_export::NOT_VERIFIED.into(),
+                };
+                format!(
+                    "{} {}: {status}",
+                    requirement.runtime, requirement.version.value
+                )
+            })
+            .collect::<Vec<_>>();
+        if environment.missing_compiler {
+            requirements.push("Compilador C/C++: não encontrado".into());
+        }
+        requirements.extend(
+            environment
+                .missing_programs
+                .iter()
+                .map(|program| format!("{program}: não encontrado")),
+        );
+        let databases = environment
+            .databases
+            .iter()
+            .map(|database| Database {
+                engine: database.requirement.engine.label().into(),
+                port: database.requirement.port,
+                local: Some(database.requirement.host.as_deref().is_none_or(|host| {
+                    matches!(
+                        host.to_ascii_lowercase().as_str(),
+                        "localhost" | "127.0.0.1" | "::1"
+                    )
+                })),
+                running: if database.not_running() {
+                    Some(false)
+                } else {
+                    database.available
+                },
+            })
+            .collect();
+        let technologies = project
+            .technologies
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let report = Report {
+            project_name: &project.name,
+            project_path: &project.path,
+            technologies,
+            state: summary.state.label(),
+            reason: summary.reason.as_deref(),
+            rule: summary.rule.name(),
+            evidence: &summary.evidence,
+            technical: &summary.technical,
+            commands,
+            requirements,
+            databases,
+        };
+        let home =
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+        let text = diagnostic_export::render(&report, home.as_deref());
+        let Some(destination) = rfd::FileDialog::new()
+            .set_title("Exportar diagnóstico")
+            .set_file_name(diagnostic_export::file_name(&project.name))
+            .add_filter("JSON", &["json"])
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&destination, text.as_bytes()) {
+            Ok(()) => self
+                .notify_important("Diagnóstico salvo. Confira o arquivo antes de compartilhá-lo."),
+            Err(_) => self.notify_important(
+                "Não foi possível salvar o diagnóstico. Escolha outro local e tente de novo.",
+            ),
+        }
+    }
+
     pub(super) fn project_summary(&self, project: &Project) -> ProjectSummary {
         let fallback = ProjectEnvironment::default();
         let environment = self
@@ -1060,6 +1174,7 @@ impl LocalCodePilot {
             ProjectCardAction::ToggleRecentVisibility(path) => {
                 self.toggle_recent_visibility(&path);
             }
+            ProjectCardAction::ExportDiagnostic(path) => self.export_diagnostic(&path),
             ProjectCardAction::ToggleDetails(path) => {
                 if !self.project_ui.expanded.remove(&path) {
                     self.project_ui.expanded.insert(path);
@@ -2020,6 +2135,10 @@ impl ProjectCard<'_> {
                     .selectable(true)
                     .wrap(),
             );
+        }
+        // A file for support, without secrets; the person reviews it before sharing.
+        if ui.button("Exportar diagnóstico").clicked() {
+            action = Some(ProjectCardAction::ExportDiagnostic(path()));
         }
         for line in self.summary.technical.iter().chain(&self.languages) {
             detail(ui, line);
