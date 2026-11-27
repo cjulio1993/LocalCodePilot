@@ -1108,7 +1108,7 @@ impl LocalCodePilot {
     }
 
     /// Turns a card or row action into navigation or a process operation.
-    fn apply_project_action(&mut self, ctx: &egui::Context, action: ProjectCardAction) {
+    pub(super) fn apply_project_action(&mut self, ctx: &egui::Context, action: ProjectCardAction) {
         match action {
             ProjectCardAction::ViewDetails(path) => {
                 self.focused_project = Some(path);

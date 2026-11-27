@@ -654,7 +654,7 @@ impl ContainerState {
 fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)> {
     match page {
         Page::Containers => Some((Duration::from_secs(15), ContainerRefresh::Full)),
-        Page::Overview | Page::Projects | Page::Processes => {
+        Page::Overview | Page::Projects | Page::Processes | Page::Databases => {
             Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
         }
         // Ambiente shows whether each engine is available (T037.05).

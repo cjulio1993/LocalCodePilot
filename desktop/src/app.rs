@@ -10,6 +10,8 @@ mod components;
 mod container_ui;
 #[path = "database_ui.rs"]
 mod database_ui;
+#[path = "databases_tab_ui.rs"]
+mod databases_tab_ui;
 use database_ui::{DatabaseStatus, managed_info};
 #[path = "environment_ui.rs"]
 mod environment_ui;
@@ -126,6 +128,8 @@ enum Page {
     Projects,
     Processes,
     Containers,
+    /// The third tab of Serviços: the databases of the projects (T037.06).
+    Databases,
     /// Ambiente: languages and container engines of this computer (T037.05).
     Environment,
     Help,
@@ -139,6 +143,7 @@ impl Page {
             Self::Projects => "projects",
             Self::Processes => "processes",
             Self::Containers => "containers",
+            Self::Databases => "databases",
             Self::Environment => "environment",
             Self::Help => "help",
             Self::Settings => "settings",
@@ -148,7 +153,7 @@ impl Page {
     /// The tabs of Serviços (T037): Processos and Containers. Each keeps its own saved key, so
     /// a page saved by an older version opens the same tab.
     fn is_service(self) -> bool {
-        matches!(self, Self::Processes | Self::Containers)
+        matches!(self, Self::Processes | Self::Containers | Self::Databases)
     }
 
     fn from_key(key: &str) -> Self {
@@ -156,6 +161,7 @@ impl Page {
             "projects" => Self::Projects,
             "processes" => Self::Processes,
             "containers" => Self::Containers,
+            "databases" => Self::Databases,
             "environment" => Self::Environment,
             "help" => Self::Help,
             "settings" => Self::Settings,
@@ -548,6 +554,8 @@ pub struct LocalCodePilot {
     last_services_tab: Page,
     /// Rows of Serviços > Processos with their details open (T037.02).
     expanded_processes: HashSet<String>,
+    /// "Parar" of Serviços > Bancos de dados, waiting for the confirmation (T037.06).
+    database_stop_request: Option<databases_tab_ui::DatabaseStopRequest>,
     projects: Vec<Project>,
     /// The managed processes and their ports (T025).
     managed: ManagedProcesses,
@@ -694,6 +702,7 @@ impl LocalCodePilot {
             page,
             projects: cached_projects,
             expanded_processes: HashSet::new(),
+            database_stop_request: None,
             last_services_tab: if page.is_service() {
                 page
             } else {
@@ -1285,6 +1294,7 @@ impl LocalCodePilot {
             for (page, label) in [
                 (Page::Processes, "Processos"),
                 (Page::Containers, "Containers"),
+                (Page::Databases, "Bancos de dados"),
             ] {
                 let selected = self.page == page;
                 let response = ui.add(
@@ -1346,6 +1356,7 @@ impl LocalCodePilot {
                             | Page::Help
                             | Page::Settings
                             | Page::Containers
+                            | Page::Databases
                             | Page::Environment => None,
                         };
                         if let Some(search_hint) = search_hint {
@@ -1370,7 +1381,7 @@ impl LocalCodePilot {
         match self.page {
             Page::Overview => "Visão geral",
             Page::Projects => "Projetos",
-            Page::Processes | Page::Containers => "Serviços",
+            Page::Processes | Page::Containers | Page::Databases => "Serviços",
             Page::Environment => "Ambiente",
             Page::Help => "Ajuda",
             Page::Settings => "Configurações",
@@ -5022,6 +5033,7 @@ impl LocalCodePilot {
                     Page::Processes => self.processes_page(ui),
                     Page::Settings => self.settings_page(ui),
                     Page::Environment => self.environment_page(ui),
+                    Page::Databases => self.databases_page(ui),
                     Page::Containers => self.containers_page(ui),
                     Page::Help => self.help_page(ui),
                 });
@@ -8493,6 +8505,7 @@ mod tests {
             Page::Projects,
             Page::Processes,
             Page::Containers,
+            Page::Databases,
             Page::Environment,
             Page::Help,
             Page::Settings,
