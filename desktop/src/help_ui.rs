@@ -236,7 +236,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "SQL Server",
-                "o login do projeto é testado. No Windows, com o Docker ou o Podman prontos, Iniciar pode criar um container do SQL Server 2022 Developer, gratuito para desenvolvimento e teste: antes, você precisa marcar que leu e aceita os termos de licença da Microsoft, e os dados ficam num volume do motor de containers. Sem Docker nem Podman prontos, o cartão leva à página Containers. O LocalCodePilot não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.",
+                "o login do projeto é testado. No Windows, com o Docker ou o Podman prontos, Iniciar pode criar um container do SQL Server 2022 Developer, gratuito para desenvolvimento e teste: antes, você precisa marcar que leu e aceita os termos de licença da Microsoft, e os dados ficam num volume do motor de containers. Sem Docker nem Podman prontos, o cartão leva a Serviços > Containers. O LocalCodePilot não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.",
             ),
             Block::Item(
                 "macOS e Linux",

@@ -63,7 +63,7 @@ Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e
 
 Se um dia não for possível ler seus projetos e configurações, o app guarda os arquivos e restaura sozinho a última cópia válida. Sem cópia válida, ele começa com as configurações padrão e avisa que alguns dados podem estar ausentes; **Abrir pasta** mostra os arquivos guardados, e o aviso continua em **Configurações** até você clicar em **Entendi**. A busca de projetos refaz só a lista de projetos, não favoritos, histórico, comandos personalizados nem confirmações.
 
-Na barra lateral, **Visão geral** e **Projetos** mostram os projetos, e **Serviços** reúne o que está rodando, nas abas **Processos** (programas iniciados pelo app, um por linha, com estado, porta e ações) e **Containers** (Docker, Podman e Compose). A página **Ajuda**, dentro do app, explica cada estado e o que fazer em cada caso.
+Na barra lateral, **Visão geral** e **Projetos** mostram os projetos, e **Serviços** reúne o que está rodando, nas abas **Processos** (programas iniciados pelo app, um por linha, com estado, porta e ações) e **Containers** (Docker, Podman e Compose, com cada serviço numa linha). A página **Ajuda**, dentro do app, explica cada estado e o que fazer em cada caso.
 
 ### Linguagens e projetos
 
@@ -105,7 +105,7 @@ O LocalCodePilot lê o banco de dados do projeto no `.env` (`DB_CONNECTION`, `DB
 | Situação | O que o app faz |
 |---|---|
 | PostgreSQL, MySQL ou MariaDB neste computador, no **Windows** | **Iniciar** prepara um servidor só deste computador (`127.0.0.1`). Na primeira vez, a confirmação **Preparar banco de dados para este projeto?** mostra o download, o espaço necessário, o banco e o usuário que serão criados. O pacote é uma versão fixada e conferida por SHA-256; a senha de administração fica no Gerenciador de Credenciais do Windows. |
-| SQL Server neste computador, no **Windows** | Com o Docker ou o Podman prontos, **Iniciar** pode criar um container do SQL Server 2022 Developer (gratuito para desenvolvimento e teste). Você precisa marcar que leu e aceita os termos de licença da Microsoft; o app nunca aceita por você. Sem Docker nem Podman prontos, o cartão leva à página **Containers**. |
+| SQL Server neste computador, no **Windows** | Com o Docker ou o Podman prontos, **Iniciar** pode criar um container do SQL Server 2022 Developer (gratuito para desenvolvimento e teste). Você precisa marcar que leu e aceita os termos de licença da Microsoft; o app nunca aceita por você. Sem Docker nem Podman prontos, o cartão leva a **Serviços > Containers**. |
 | Servidor que você já tem, na porta do projeto | Só o login é testado. O app não cria banco nem usuário, não altera o servidor e não oferece **Parar** para ele. |
 | Serviço do Compose (como `db`) | Fica no fluxo de **Containers**, com as mesmas proteções contra conflito de nomes. O cartão mostra "Container ativo; conexão não verificada."; nenhum outro servidor é preparado. |
 | Banco em outro computador | Não recebe preparo nem mudança. **Testar conexão**, em **Detalhes técnicos**, testa o login só quando você pede. |
@@ -197,7 +197,7 @@ Everything runs on your computer. The app does not send your projects anywhere, 
 
 If your projects and settings ever cannot be read, the app keeps the files and restores the last valid copy on its own. Without a valid copy, it starts with the default settings and warns that some data may be missing; **Abrir pasta** (Open folder) shows the kept files, and the notice stays in Settings until you click **Entendi** (Got it). The project scan rebuilds only the project list, not favorites, history, custom commands or confirmations.
 
-In the sidebar, **Visão geral** (overview) and **Projetos** (projects) show your projects, and **Serviços** (services) gathers what is running, in the **Processos** (programs the app started, one per row, with state, port, and actions) and **Containers** (Docker, Podman, and Compose) tabs. The **Help** page inside the app explains each state and what to do.
+In the sidebar, **Visão geral** (overview) and **Projetos** (projects) show your projects, and **Serviços** (services) gathers what is running, in the **Processos** (programs the app started, one per row, with state, port, and actions) and **Containers** (Docker, Podman, and Compose, one service per row) tabs. The **Help** page inside the app explains each state and what to do.
 
 ### Languages and projects
 
@@ -239,7 +239,7 @@ LocalCodePilot reads the project's database settings from `.env` (`DB_CONNECTION
 | Situation | What the app does |
 |---|---|
 | PostgreSQL, MySQL or MariaDB on this computer, on **Windows** | **Start** prepares a server for this computer only (`127.0.0.1`). The first time, the confirmation **Preparar banco de dados para este projeto?** (prepare a database for this project?) shows the download, the disk space needed, and the database and user it will create. The package is a pinned version checked by SHA-256; the admin password is kept in Windows Credential Manager. |
-| SQL Server on this computer, on **Windows** | With Docker or Podman ready, **Start** can create a SQL Server 2022 Developer container (free for development and testing). You must tick that you have read and accept Microsoft's license terms; the app never accepts them for you. Without Docker or Podman ready, the card leads to the **Containers** page. |
+| SQL Server on this computer, on **Windows** | With Docker or Podman ready, **Start** can create a SQL Server 2022 Developer container (free for development and testing). You must tick that you have read and accept Microsoft's license terms; the app never accepts them for you. Without Docker or Podman ready, the card leads to **Serviços > Containers** (services > containers). |
 | A server you already run, on the project's port | Only the login is tested. The app does not create a database or user, does not change the server, and does not offer **Stop** for it. |
 | A Compose service (such as `db`) | It stays in the **Containers** flow, with the same name-conflict protections. The card shows "Container ativo; conexão não verificada." (container running; connection not verified); no other server is prepared. |
 | A database on another computer | Nothing is prepared or changed. **Testar conexão** (test connection), under **Detalhes técnicos** (technical details), tests the login only when you ask. |

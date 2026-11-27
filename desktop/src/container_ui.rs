@@ -416,27 +416,89 @@ fn container_addresses(ui: &mut egui::Ui, container: &RuntimeContainer) {
     }
 }
 
+/// The port shown in a service row: the one of its address, or else the first one open on
+/// this computer.
+fn service_port(container: &RuntimeContainer) -> Option<u16> {
+    container
+        .browser_urls()
+        .iter()
+        .find_map(|url| url.rsplit(':').next()?.trim_end_matches('/').parse().ok())
+        .or_else(|| container.other_local_ports().first().copied())
+}
+
+/// One row per service, as in Serviços > Processos (T037.03): Serviço · Estado · Porta in
+/// fixed columns, and "Abrir site" on the right when there is an address. Actions on single
+/// containers stay in "Outras ações", behind the Compose checks.
 fn service_row(ui: &mut egui::Ui, row: &ServiceRow) {
     let state = row.state();
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(&row.name).strong());
-        ui.label(RichText::new(state.label()).color(service_state_color(state)));
-        if row.declared.is_none() {
-            ui.label(
-                RichText::new("não está no arquivo")
-                    .color(theme::MUTED)
-                    .size(12.0),
-            );
-        }
-        if state.is_active()
-            && let Some(container) = row.container
-        {
-            container_addresses(ui, container);
-        }
-    });
-    if state == ServiceState::Paused {
-        paused_note(ui);
-    }
+    let active_container = row.container.filter(|_| state.is_active());
+    let address = active_container.and_then(|container| container.browser_urls().first().cloned());
+    let port = active_container.and_then(service_port);
+    Frame::new()
+        .fill(theme::BACKGROUND)
+        .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
+        .corner_radius(8)
+        .inner_margin(Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let column = |width: f32| {
+                    (
+                        egui::vec2(width, 24.0),
+                        Layout::left_to_right(Align::Center),
+                    )
+                };
+                let (size, layout) = column(160.0);
+                ui.allocate_ui_with_layout(size, layout, |ui| {
+                    ui.set_min_width(size.x);
+                    ui.add(
+                        egui::Label::new(RichText::new(&row.name).strong().size(theme::TEXT_BODY))
+                            .truncate(),
+                    );
+                });
+                let (size, layout) = column(130.0);
+                ui.allocate_ui_with_layout(size, layout, |ui| {
+                    ui.set_min_width(size.x);
+                    super::runtime_badge(ui, state.label(), service_state_color(state));
+                });
+                let (size, layout) = column(56.0);
+                ui.allocate_ui_with_layout(size, layout, |ui| {
+                    ui.set_min_width(size.x);
+                    ui.label(
+                        RichText::new(port.map_or_else(|| "—".to_owned(), |port| port.to_string()))
+                            .monospace()
+                            .color(theme::MUTED)
+                            .size(theme::TEXT_DETAIL),
+                    )
+                    .on_hover_text("Porta");
+                });
+                if row.declared.is_none() {
+                    ui.label(
+                        RichText::new("não está no arquivo")
+                            .color(theme::MUTED)
+                            .size(theme::TEXT_DETAIL),
+                    );
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if let Some(url) = &address
+                        && ui
+                            .button(format!("{ARROW_SQUARE_OUT}  Abrir site"))
+                            .on_hover_text(format!(
+                                "Endereço provável: {}",
+                                url.trim_start_matches("http://")
+                                    .trim_start_matches("https://")
+                            ))
+                            .clicked()
+                    {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    }
+                });
+            });
+            if state == ServiceState::Paused {
+                paused_note(ui);
+            }
+        });
+    ui.add_space(4.0);
 }
 
 /// `within_environment` leaves out the service, Compose name and folder, which the
