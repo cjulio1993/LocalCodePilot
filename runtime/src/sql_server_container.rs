@@ -64,9 +64,9 @@ pub const MARIADB_IMAGE: &str = "docker.io/library/mariadb:12.3.3-noble@sha256:4
 pub const MYSQL_APPROXIMATE_DOWNLOAD: &str = "cerca de 250 MB";
 pub const MARIADB_APPROXIMATE_DOWNLOAD: &str = "cerca de 100 MB";
 /// The image extracted by the engine plus the data of a new server, measured by
-/// `examples/sql_server_check.rs` in CI.
-pub const MYSQL_APPROXIMATE_SPACE: &str = "cerca de 1 GB";
-pub const MARIADB_APPROXIMATE_SPACE: &str = "cerca de 500 MB";
+/// `examples/sql_server_check.rs` in CI on 2026-11-27 (MySQL 910 MB, MariaDB 335 MB extracted).
+pub const MYSQL_APPROXIMATE_SPACE: &str = "cerca de 1,1 GB";
+pub const MARIADB_APPROXIMATE_SPACE: &str = "cerca de 450 MB";
 
 /// What runs in the container. Registries written before T030 have no kind: SQL Server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

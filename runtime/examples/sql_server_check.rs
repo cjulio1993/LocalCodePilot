@@ -277,9 +277,15 @@ fn main() -> ExitCode {
         "app_loja",
         "senha'do-projeto",
     );
+    // MySQL and MariaDB answer a user with rights on its own database only with "access
+    // denied" (1044) for any other database, existing or not: they never tell it apart.
+    let expected_missing = match kind {
+        ContainerKind::MySql | ContainerKind::MariaDb => ConnectionOutcome::AccessDenied,
+        _ => ConnectionOutcome::DatabaseMissing,
+    };
     check(
-        "banco ausente",
-        login(&missing) == Some(ConnectionOutcome::DatabaseMissing),
+        "outro banco: ausente ou sem acesso",
+        login(&missing) == Some(expected_missing),
         format!(" {:?}", login(&missing)),
     );
     let stopped = sql_server_container::stop(&server, None);

@@ -28,10 +28,10 @@ Bancos de dados
 ---------------
 O LocalCodePilot testa a conexão com o banco de dados do projeto (PostgreSQL, MySQL,
 MariaDB e SQL Server) usando os dados de acesso do .env ou do wp-config.php. No macOS,
-Iniciar prepara o MySQL (macOS 15 ou mais novo) com o pacote oficial, e o PostgreSQL em
-container com o Docker ou o Podman (imagem oficial fixada por digest), sempre após
-confirmação e só para este computador (127.0.0.1). MariaDB e SQL Server ainda não são
-preparados no macOS: o cartão explica o motivo.
+Iniciar prepara o MySQL (macOS 15 ou mais novo) com o pacote oficial, e o PostgreSQL e o
+MariaDB em container com o Docker ou o Podman (imagem oficial fixada por digest), sempre
+após confirmação e só para este computador (127.0.0.1). O SQL Server ainda não é preparado
+no macOS: o cartão explica o motivo.
 
 Containers
 ----------

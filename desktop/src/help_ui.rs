@@ -240,7 +240,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "macOS e Linux",
-                "Quando há um pacote verificado para o motor e este computador, Iniciar prepara o banco após sua confirmação. O servidor e os dados ficam na pasta do LocalCodePilot e o projeto só inicia depois de testar o login. Se o preparo não estiver disponível, o cartão informa o motivo. Hoje: MySQL no macOS 15 ou mais novo e no Linux x86_64, MariaDB no Linux x86_64. No Windows, PostgreSQL usa um pacote oficial verificado. No macOS e no Linux, usa a imagem oficial em container, fixada por digest conferido. Os dados desse PostgreSQL ficam num volume do Docker ou do Podman. Com um motor pronto, Iniciar confirma o preparo e só inicia o projeto depois de testar o login.",
+                "Quando há um pacote verificado para o motor e este computador, Iniciar prepara o banco após sua confirmação. O servidor e os dados ficam na pasta do LocalCodePilot e o projeto só inicia depois de testar o login. Se o preparo não estiver disponível, o cartão informa o motivo. Onde há pacote oficial verificável, Iniciar prepara o banco com esse pacote: MySQL no macOS 15 ou mais novo e no Linux x86_64, MariaDB no Linux x86_64. MariaDB no macOS e MySQL ou MariaDB no Linux ARM usam a imagem oficial em container, fixada por digest conferido. No Windows, PostgreSQL usa um pacote oficial verificado. No macOS e no Linux, usa a imagem oficial em container, fixada por digest conferido. Os dados desse PostgreSQL ficam num volume do Docker ou do Podman. Com um motor pronto, Iniciar confirma o preparo e só inicia o projeto depois de testar o login.",
             ),
             Block::Item(
                 "Banco em outro computador",
