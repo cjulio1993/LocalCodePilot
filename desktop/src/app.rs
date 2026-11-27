@@ -503,6 +503,8 @@ enum ProjectCardAction {
     PrepareLaravelMigration(PathBuf),
     ToggleFavorite(PathBuf),
     ToggleRecentVisibility(PathBuf),
+    /// "Exportar diagnóstico", in "Detalhes técnicos" (T034).
+    ExportDiagnostic(PathBuf),
     ToggleDetails(PathBuf),
     /// Opens Projects showing this project with its details expanded.
     ShowInProjects(PathBuf, String),

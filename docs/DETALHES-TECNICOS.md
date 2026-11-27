@@ -163,6 +163,36 @@ O estado, o motivo e a ação de cada cartão vêm da primeira regra verdadeira,
 | 17 | Falta preparar o ambiente | falta linguagem, compilador, programa ou dependência |
 | 18 | Requisito incompatível ou pendente | versão incompatível, extensão PHP ausente ou banco que recusa o projeto |
 
+### Exportar diagnóstico
+
+**Exportar diagnóstico**, em **Detalhes técnicos** de um projeto, abre "Salvar como" e grava, só depois da escolha, um arquivo JSON para suporte. Cancelar não cria arquivo. O app não envia o arquivo a lugar nenhum.
+
+Campos (formato `localcodepilot-diagnostico`, versão 1):
+
+| Campo | Conteúdo |
+|---|---|
+| `formato`, `versao_formato` | identificação do formato |
+| `app.versao`, `app.sistema`, `app.arquitetura` | versão do LocalCodePilot, sistema e arquitetura |
+| `projeto.nome` | nome do projeto, mascarado |
+| `projeto.identificador` | 12 caracteres do SHA-256 da pasta: identifica o projeto sem revelar o caminho |
+| `projeto.tecnologias` | tecnologias reconhecidas |
+| `diagnostico.estado`, `diagnostico.motivo`, `diagnostico.regra` | o que o cartão mostra e a regra que decidiu (`motivo` é `null` quando o cartão não mostra motivo) |
+| `diagnostico.encontrado` | o que o app encontrou; `"não verificado"` quando não há fato |
+| `diagnostico.detalhes_tecnicos` | as linhas de Detalhes técnicos (processo, comando, código de saída) |
+| `comandos` | nome, comando e pasta de cada comando; um comando com argumento sensível vira `"omitido: pode conter dado sensível"` |
+| `requisitos` | linguagens, versões e programas, com a situação |
+| `bancos` | motor, porta, `servidor` (`"este computador"`, `"outro computador"` ou `"não verificado"`) e se responde; nunca usuário, senha ou endereço |
+
+**O que nunca entra:** logs (ao vivo ou salvos), conteúdo de `.env`, manifestos e arquivos de configuração, saída do Compose.
+
+**Máscara**, aplicada a todo texto do arquivo:
+- a pasta do projeto vira `<projeto>`, a pasta pessoal vira `<pasta pessoal>`, e `C:\Users\…`, `/Users/…` e `/home/…` viram `<usuário>`;
+- em endereços (`esquema://usuário:senha@servidor`), usuário e senha saem, e um servidor que não é este computador vira `<servidor>`;
+- `NOME=valor` e `NOME: valor` com senha, token, segredo ou chave no nome, `"password": "…"` em JSON, `Bearer …`, `Password=`, `Pwd=`, `User Id=` e `Uid=` em cadeias de conexão, e o valor depois de opções como `--token` viram `••••`;
+- um texto que ainda pareça sensível (credencial num endereço sem esquema, chave privada) é omitido.
+
+A máscara cobre esses formatos; outros podem passar. Por isso, o aviso pede para conferir o arquivo antes de compartilhá-lo.
+
 ### Containers: execução controlada (em validação)
 
 A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose e verifica Docker/Podman e o provedor Compose em segundo plano. Ela agrupa por projeto os serviços declarados e os containers que os motores informam: um container entra no projeto só quando o motor registrou a mesma pasta e o mesmo nome de ambiente Compose; os demais ficam em **Outros containers**. Cada serviço aparece como Rodando, Reiniciando, Pausado, Parado, Com problema (só quando o código de saída indica falha) ou Ainda não criado. **Parar** usa o motor em que o ambiente já está rodando. Quando o motor selecionado está disponível, o app pode validar a configuração, executar `up --detach`, `stop`, consultar o estado com `ps --all` no Docker ou `ps` no Podman, ler as 200 linhas mais recentes dos logs e construir um Dockerfile isolado. Cada ação mostra o comando e a pasta antes da confirmação, executa sem abrir console externo, mantém a saída numa área rolável e permite cancelamento; o limite por execução é de 30 minutos.
@@ -542,6 +572,10 @@ On Windows, paths longer than 260 characters make `pip` and the Maven wrapper fa
 ### Card diagnosis: rules and precedence
 
 Each card's state, reason, and action come from the first rule that holds, in the order of the Portuguese table above (the rule names appear in Portuguese in the app). When two conditions hold at the same time, the earlier rule wins. In **Detalhes técnicos**, "Por que este diagnóstico?" shows the rule and what the app found. A fact the app did not check is shown as "não verificado" (not verified), never as a presumed cause.
+
+### Export diagnosis
+
+**Exportar diagnóstico** (export diagnosis), under a project's **Detalhes técnicos**, opens "Save as" and writes a JSON file for support only after you choose where. Cancel creates no file, and the app never sends the file anywhere. The fields and the masking are listed in the Portuguese section above (format `localcodepilot-diagnostico`, version 1). The file never carries logs, `.env` contents, manifests, configuration files, or Compose output. Personal and project folders, credentials in addresses, other servers' names, and known secret formats are masked, and a text that still looks sensitive is left out. Other formats may pass, so review the file before sharing it.
 
 ### Containers: controlled execution (under validation)
 
