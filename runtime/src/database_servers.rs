@@ -960,6 +960,12 @@ fn start_with(
     // "ready for connections": MariaDB opens its port before it reads the init file.
     let ready_line = (server.engine != "postgresql").then(|| (server.log_file(), log_start));
     let waited = wait_until_ready(&mut child, server.port, ready_line, START_TIMEOUT);
+    // The server outlives this call. On Linux a child that ends stays in the process table
+    // (a zombie, same PID and start time) until its parent collects it, and "Parar" would
+    // wait for it forever: a thread collects it when it ends.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     save_server(root, server)?;
     waited.map_err(|detail| ServerError::StartFailed {
         detail,
