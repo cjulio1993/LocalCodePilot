@@ -27,6 +27,9 @@ use process_state::{
 };
 #[path = "recovery_ui.rs"]
 mod recovery_ui;
+#[path = "whats_new_ui.rs"]
+mod whats_new_ui;
+use semver::Version;
 
 use crate::{
     config, theme, update_progress_ui,
@@ -555,6 +558,10 @@ pub struct LocalCodePilot {
     workspace_dirty: bool,
     /// The configuration recovery notice is shown at the top until closed (T021).
     config_recovery_notice: bool,
+    /// "LocalCodePilot atualizado para {versão}", while open (T035).
+    whats_new: Option<whats_new_ui::WhatsNew>,
+    /// "Ver novidades", focused again on the frame after the modal closes.
+    whats_new_focus_return: Option<egui::Id>,
     last_workspace_save: Instant,
     workspace_save_error_reported: bool,
     /// The update: check, offer, download, confirmation and restart (T023).
@@ -583,7 +590,27 @@ impl LocalCodePilot {
         let scan_roots = source.roots().to_vec();
         let cached_projects = config::load_project_cache();
         let environment_path = refreshed_environment_path().ok();
+        // A clean install has no saved state yet: the news of an update never show there.
+        let state_existed = config::workspace_state_exists();
         let (mut workspace_state, state_recovery) = config::load_workspace_state();
+        let app_version = Version::parse(whats_new_ui::app_version())
+            .expect("the package version follows semantic versioning");
+        let show_news = whats_new_ui::should_show(
+            &app_version,
+            workspace_state.last_seen_version.as_deref(),
+            state_existed,
+            startup_update.updated_by_app,
+        );
+        // Without the news, this version counts as seen; with them, closing records it.
+        let mut news_seen_changed = false;
+        if !show_news {
+            let seen = whats_new_ui::seen_after(
+                &app_version,
+                workspace_state.last_seen_version.as_deref(),
+            );
+            news_seen_changed = workspace_state.last_seen_version.as_deref() != Some(&seen);
+            workspace_state.last_seen_version = Some(seen);
+        }
         let recoveries = state_recovery
             .into_iter()
             .chain(roots_recovery)
@@ -626,12 +653,18 @@ impl LocalCodePilot {
             .clone()
             .filter(updates::cached_update_is_newer)
             .filter(|_| installer_failed || workspace_state.update_remind_after <= now);
-        let startup_notice = startup_update.notice.or_else(|| {
-            startup_update
-                .failure
-                .as_ref()
-                .map(|failure| format!("{}. {}", failure.title(), failure.message()))
-        });
+        // After an update by the app, the news modal says it ("LocalCodePilot atualizado
+        // para {versão}"): the short notice would repeat it.
+        let updated_notice_replaced = show_news && startup_update.updated_by_app;
+        let startup_notice = startup_update
+            .notice
+            .filter(|_| !updated_notice_replaced)
+            .or_else(|| {
+                startup_update
+                    .failure
+                    .as_ref()
+                    .map(|failure| format!("{}. {}", failure.title(), failure.message()))
+            });
         let update_check = (now.saturating_sub(workspace_state.last_update_check)
             >= updates::CHECK_INTERVAL_SECONDS)
             .then(|| updates::spawn_update_check(cc.egui_ctx.clone()));
@@ -663,8 +696,13 @@ impl LocalCodePilot {
             scan_root_migration,
             discovery: Some(receiver),
             workspace_state,
-            workspace_dirty: recovered_preparation || saved_logs_changed || config_recovery_notice,
+            workspace_dirty: recovered_preparation
+                || saved_logs_changed
+                || config_recovery_notice
+                || news_seen_changed,
             config_recovery_notice,
+            whats_new: show_news.then(|| whats_new_ui::WhatsNew::current(None)),
+            whats_new_focus_return: None,
             last_workspace_save: Instant::now(),
             workspace_save_error_reported: false,
             update_session: UpdateSession::new(
@@ -4578,6 +4616,7 @@ impl LocalCodePilot {
             .is_some_and(updates::automatic_update_available);
         let mut start_install = false;
         let mut retry_check = false;
+        let mut open_news = None;
         let refused = self.update_session.refused_for_safety();
         let updating = self.update_session.in_progress();
         let progress = self.update_session.progress();
@@ -4592,6 +4631,11 @@ impl LocalCodePilot {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!("LocalCodePilot {}", updates::current_version())).strong());
+                    // The news of this version, again (T035).
+                    let news = ui.button("Ver novidades");
+                    if news.clicked() {
+                        open_news = Some(news.id);
+                    }
                     if ui.add_enabled(self.update_session.check.is_none() && !updating, egui::Button::new("Verificar se há atualizações")).clicked() {
                         retry_check = true;
                     }
@@ -4670,6 +4714,9 @@ impl LocalCodePilot {
                 }
                 ui.label(RichText::new("A consulta automática acontece uma vez por dia ao abrir o app. Você pode verificar agora a qualquer momento.").color(theme::MUTED).size(10.0));
             });
+        if let Some(origin) = open_news {
+            self.open_whats_new(Some(origin));
+        }
         if retry_check && self.update_session.check.is_none() && !updating {
             self.update_session.manual_check = true;
             self.workspace_state.update_remind_after = 0;
@@ -4826,6 +4873,7 @@ impl eframe::App for LocalCodePilot {
         self.content(ui);
         self.show_terminal(ui);
         self.show_environment_plan_confirmation(ui);
+        self.show_whats_new(ui);
         self.show_command_confirmation(ui);
         self.show_dependency_terminal(ui);
         self.show_laravel_migration(ui);

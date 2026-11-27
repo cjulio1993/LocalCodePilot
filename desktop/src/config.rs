@@ -46,6 +46,10 @@ pub struct WorkspaceState {
     /// The last time the configuration files could not be read, until the person clicks
     /// "Entendi" in Configurações (T021).
     pub config_recovery: Option<ConfigRecovery>,
+    /// The newest version whose news were shown or that opened without them (T035). Absent
+    /// in states saved by Alpha 10 and earlier.
+    #[serde(rename = "ultima_versao_vista")]
+    pub last_seen_version: Option<String>,
 }
 
 /// A recovery of the configuration files, kept so the notice can be read again after it is
@@ -123,6 +127,7 @@ impl Default for WorkspaceState {
             custom_commands: Vec::new(),
             confirmed_commands: Vec::new(),
             config_recovery: None,
+            last_seen_version: None,
         }
     }
 }
@@ -431,6 +436,11 @@ fn serialize_roots(roots: &[PathBuf]) -> String {
 
 fn config_file_path() -> Option<PathBuf> {
     config_directory().map(|path| path.join(SCAN_ROOTS_FILE))
+}
+
+/// The workspace state was saved before: this is not a clean install (T035).
+pub fn workspace_state_exists() -> bool {
+    workspace_state_file_path().is_some_and(|path| path.exists())
 }
 
 fn workspace_state_file_path() -> Option<PathBuf> {
