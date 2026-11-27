@@ -45,6 +45,9 @@ pub const POSTGRES_IMAGE: &str = "docker.io/library/postgres:19.0-trixie@sha256:
 pub const POSTGRES_VERSION_LABEL: &str = "PostgreSQL 19.0";
 /// The compressed layers of the image for amd64 (162 MB) and arm64 (161 MB).
 pub const POSTGRES_APPROXIMATE_DOWNLOAD: &str = "cerca de 160 MB";
+/// The image extracted by the engine (474 MB measured by `examples/sql_server_check.rs` in CI
+/// on 2026-11-27) plus the data of a new server.
+pub const POSTGRES_APPROXIMATE_SPACE: &str = "cerca de 550 MB";
 /// The administrator role created in the container; the project gets its own role.
 pub const POSTGRES_ADMIN: &str = "localcodepilot_admin";
 pub const POSTGRES_PREPARATION_FAILED: &str =
