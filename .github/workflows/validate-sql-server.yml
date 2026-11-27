@@ -1,6 +1,6 @@
-name: Validate SQL Server container
+name: Validate database containers
 
-# The SQL Server container the app manages (runtime/src/sql_server_container.rs), end to end
+# The database containers the app manages (SQL Server, and PostgreSQL on macOS/Linux, T030) (runtime/src/sql_server_container.rs), end to end
 # with the pinned image on a runner that has Docker: create, password change, project
 # database and login, login tests, stop and start. The license terms are accepted here only
 # for the test; the app never accepts them for the person.
@@ -24,11 +24,19 @@ concurrency:
 
 jobs:
   verify:
-    name: SQL Server container end to end
+    name: ${{ matrix.kind }} container end to end
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: sqlserver
+            port: 14333
+          - kind: postgresql
+            port: 15432
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Run the container life cycle
-        run: cargo run --locked -p localcodepilot-runtime --example sql_server_check -- docker "$RUNNER_TEMP/lcp-sqlserver" 14333
+        run: cargo run --locked -p localcodepilot-runtime --example sql_server_check -- docker "$RUNNER_TEMP/lcp-${{ matrix.kind }}" ${{ matrix.port }} ${{ matrix.kind }}
