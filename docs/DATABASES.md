@@ -14,19 +14,31 @@ O teste roda em Windows, macOS e Linux. Ele é automático para bancos neste com
 
 **Detalhes técnicos** mostra onde está a configuração, o endereço testado, o usuário, o banco, o resultado e quando ele foi obtido. A senha nunca aparece no cartão, em Detalhes, nos logs salvos nem no texto copiado.
 
-## Servidor preparado pelo LocalCodePilot (Windows)
+## Servidor preparado pelo LocalCodePilot
 
 Quando o projeto usa PostgreSQL, MySQL ou MariaDB neste computador e nada responde na porta configurada, **Iniciar** prepara um servidor do LocalCodePilot para o mesmo motor que o projeto pede (MySQL nunca é trocado por MariaDB, nem o contrário).
 
 - **Primeira vez.** A confirmação **Preparar banco de dados para este projeto?** mostra o download, o espaço necessário depois do preparo, o banco e o usuário que serão criados e onde ficam os dados. Nada é baixado antes de **Preparar e iniciar**.
 - **Pacote.** Cada motor tem uma versão fixada no catálogo do app, baixada por HTTPS e conferida por SHA-256 antes de ser usada. Se o arquivo não conferir, ele é recusado; **Tentar de novo** baixa e confere outra cópia. Não há opção de ignorar a falha.
-- **Servidor.** Escuta só em `127.0.0.1`. A senha de administração fica no Gerenciador de Credenciais do Windows, nunca em linha de comando. O banco e o usuário do projeto são criados com permissão só nesse banco.
+- **Servidor.** Escuta só em `127.0.0.1`. A senha de administração fica no Gerenciador de Credenciais do Windows (no macOS e no Linux, num arquivo que só o seu usuário lê, com permissão `0600`), nunca em linha de comando. O banco e o usuário do projeto são criados com permissão só nesse banco.
 - **Ordem.** O cartão mostra as etapas em **Iniciando** (download, preparo, início do banco). Os processos do projeto só iniciam depois que o banco aceita os dados de acesso do projeto.
 - **Vezes seguintes.** O servidor do app é iniciado sem pergunta.
 - **Ao fechar o app.** O LocalCodePilot tenta encerrar o servidor com o desligamento normal. Se ele não parar a tempo, o app avisa na próxima abertura, depois de conferir que o servidor ainda é dele e continua rodando.
-- **Dados.** Ficam em `%LOCALAPPDATA%\LocalCodePilot\bancos` e permanecem entre as sessões.
+- **Dados.** Ficam em `%LOCALAPPDATA%\LocalCodePilot\bancos` (Windows), `~/Library/Application Support/LocalCodePilot/bancos` (macOS) ou `~/.local/share/localcodepilot/bancos` (Linux) e permanecem entre as sessões.
 
-O PostgreSQL e o MySQL precisam do Microsoft Visual C++ Redistributable. Sem ele, nada é preparado, e a confirmação orienta a instalação.
+No Windows, o PostgreSQL e o MySQL precisam do Microsoft Visual C++ Redistributable. Sem ele, nada é preparado, e a confirmação orienta a instalação.
+
+### Onde o preparo existe
+
+| Motor | Windows (x64) | macOS | Linux |
+|---|---|---|---|
+| PostgreSQL 19 | sim | ainda não | ainda não |
+| MySQL 9.7 | sim | macOS 15 ou mais novo (Apple Silicon e Intel) | x86_64 com glibc 2.28 ou mais nova |
+| MariaDB 12.3 | sim | ainda não | x86_64 com glibc 2.28 ou mais nova |
+
+Cada pacote é o oficial do projeto, com SHA-256 conferido contra uma fonte independente (assinatura GPG da Oracle para o MySQL, `sha256sums.txt` assinado para o MariaDB). Onde ainda não há pacote verificável (a EDB não publica checksum do PostgreSQL para macOS nem binários atuais para Linux, e o MariaDB não publica binários para macOS), o cartão diz "O {motor} deste projeto não está rodando. O LocalCodePilot ainda não consegue prepará-lo neste sistema." e **Detalhes técnicos** traz o motivo. O app nunca troca o motor pedido por outro.
+
+No Linux, o MySQL precisa da biblioteca `libaio` do sistema (pacote `libaio1` ou `libaio1t64`, presente na maioria das instalações). No Ubuntu 24.04 e mais novos, que só têm `libaio.so.1t64`, o app cria o link que o MySQL procura dentro da pasta do próprio pacote, sem mexer no sistema. Sem a biblioteca, ou com Alpine (sem glibc), o cartão diz que o preparo não está disponível e por quê.
 
 ## SQL Server em container (Windows)
 
@@ -61,10 +73,6 @@ Quando o host (por exemplo, `db` no `DB_HOST` do `wp-config.php`) é o nome de u
 ## Banco em outro computador
 
 Hosts remotos ou de rede não recebem preparo nem mudança. O teste de login só roda quando você escolhe **Testar conexão** em **Detalhes técnicos**.
-
-## macOS e Linux
-
-O login do projeto é testado da mesma forma, mas o app não prepara servidores de banco: inicie o banco como de costume.
 
 ## SQLite
 

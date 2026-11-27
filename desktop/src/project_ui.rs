@@ -408,9 +408,16 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             .iter()
             .filter(|database| database.not_running())
             .all(DatabaseStatus::app_can_prepare);
+        // Named engine when the app cannot prepare it on this system (T029, CA-6).
+        let reason = environment
+            .databases
+            .iter()
+            .find_map(DatabaseStatus::not_preparable_here)
+            .filter(|_| !can_prepare)
+            .unwrap_or_else(|| "O banco de dados deste projeto não está rodando.".into());
         return summary(
             ProjectState::Stopped,
-            Some("O banco de dados deste projeto não está rodando.".into()),
+            Some(reason),
             if can_prepare {
                 PrimaryAction::Start
             } else {
