@@ -20,18 +20,85 @@ pub enum BuildTarget {
 /// (Meson) in the project's root file. Imported and alias targets are not programs to run.
 pub fn build_targets(folder: &Path) -> Vec<BuildTarget> {
     if let Ok(contents) = fs::read_to_string(folder.join("CMakeLists.txt")) {
-        return cmake_executables(&contents)
+        return cmake_executables(&without_comments(&contents, true))
             .into_iter()
             .map(BuildTarget::CMake)
             .collect();
     }
     if let Ok(contents) = fs::read_to_string(folder.join("meson.build")) {
-        return meson_executables(&contents)
+        return meson_executables(&without_comments(&contents, false))
             .into_iter()
             .map(BuildTarget::Meson)
             .collect();
     }
     Vec::new()
+}
+
+/// The file without `#` comments, so a commented-out `add_executable` or `executable` is
+/// not a target. Quoted text keeps its `#`. CMake also has bracket comments (`#[[ ... ]]`,
+/// `#[=[ ... ]=]`), which may span lines.
+fn without_comments(contents: &str, cmake: bool) -> String {
+    let mut out = String::with_capacity(contents.len());
+    let mut rest = contents;
+    let mut quote: Option<char> = None;
+    while let Some(character) = rest.chars().next() {
+        if let Some(open) = quote {
+            // Meson names targets with quoted text, so it stays; in CMake a quoted
+            // `add_executable(` is a message, not a call, and is blanked.
+            let keep = |character: char| {
+                if cmake && character != '\n' && character != open {
+                    ' '
+                } else {
+                    character
+                }
+            };
+            out.push(keep(character));
+            rest = &rest[character.len_utf8()..];
+            if character == '\\' {
+                if let Some(next) = rest.chars().next() {
+                    out.push(if cmake && next != '\n' { ' ' } else { next });
+                    rest = &rest[next.len_utf8()..];
+                }
+            } else if character == open {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' => {
+                // CMake has no single-quoted strings.
+                if character == '"' || !cmake {
+                    quote = Some(character);
+                }
+                out.push(character);
+                rest = &rest[1..];
+            }
+            '#' => {
+                let after = &rest[1..];
+                let bracket = cmake
+                    .then(|| after.strip_prefix('['))
+                    .flatten()
+                    .and_then(|open| {
+                        let equals = open.len() - open.trim_start_matches('=').len();
+                        open[equals..]
+                            .starts_with('[')
+                            .then(|| format!("]{}]", "=".repeat(equals)))
+                    });
+                rest = match bracket
+                    .and_then(|close| after.find(&close).map(|end| end + close.len()))
+                {
+                    Some(end) => &after[end..],
+                    // A line comment, or a bracket comment that never closes.
+                    None => after.find('\n').map_or("", |end| &after[end..]),
+                };
+            }
+            _ => {
+                out.push(character);
+                rest = &rest[character.len_utf8()..];
+            }
+        }
+    }
+    out
 }
 
 fn cmake_executables(contents: &str) -> Vec<String> {
@@ -215,6 +282,28 @@ mod tests {
         assert_eq!(meson_executables(meson), vec!["loja"]);
         let lib_only = "project('x', 'c')\nshared_library('x', 'x.c')\n";
         assert!(meson_executables(lib_only).is_empty());
+    }
+
+    #[test]
+    fn commented_out_targets_are_not_targets() {
+        let cmake = "project(loja C)\n# add_executable(antigo old.c)\nadd_executable(loja main.c) # add_executable(outro o.c)\n#[[\nadd_executable(bloco b.c)\n]]\n#[==[ add_executable(igual e.c) ]==]\nmessage(\"# add_executable(texto t.c)\")\n";
+        let cleaned = without_comments(cmake, true);
+        assert_eq!(cmake_executables(&cleaned), vec!["loja"]);
+        assert!(cleaned.contains("message(\""));
+        assert!(!cleaned.contains("texto"));
+
+        let meson = "project('loja', 'c')\n# executable('velho', 'v.c')\nexecutable('loja', 'main.c') # executable('x', 'x.c')\nmessage('# executable(\\'texto\\')')\n";
+        assert_eq!(
+            meson_executables(&without_comments(meson, false)),
+            vec!["loja"]
+        );
+
+        // A real second target is still ambiguous.
+        let two = "# add_executable(velho v.c)\nadd_executable(a a.c)\nadd_executable(b b.c)\n";
+        assert_eq!(
+            cmake_executables(&without_comments(two, true)),
+            vec!["a", "b"]
+        );
     }
 
     #[test]

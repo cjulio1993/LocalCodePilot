@@ -138,6 +138,15 @@ impl<'a> Notice<'a> {
     }
 }
 
+/// While a confirmation is open, Tab and Shift+Tab stay inside it and the screen behind it
+/// does not react, as in a modal dialog. Call it every frame the window is shown.
+pub(super) fn keep_focus_inside(ctx: &egui::Context, window: Option<&egui::Response>) {
+    if let Some(window) = window {
+        let layer = window.layer_id;
+        ctx.memory_mut(|memory| memory.set_modal_layer(layer));
+    }
+}
+
 /// Marks a widget as a polite live region: screen readers announce its text when it changes.
 pub(super) fn mark_live(ui: &egui::Ui, id: egui::Id) {
     ui.ctx().accesskit_node_builder(id, |node| {

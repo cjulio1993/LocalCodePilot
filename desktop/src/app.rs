@@ -1577,6 +1577,7 @@ impl LocalCodePilot {
             then,
             details_open: false,
             focused: false,
+            origin: self.repaint.memory(|memory| memory.focused()),
         });
         true
     }

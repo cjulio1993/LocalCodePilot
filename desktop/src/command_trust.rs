@@ -40,6 +40,8 @@ pub(super) struct CommandConfirmation {
     pub details_open: bool,
     /// The keyboard focus moved into the window when it opened.
     pub focused: bool,
+    /// The control that had the focus when the window opened, focused again on Cancel.
+    pub origin: Option<egui::Id>,
 }
 
 pub(super) enum Decision {
@@ -182,7 +184,7 @@ pub(super) fn show(
     let mut decision = None;
     let mut open = true;
     let window_height = (root_ui.max_rect().height() - 64.0).max(160.0);
-    egui::Window::new("Iniciar este projeto?")
+    let shown = egui::Window::new("Iniciar este projeto?")
         .id(egui::Id::unique((
             "command-confirmation",
             &confirmation.project_path,
@@ -247,6 +249,21 @@ pub(super) fn show(
         });
     if !open || root_ui.input(|input| input.key_pressed(egui::Key::Escape)) {
         decision = Some(Decision::Cancel);
+    }
+    // Modal only while it stays open: on the closing frame the focus may go back behind it.
+    if decision.is_none() {
+        super::notice::keep_focus_inside(
+            root_ui.ctx(),
+            shown.as_ref().map(|shown| &shown.response),
+        );
+    }
+    // Closed without starting: the focus goes back to the control that opened the window.
+    if matches!(decision, Some(Decision::Cancel))
+        && let Some(origin) = confirmation.origin
+    {
+        root_ui
+            .ctx()
+            .memory_mut(|memory| memory.request_focus(origin));
     }
     decision
 }
