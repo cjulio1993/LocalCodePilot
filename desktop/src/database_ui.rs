@@ -118,6 +118,15 @@ fn sql_id(id: &str) -> Option<&str> {
 }
 
 /// The engines whose local database the app looks after.
+/// A database on another computer that the app can test on request (T037.06): not a server of
+/// this computer, not a Compose service, an engine the app knows, with a host.
+pub(super) fn is_remote_database(requirement: &DatabaseRequirement) -> bool {
+    !local_server(requirement)
+        && requirement.compose_service.is_none()
+        && looked_after(requirement.engine)
+        && requirement.host.is_some()
+}
+
 fn looked_after(engine: DatabaseEngine) -> bool {
     engine_key(engine).is_some() || engine == DatabaseEngine::SqlServer
 }
@@ -1284,6 +1293,13 @@ impl LocalCodePilot {
         else {
             return;
         };
+        self.stop_managed_server(project_path, server);
+    }
+
+    /// Stops one server the app created, for Serviços > Bancos de dados (T037.06): the row
+    /// names the server, so a project with more than one never stops the wrong one. The caller
+    /// checks that no project using it is running.
+    pub(super) fn stop_managed_server(&mut self, project_path: &Path, server: ManagedInfo) {
         if let Some(id) = sql_id(&server.id).map(str::to_owned) {
             let path = self.environment_path.clone();
             self.spawn_job(project_path, "", false, move |_| {
@@ -1334,6 +1350,15 @@ impl LocalCodePilot {
         else {
             return;
         };
+        self.test_remote_requirement(project_path, requirement);
+    }
+
+    /// Tests one remote database, for the row of Serviços > Bancos de dados that shows it.
+    pub(super) fn test_remote_requirement(
+        &mut self,
+        project_path: &Path,
+        requirement: DatabaseRequirement,
+    ) {
         self.spawn_job(project_path, "", false, move |_| {
             JobResult::Tested(test_remote_connection(
                 &requirement,

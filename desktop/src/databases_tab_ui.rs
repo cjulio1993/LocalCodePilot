@@ -114,24 +114,26 @@ impl LocalCodePilot {
         let mut open = None;
         for entry in &entries {
             let (state, color) = entry_state(&entry.status);
-            // "Parar" follows the card: the app's own server, no project using it running.
-            let mut can_stop = None;
-            let mut blocked_by = Vec::new();
-            let mut remote = None;
-            for (path, _) in &entry.projects {
-                let extras = self.database_card_extras(path);
-                if extras.can_stop && can_stop.is_none() {
-                    can_stop = Some(path.clone());
-                }
-                for name in extras.stop_blocked_by {
-                    if !blocked_by.contains(&name) {
-                        blocked_by.push(name);
-                    }
-                }
-                if extras.remote && remote.is_none() {
-                    remote = Some(path.clone());
-                }
-            }
+            // The actions come from this row's own database, never from another database of
+            // the same project. "Parar": a server the app created, running, and no project
+            // that uses it running. "Testar conexão": a database on another computer.
+            let managed = entry
+                .status
+                .managed
+                .clone()
+                .filter(|managed| managed.running);
+            let blocked_by = entry
+                .projects
+                .iter()
+                .filter(|(path, _)| self.managed.project_is_running(path))
+                .map(|(_, name)| name.clone())
+                .collect::<Vec<_>>();
+            let can_stop = managed
+                .filter(|_| blocked_by.is_empty())
+                .and_then(|managed| Some((entry.projects.first()?.0.clone(), managed)));
+            let remote = database_ui::is_remote_database(&entry.status.requirement)
+                .then(|| entry.projects.first().map(|(path, _)| path.clone()))
+                .flatten();
             Frame::new()
                 .fill(theme::BACKGROUND)
                 .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
@@ -181,15 +183,15 @@ impl LocalCodePilot {
                                 .size(theme::TEXT_DETAIL),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if let Some(path) = &can_stop
+                            if let Some(target) = &can_stop
                                 && ui.button("Parar").clicked()
                             {
-                                stop = Some(path.clone());
+                                stop = Some(target.clone());
                             }
                             if let Some(path) = &remote
                                 && ui.button("Testar conexão").clicked()
                             {
-                                test = Some(path.clone());
+                                test = Some((path.clone(), entry.status.requirement.clone()));
                             }
                         });
                     });
@@ -223,7 +225,13 @@ impl LocalCodePilot {
                             }
                         }
                     });
-                    if can_stop.is_none() && !blocked_by.is_empty() {
+                    if entry
+                        .status
+                        .managed
+                        .as_ref()
+                        .is_some_and(|managed| managed.running)
+                        && !blocked_by.is_empty()
+                    {
                         ui.label(
                             RichText::new(format!(
                                 "Para parar o banco de dados, pare primeiro: {}",
@@ -236,14 +244,53 @@ impl LocalCodePilot {
                 });
             ui.add_space(4.0);
         }
-        if let Some(path) = stop {
-            self.stop_project_database(&path);
+        if let Some((path, server)) = stop {
+            self.stop_managed_server(&path, server);
         }
-        if let Some(path) = test {
-            self.test_remote_database(&path);
+        if let Some((path, requirement)) = test {
+            self.test_remote_requirement(&path, requirement);
         }
         if let Some((path, name)) = open {
             self.apply_project_action(ui.ctx(), ProjectCardAction::ShowInProjects(path, name));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use localcodepilot_runtime::databases::DatabaseRequirement;
+
+    fn requirement(host: Option<&str>, compose: Option<&str>) -> DatabaseRequirement {
+        DatabaseRequirement {
+            source: PathBuf::from(".env"),
+            engine: DatabaseEngine::MySql,
+            host: host.map(str::to_owned),
+            port: Some(3306),
+            compose_service: compose.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn only_a_database_on_another_computer_offers_a_connection_test() {
+        // Each row decides from its own database, so a project with a local and a remote
+        // database gets "Testar conexão" only on the remote row.
+        assert!(database_ui::is_remote_database(&requirement(
+            Some("db.exemplo.invalid"),
+            None
+        )));
+        assert!(!database_ui::is_remote_database(&requirement(
+            Some("127.0.0.1"),
+            None
+        )));
+        assert!(!database_ui::is_remote_database(&requirement(
+            Some("localhost"),
+            None
+        )));
+        assert!(!database_ui::is_remote_database(&requirement(
+            Some("db"),
+            Some("db")
+        )));
+        assert!(!database_ui::is_remote_database(&requirement(None, None)));
     }
 }
