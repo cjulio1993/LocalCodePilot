@@ -138,6 +138,31 @@ No Windows, caminhos com mais de 260 caracteres fazem o `pip` e o Maven wrapper 
 - Em projetos PHP, o `DB_HOST` literal em `wp-config.php` indica o destino MySQL. Quando o site tem Compose (na pasta do site, numa subpasta como `docker/` ou declarando a imagem do site em outra pasta do projeto), o aplicativo direciona o início aos containers: um nome como `db` só é resolvido na rede deles e aparece como banco em container, não como servidor remoto. A verificação de porta não confirma credenciais nem a existência do banco.
 - Aplicações relacionadas que vivem em repositórios ou diretórios separados ainda são tratadas separadamente. A identificação automática de microsserviços pertencentes ao mesmo ambiente ainda está em desenvolvimento.
 
+### Diagnóstico do cartão: regras e precedência
+
+O estado, o motivo e a ação de cada cartão vêm da primeira regra verdadeira, nesta ordem. Quando duas condições valem ao mesmo tempo (por exemplo, um processo que falhou num projeto com o manifesto ilegível), vale a que vem antes. Em **Detalhes técnicos**, "Por que este diagnóstico?" mostra a regra e o que o app encontrou. Um fato que o app não verificou aparece como "não verificado", nunca como causa presumida.
+
+| Ordem | Regra | Quando vale |
+|---|---|---|
+| 1 | Projeto rodando | um processo do app ou um container do projeto está rodando |
+| 2 | Preparação em andamento | uma instalação de dependências ou preparação do ambiente está rodando |
+| 3 | Preparação falhou | a última preparação terminou com erro |
+| 4 | Banco de dados em preparo | o banco do projeto está sendo preparado ou iniciado |
+| 5 | Compilação em andamento | as etapas de compilação antes do programa estão rodando |
+| 6 | Início em andamento | um processo está iniciando |
+| 7 | Banco de dados impediu o início | o último início parou no banco de dados |
+| 8 | Migrations falharam | a última execução das migrations terminou com erro |
+| 9 | Consulta de versões em andamento | o plano de Preparar ambiente está sendo montado |
+| 10 | Verificação do projeto em andamento | a primeira verificação do projeto não terminou |
+| 11 | Processo parou com erro | um processo terminou com erro; a causa só é dita quando foi verificada |
+| 12 | Manifesto ilegível | um manifesto existe, mas não pode ser lido |
+| 13 | Projeto só com containers | há Compose e nenhum comando de processo |
+| 14 | Sem comando de início | nenhuma entrada única foi encontrada |
+| 15 | Pronto para iniciar | comandos encontrados e requisitos atendidos |
+| 16 | Banco de dados parado | o servidor de banco do projeto não está rodando |
+| 17 | Falta preparar o ambiente | falta linguagem, compilador, programa ou dependência |
+| 18 | Requisito incompatível ou pendente | versão incompatível, extensão PHP ausente ou banco que recusa o projeto |
+
 ### Containers: execução controlada (em validação)
 
 A aba **Containers** detecta Dockerfile, Containerfile e manifests Compose e verifica Docker/Podman e o provedor Compose em segundo plano. Ela agrupa por projeto os serviços declarados e os containers que os motores informam: um container entra no projeto só quando o motor registrou a mesma pasta e o mesmo nome de ambiente Compose; os demais ficam em **Outros containers**. Cada serviço aparece como Rodando, Reiniciando, Pausado, Parado, Com problema (só quando o código de saída indica falha) ou Ainda não criado. **Parar** usa o motor em que o ambiente já está rodando. Quando o motor selecionado está disponível, o app pode validar a configuração, executar `up --detach`, `stop`, consultar o estado com `ps --all` no Docker ou `ps` no Podman, ler as 200 linhas mais recentes dos logs e construir um Dockerfile isolado. Cada ação mostra o comando e a pasta antes da confirmação, executa sem abrir console externo, mantém a saída numa área rolável e permite cancelamento; o limite por execução é de 30 minutos.
@@ -513,6 +538,10 @@ On Windows, paths longer than 260 characters make `pip` and the Maven wrapper fa
 - PostgreSQL, MySQL, MariaDB, SQL Server and SQLite declared in `.env`/`.env.local` appear in diagnostics; local ports are checked without exposing credentials. See [docs/DATABASES.md](DATABASES.md).
 - In PHP projects, a literal `DB_HOST` in `wp-config.php` identifies the MySQL destination. When the site has Compose (in the site folder, in a subfolder such as `docker/`, or declaring the site image elsewhere in the project), the app routes startup to Containers: a name such as `db` only resolves inside its network and is shown as a container database, not a remote server. A port check does not verify credentials or database existence.
 - Related applications stored in separate repositories or directories are still handled independently. Automatic grouping of microservices into one environment is still under development.
+
+### Card diagnosis: rules and precedence
+
+Each card's state, reason, and action come from the first rule that holds, in the order of the Portuguese table above (the rule names appear in Portuguese in the app). When two conditions hold at the same time, the earlier rule wins. In **Detalhes técnicos**, "Por que este diagnóstico?" shows the rule and what the app found. A fact the app did not check is shown as "não verificado" (not verified), never as a presumed cause.
 
 ### Containers: controlled execution (under validation)
 
