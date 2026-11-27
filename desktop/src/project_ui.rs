@@ -149,6 +149,8 @@ pub(super) struct ProjectFacts<'a> {
     pub environment_pending: bool,
     pub resolving_plan: bool,
     pub dependency_install: Option<&'a DependencyInstallStatus>,
+    /// The preparation running or last run installs the C/C++ compiler (T033.03).
+    pub preparing_compiler: bool,
     pub starting: bool,
     /// Steps before the program are running (compile before run, T028.02).
     pub building: bool,
@@ -268,14 +270,22 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         Some(DependencyInstallStatus::Running | DependencyInstallStatus::Cancelling) => {
             return summary(
                 ProjectState::Starting,
-                Some("Instalando dependências".into()),
+                Some(if facts.preparing_compiler {
+                    "Preparando o compilador C/C++".into()
+                } else {
+                    "Instalando dependências".into()
+                }),
                 PrimaryAction::ViewInstallLogs,
             );
         }
         Some(DependencyInstallStatus::Failed { .. }) => {
             return summary(
                 ProjectState::Problem,
-                Some("A instalação das dependências falhou".into()),
+                Some(if facts.preparing_compiler {
+                    super::COMPILER_FAILED.into()
+                } else {
+                    "A instalação das dependências falhou".into()
+                }),
                 PrimaryAction::ViewInstallLogs,
             );
         }
@@ -471,7 +481,8 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
 }
 
 fn language_missing(environment: &ProjectEnvironment) -> bool {
-    !environment.missing_programs.is_empty()
+    environment.missing_compiler
+        || !environment.missing_programs.is_empty()
         || environment
             .runtime_requirements
             .iter()
@@ -634,6 +645,10 @@ impl LocalCodePilot {
                 .as_ref()
                 .is_some_and(|(path, _)| path == &project.path),
             dependency_install,
+            preparing_compiler: self
+                .dependency_installs
+                .get(&project.path)
+                .is_some_and(|session| super::prepares_compiler(&session.plan)),
             starting: processes
                 .iter()
                 .any(|process| process.state == ProcessState::Starting),
@@ -1957,6 +1972,7 @@ mod tests {
             environment_pending: false,
             resolving_plan: false,
             dependency_install: None,
+            preparing_compiler: false,
             starting: false,
             building: false,
             running: false,

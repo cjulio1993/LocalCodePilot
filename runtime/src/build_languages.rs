@@ -177,37 +177,183 @@ fn debug_configuration_type(text: &str, platform: &str) -> Option<String> {
 /// MSBuild from the Visual Studio installed here, found by Microsoft's `vswhere` (MSBuild is
 /// not on the PATH). Windows only; read once.
 pub fn msbuild() -> Option<PathBuf> {
-    static FOUND: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    FOUND
-        .get_or_init(|| {
-            if !cfg!(windows) {
-                return None;
-            }
-            let installer = env::var_os("ProgramFiles(x86)")
-                .map(PathBuf::from)?
-                .join("Microsoft Visual Studio")
-                .join("Installer")
-                .join("vswhere.exe");
-            let mut command = std::process::Command::new(installer);
-            command.args([
-                "-latest",
-                "-products",
-                "*",
-                "-requires",
-                "Microsoft.Component.MSBuild",
-                "-find",
-                "MSBuild\\**\\Bin\\MSBuild.exe",
-            ]);
-            localcodepilot_platform::installations::configure_background_command(&mut command);
-            let output = command.output().ok()?;
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.is_file())
+    // Only a found MSBuild is kept: after "Preparar ambiente" installs the Build Tools, the
+    // next look finds it without restarting the app (T033.03).
+    static FOUND: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    if let Some(found) = FOUND.get() {
+        return Some(found.clone());
+    }
+    let found = vswhere(&[
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.Component.MSBuild",
+        "-find",
+        "MSBuild\\**\\Bin\\MSBuild.exe",
+    ])
+    .map(PathBuf::from)
+    .filter(|path| path.is_file())?;
+    Some(FOUND.get_or_init(|| found).clone())
+}
+
+/// The first line Microsoft's `vswhere` answers. Windows only.
+fn vswhere(args: &[&str]) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let installer = env::var_os("ProgramFiles(x86)")
+        .map(PathBuf::from)?
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+    let mut command = std::process::Command::new(installer);
+    command.args(args);
+    localcodepilot_platform::installations::configure_background_command(&mut command);
+    let output = command.output().ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+/// The Visual Studio component with the MSVC compiler, and the workload of the Build Tools
+/// that brings it (with the Windows SDK and CMake support among its recommended components).
+pub const MSVC_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
+pub const BUILD_TOOLS_PACKAGE: &str = "Microsoft.VisualStudio.2022.BuildTools";
+pub const BUILD_TOOLS_WORKLOAD: &str = "Microsoft.VisualStudio.Workload.VCTools";
+
+/// A C/C++ compiler is installed (T033.03):
+/// - Windows: a Visual Studio or Build Tools with the MSVC compiler, which CMake, Meson and
+///   MSBuild find on their own;
+/// - macOS: the Apple command line tools or Xcode (`xcode-select -p`), never `clang` itself,
+///   which opens the Apple installer when the tools are missing;
+/// - Linux: `cc`, `gcc` or `clang` on the PATH.
+///
+/// Found once, it is kept; a missing compiler is looked for again on the next check.
+pub fn cpp_compiler_available(path: Option<&std::ffi::OsStr>) -> bool {
+    static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // Debug builds only: lets the isolated test instance show the card of a machine without
+    // a compiler, on a machine that has one. "1": never found; a Visual Studio version
+    // ("17"): only an MSVC of that version or newer counts, so a real installation of the
+    // Build Tools 2022 is what the verification finds.
+    let minimum = test_minimum_visual_studio();
+    if minimum.as_deref() == Some("1") {
+        return false;
+    }
+    if minimum.is_none() && FOUND.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    let found = if cfg!(windows) {
+        let version = minimum.map(|major| format!("[{major}.0,)"));
+        let mut args = vec![
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            MSVC_COMPONENT,
+            "-property",
+            "installationPath",
+        ];
+        if let Some(version) = &version {
+            args.extend(["-version", version.as_str()]);
+        }
+        vswhere(&args).is_some()
+    } else if cfg!(target_os = "macos") {
+        apple_developer_tools()
+    } else {
+        ["cc", "gcc", "clang"].iter().any(|program| {
+            localcodepilot_platform::installations::find_executable(program, path).is_some()
         })
-        .clone()
+    };
+    if found {
+        FOUND.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    found
+}
+
+fn test_minimum_visual_studio() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    env::var("LCP_TESTE_SEM_COMPILADOR").ok()
+}
+
+/// A Build Tools 2022 already installed without the C++ workload: winget would answer
+/// "already installed", so the workload is added through the Visual Studio Installer of this
+/// installation instead (T033.03). Windows only.
+pub fn build_tools_without_cpp() -> Option<PathBuf> {
+    let path = vswhere(&[
+        "-latest",
+        "-products",
+        "Microsoft.VisualStudio.Product.BuildTools",
+        "-version",
+        "[17.0,18.0)",
+        "-property",
+        "installationPath",
+    ])?;
+    let with_cpp = vswhere(&[
+        "-latest",
+        "-products",
+        "Microsoft.VisualStudio.Product.BuildTools",
+        "-version",
+        "[17.0,18.0)",
+        "-requires",
+        MSVC_COMPONENT,
+        "-property",
+        "installationPath",
+    ]);
+    (with_cpp.as_deref() != Some(path.as_str())).then(|| PathBuf::from(path))
+}
+
+/// The Visual Studio Installer, which adds workloads to an installation.
+pub fn visual_studio_installer() -> Option<PathBuf> {
+    Some(
+        env::var_os("ProgramFiles(x86)")
+            .map(PathBuf::from)?
+            .join("Microsoft Visual Studio")
+            .join("Installer")
+            .join("setup.exe"),
+    )
+    .filter(|path| path.is_file())
+}
+
+/// `xcode-select -p` names an existing developer folder (command line tools or Xcode).
+fn apple_developer_tools() -> bool {
+    let mut command = std::process::Command::new("xcode-select");
+    command.arg("-p");
+    localcodepilot_platform::installations::configure_background_command(&mut command);
+    command.output().is_ok_and(|output| {
+        output.status.success()
+            && Path::new(String::from_utf8_lossy(&output.stdout).trim()).is_dir()
+    })
+}
+
+/// The development package a Linux distribution names for its C/C++ compiler, from the
+/// `ID` and `ID_LIKE` of `/etc/os-release`.
+pub fn linux_compiler_package(os_release: &str) -> Option<&'static str> {
+    let ids = os_release
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("ID=")
+                .or_else(|| line.strip_prefix("ID_LIKE="))
+        })
+        .flat_map(|value| value.trim_matches('"').split_whitespace())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    let has = |names: &[&str]| ids.iter().any(|id| names.contains(&id.as_str()));
+    if has(&["debian", "ubuntu"]) {
+        Some("build-essential")
+    } else if has(&["arch"]) {
+        Some("base-devel")
+    } else if has(&["alpine"]) {
+        Some("build-base")
+    } else if has(&["fedora", "rhel", "centos", "suse", "opensuse"]) {
+        Some("gcc-c++")
+    } else {
+        None
+    }
 }
 
 /// The file without `#` comments, so a commented-out `add_executable` or `executable` is
@@ -467,6 +613,38 @@ pub fn build_plan(
                 build.join("bin").join(format!("{}.exe", target.name)),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod compiler_tests {
+    use super::*;
+
+    #[test]
+    fn the_compiler_package_follows_the_distribution() {
+        let release = |text: &str| linux_compiler_package(text);
+        assert_eq!(
+            release("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"),
+            Some("build-essential")
+        );
+        assert_eq!(
+            release("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"),
+            Some("build-essential")
+        );
+        assert_eq!(release("ID=fedora\n"), Some("gcc-c++"));
+        assert_eq!(
+            release("ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n"),
+            Some("gcc-c++")
+        );
+        assert_eq!(release("ID=arch\n"), Some("base-devel"));
+        assert_eq!(release("ID=manjaro\nID_LIKE=arch\n"), Some("base-devel"));
+        assert_eq!(release("ID=alpine\n"), Some("build-base"));
+        assert_eq!(
+            release("ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n"),
+            Some("gcc-c++")
+        );
+        assert_eq!(release("ID=nixos\n"), None);
+        assert_eq!(release(""), None);
     }
 }
 
