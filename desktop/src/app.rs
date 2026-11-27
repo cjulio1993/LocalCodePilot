@@ -4,6 +4,8 @@ mod build_steps;
 mod command_trust;
 #[path = "command_ui.rs"]
 mod command_ui;
+#[path = "components.rs"]
+mod components;
 #[path = "container_ui.rs"]
 mod container_ui;
 #[path = "database_ui.rs"]
@@ -558,6 +560,8 @@ pub struct LocalCodePilot {
     workspace_dirty: bool,
     /// The configuration recovery notice is shown at the top until closed (T021).
     config_recovery_notice: bool,
+    /// The last search for projects failed, and why (T036).
+    discovery_error: Option<String>,
     /// "LocalCodePilot atualizado para {versão}", while open (T035).
     whats_new: Option<whats_new_ui::WhatsNew>,
     /// "Ver novidades", focused again on the frame after the modal closes.
@@ -701,6 +705,7 @@ impl LocalCodePilot {
                 || config_recovery_notice
                 || news_seen_changed,
             config_recovery_notice,
+            discovery_error: None,
             whats_new: show_news.then(|| whats_new_ui::WhatsNew::current(None)),
             whats_new_focus_return: None,
             last_workspace_save: Instant::now(),
@@ -1288,6 +1293,7 @@ impl LocalCodePilot {
         };
         match receiver.try_recv() {
             Ok(DiscoveryEvent::Projects(projects)) => {
+                self.discovery_error = None;
                 self.notify(format!(
                     "{} projeto(s) encontrado(s) · atualizando diagnósticos...",
                     projects.len()
@@ -1309,6 +1315,8 @@ impl LocalCodePilot {
             }
             Ok(DiscoveryEvent::Failed(error)) => {
                 self.notify(format!("Não foi possível concluir a varredura: {error}"));
+                // The Overview says it too, instead of "Nenhum projeto encontrado" (T036).
+                self.discovery_error = Some(error);
                 self.discovery = None;
             }
             Err(TryRecvError::Disconnected) => {
@@ -2672,44 +2680,24 @@ impl LocalCodePilot {
         if !self.confirm_clear_history {
             return;
         }
-        let mut open = true;
-        let mut cancel = false;
-        let mut confirm = false;
-        egui::Window::new("Limpar histórico de logs?")
-            .id(egui::Id::unique("clear-history-confirmation"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .default_width(460.0)
-            .show(root_ui, |ui| {
-                ui.label(
-                    "Os logs salvos de serviços e de preparação serão removidos deste computador. Esta ação não pode ser desfeita.",
-                );
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancelar").clicked() {
-                        cancel = true;
-                    }
-                    if ui
-                        .add(
-                            egui::Button::new("Limpar histórico")
-                                .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.22)),
-                        )
-                        .clicked()
-                    {
-                        confirm = true;
-                    }
-                });
-            });
-        if confirm {
-            self.confirm_clear_history = false;
-            self.workspace_state.clear_saved_logs();
-            self.workspace_dirty = true;
-            self.persist_workspace_state(true);
-            self.notify("Histórico de logs removido.");
-        } else if cancel || !open {
-            self.confirm_clear_history = false;
+        let choice = components::Confirmation {
+            id: "clear-history",
+            title: "Limpar histórico de logs?",
+            consequence: "Os logs salvos de serviços e de preparação serão removidos deste computador. Esta ação não pode ser desfeita.",
+            confirm: "Limpar histórico",
+            destructive: true,
+        }
+        .show(root_ui.ctx(), |_| {});
+        match choice {
+            Some(components::Choice::Confirm) => {
+                self.confirm_clear_history = false;
+                self.workspace_state.clear_saved_logs();
+                self.workspace_dirty = true;
+                self.persist_workspace_state(true);
+                self.notify("Histórico de logs removido.");
+            }
+            Some(components::Choice::Cancel) => self.confirm_clear_history = false,
+            None => {}
         }
     }
 
@@ -4931,6 +4919,14 @@ fn spawn_discovery(
 ) -> Receiver<DiscoveryEvent> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
+        // Debug builds only: lets the isolated test instance show a failed search (T036).
+        if cfg!(debug_assertions) && std::env::var_os("LCP_TESTE_FALHA_VARREDURA").is_some() {
+            let _ = sender.send(DiscoveryEvent::Failed(
+                "a pasta de teste não pôde ser lida".into(),
+            ));
+            repaint.request_repaint();
+            return;
+        }
         let service = DiscoveryService::new(source, ManifestRuntimeDetector);
         let catalog = match service.discover() {
             Ok(catalog) => catalog,

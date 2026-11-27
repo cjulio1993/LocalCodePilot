@@ -11,6 +11,16 @@ pub const MUTED: Color32 = Color32::from_rgb(160, 167, 180);
 pub const WARNING: Color32 = Color32::from_rgb(255, 205, 75);
 pub const DANGER: Color32 = Color32::from_rgb(235, 87, 87);
 
+// Text sizes by role (T036), from the sizes the screens already used most.
+/// Window and modal titles.
+pub const TEXT_TITLE: f32 = 16.0;
+/// The title of a page state (loading, empty, error).
+pub const TEXT_HEADING: f32 = 15.0;
+/// Explanations and the main text of a card.
+pub const TEXT_BODY: f32 = 13.0;
+/// Secondary lines: details, hints, badges.
+pub const TEXT_DETAIL: f32 = 12.0;
+
 pub fn configure(ctx: &egui::Context) {
     let mut visuals = Visuals::dark();
     visuals.panel_fill = BACKGROUND;

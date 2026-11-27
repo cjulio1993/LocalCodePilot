@@ -1199,7 +1199,7 @@ impl LocalCodePilot {
         ui.label(
             RichText::new("O que está rodando, o que precisa de atenção e o que está parado.")
                 .color(theme::MUTED)
-                .size(13.0),
+                .size(theme::TEXT_BODY),
         );
         ui.add_space(16.0);
         let summaries = self.summaries();
@@ -1249,7 +1249,10 @@ impl LocalCodePilot {
                     )
                     && !is_localcodepilot_qa_project(&project.path)
             }) {
-                ui.label(RichText::new(format!("Você pode iniciar {}.", project.name)).size(13.0));
+                ui.label(
+                    RichText::new(format!("Você pode iniciar {}.", project.name))
+                        .size(theme::TEXT_BODY),
+                );
                 folder_line(ui, &project.path, folder(project));
                 ui.add_space(4.0);
                 if primary_button(ui, &summary.primary, 180.0) {
@@ -1314,52 +1317,40 @@ impl LocalCodePilot {
     }
 
     fn overview_without_projects(&mut self, ui: &mut egui::Ui) {
-        Frame::new()
-            .fill(theme::SURFACE)
-            .stroke(Stroke::new(1.0, theme::BORDER))
-            .corner_radius(12)
-            .inner_margin(Margin::same(24))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                if self.discovery.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(RichText::new("Procurando projetos...").strong().size(15.0));
-                    });
-                    ui.label(
-                        RichText::new("Estamos examinando as pastas mais comuns da sua máquina.")
-                            .color(theme::MUTED)
-                            .size(13.0),
-                    );
-                    return;
-                }
-                ui.label(RichText::new("Nenhum projeto encontrado").strong().size(15.0));
-                ui.label(
-                    RichText::new(
-                        "Escolha a pasta onde ficam seus projetos. O LocalCodePilot encontra e organiza todos eles.",
-                    )
-                    .size(13.0),
-                );
-                ui.add_space(10.0);
-                let add = format!("{PLUS}  Adicionar pasta");
-                if announced(
-                    ui.add(
-                        egui::Button::new(RichText::new(&add).color(Color32::WHITE).strong())
-                            .fill(theme::PRIMARY)
-                            .min_size(egui::vec2(180.0, 34.0)),
-                    ),
-                    egui::Role::Button,
-                    &add,
-                )
-                .clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .set_title("Escolha uma pasta com projetos")
-                        .pick_folder()
-                {
-                    let ctx = ui.ctx().clone();
-                    self.add_scan_root(&ctx, path);
-                }
-            });
+        if self.discovery.is_some() {
+            components::loading_state(
+                ui,
+                "Procurando projetos...",
+                "Estamos examinando as pastas mais comuns da sua máquina.",
+            );
+            return;
+        }
+        // The search failed: say why instead of "Nenhum projeto encontrado" (T036).
+        if let Some(error) = self.discovery_error.clone() {
+            if components::error_state(
+                ui,
+                "Não foi possível concluir a varredura",
+                &error,
+                "Tentar de novo",
+            ) {
+                let ctx = ui.ctx().clone();
+                self.refresh_projects(&ctx);
+            }
+            return;
+        }
+        let add = format!("{PLUS}  Adicionar pasta");
+        if components::empty_state(
+            ui,
+            "Nenhum projeto encontrado",
+            "Escolha a pasta onde ficam seus projetos. O LocalCodePilot encontra e organiza todos eles.",
+            Some(&add),
+        ) && let Some(path) = rfd::FileDialog::new()
+            .set_title("Escolha uma pasta com projetos")
+            .pick_folder()
+        {
+            let ctx = ui.ctx().clone();
+            self.add_scan_root(&ctx, path);
+        }
     }
 
     /// Filter bar, cards or list, on the Projects page.
@@ -1402,7 +1393,11 @@ impl LocalCodePilot {
                 (false, LIST, "Ver como lista"),
             ] {
                 let response = ui
-                    .selectable_value(&mut list, !cards, RichText::new(icon).size(15.0))
+                    .selectable_value(
+                        &mut list,
+                        !cards,
+                        RichText::new(icon).size(theme::TEXT_HEADING),
+                    )
                     .on_hover_text(name);
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(egui::Role::Button, true, list != cards, name)
@@ -1569,14 +1564,12 @@ fn section_title(ui: &mut egui::Ui, title: &str, count: usize) {
     ui.label(
         RichText::new(format!("{title} ({count})"))
             .strong()
-            .size(16.0),
+            .size(theme::TEXT_TITLE),
     );
     ui.add_space(6.0);
 }
 
-fn empty_hint(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).color(theme::MUTED).size(13.0));
-}
+use super::components::empty_hint;
 
 fn state_badge(ui: &mut egui::Ui, summary: &ProjectSummary) {
     let state = summary.state;
@@ -1585,18 +1578,26 @@ fn state_badge(ui: &mut egui::Ui, summary: &ProjectSummary) {
     } else {
         CIRCLE
     };
-    ui.label(RichText::new(icon).color(state.color()).size(12.0));
+    ui.label(
+        RichText::new(icon)
+            .color(state.color())
+            .size(theme::TEXT_DETAIL),
+    );
     ui.label(
         RichText::new(state.label())
             .color(state.color())
             .strong()
-            .size(13.0),
+            .size(theme::TEXT_BODY),
     );
 }
 
 fn http_badge(ui: &mut egui::Ui, http: HttpAvailability) {
-    ui.label(RichText::new(http.label()).color(http.color()).size(12.0))
-        .on_hover_text(http.detail());
+    ui.label(
+        RichText::new(http.label())
+            .color(http.color())
+            .size(theme::TEXT_DETAIL),
+    )
+    .on_hover_text(http.detail());
 }
 
 /// Container addresses come from published ports and may not be a site.
@@ -1607,10 +1608,14 @@ fn address_label(ui: &mut egui::Ui, summary: &ProjectSummary, url: &str) {
             ui.label(
                 RichText::new("Endereço provável:")
                     .color(theme::MUTED)
-                    .size(12.0),
+                    .size(theme::TEXT_DETAIL),
             );
         }
-        ui.label(RichText::new(short_url(url)).monospace().size(12.0));
+        ui.label(
+            RichText::new(short_url(url))
+                .monospace()
+                .size(theme::TEXT_DETAIL),
+        );
     });
 }
 
@@ -1700,8 +1705,12 @@ fn project_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(&project.name).strong().size(15.0))
-                    .on_hover_text(display_path(&project.path));
+                ui.label(
+                    RichText::new(&project.name)
+                        .strong()
+                        .size(theme::TEXT_HEADING),
+                )
+                .on_hover_text(display_path(&project.path));
                 // One label only: the stack, not how it runs (the actions already say Containers).
                 if let Some(technology) = project
                     .shown_technologies()
@@ -1710,13 +1719,13 @@ fn project_row(
                     ui.label(
                         RichText::new(technology.to_string())
                             .color(technology_color(technology))
-                            .size(12.0),
+                            .size(theme::TEXT_DETAIL),
                     );
                 } else if let Some(runtime) = project.runtimes.first() {
                     ui.label(
                         RichText::new(runtime.to_string())
                             .color(runtime_color(*runtime))
-                            .size(12.0),
+                            .size(theme::TEXT_DETAIL),
                     );
                 }
                 ui.add_space(6.0);
@@ -1728,7 +1737,11 @@ fn project_row(
                     address_label(ui, summary, url);
                 }
                 if let Some(reason) = &summary.reason {
-                    ui.label(RichText::new(reason).color(theme::MUTED).size(13.0));
+                    ui.label(
+                        RichText::new(reason)
+                            .color(theme::MUTED)
+                            .size(theme::TEXT_BODY),
+                    );
                 }
             });
             folder_line(ui, &project.path, folder);
@@ -1779,7 +1792,7 @@ pub(super) fn folder_line(ui: &mut egui::Ui, path: &Path, folder: Option<&str>) 
             egui::Label::new(
                 RichText::new(format!("Pasta: {folder}"))
                     .color(theme::MUTED)
-                    .size(12.0),
+                    .size(theme::TEXT_DETAIL),
             )
             .wrap(),
         )
@@ -1989,8 +2002,12 @@ impl ProjectCard<'_> {
         } = *self;
         let path = || project.path.clone();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&project.name).strong().size(16.0))
-                .on_hover_text(display_path(&project.path));
+            ui.label(
+                RichText::new(&project.name)
+                    .strong()
+                    .size(theme::TEXT_TITLE),
+            )
+            .on_hover_text(display_path(&project.path));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let name = if self.favorite {
                     "Remover dos favoritos"
@@ -2048,7 +2065,7 @@ impl ProjectCard<'_> {
             ui.label(
                 RichText::new("Comando definido por você")
                     .color(theme::MUTED)
-                    .size(12.0),
+                    .size(theme::TEXT_DETAIL),
             );
         }
         cut
@@ -2102,38 +2119,49 @@ impl ProjectCard<'_> {
         let mut action = None;
         // What the closed card shortened is shown in full here, where the keyboard reaches.
         if let Some(reason) = &cut.reason {
-            ui.label(RichText::new(reason).size(13.0));
+            ui.label(RichText::new(reason).size(theme::TEXT_BODY));
         }
         if let Some(badges) = &cut.badges {
-            ui.label(RichText::new(badges).color(theme::MUTED).size(12.0));
+            ui.label(
+                RichText::new(badges)
+                    .color(theme::MUTED)
+                    .size(theme::TEXT_DETAIL),
+            );
         }
         // The reason is already on the card; repeating it here adds nothing.
         let reason = self.summary.reason.as_deref().unwrap_or_default();
         let detail = |ui: &mut egui::Ui, text: &str| {
             if !reason.starts_with(text.trim_end_matches('.')) {
-                ui.label(RichText::new(text).color(theme::MUTED).size(12.0));
+                ui.label(
+                    RichText::new(text)
+                        .color(theme::MUTED)
+                        .size(theme::TEXT_DETAIL),
+                );
             }
         };
         // Why the card says what it says: the rule and what the app found (T034).
         ui.label(
             RichText::new("Por que este diagnóstico?")
                 .strong()
-                .size(12.0),
+                .size(theme::TEXT_DETAIL),
         );
         ui.add(
             egui::Label::new(
-                RichText::new(format!("Regra: {}", self.summary.rule.name())).size(12.0),
+                RichText::new(format!("Regra: {}", self.summary.rule.name()))
+                    .size(theme::TEXT_DETAIL),
             )
             .selectable(true),
         );
         if self.summary.evidence.is_empty() {
-            ui.label(RichText::new("Encontrado: não verificado").size(12.0));
+            ui.label(RichText::new("Encontrado: não verificado").size(theme::TEXT_DETAIL));
         }
         for line in &self.summary.evidence {
             ui.add(
-                egui::Label::new(RichText::new(format!("Encontrado: {line}")).size(12.0))
-                    .selectable(true)
-                    .wrap(),
+                egui::Label::new(
+                    RichText::new(format!("Encontrado: {line}")).size(theme::TEXT_DETAIL),
+                )
+                .selectable(true)
+                .wrap(),
             );
         }
         // A file for support, without secrets; the person reviews it before sharing.
@@ -2150,7 +2178,11 @@ impl ProjectCard<'_> {
             .flat_map(|environment| &environment.databases)
         {
             for line in database.technical() {
-                ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+                ui.label(
+                    RichText::new(line)
+                        .color(theme::MUTED)
+                        .size(theme::TEXT_DETAIL),
+                );
             }
         }
         let extras = &self.database;
@@ -2159,7 +2191,11 @@ impl ProjectCard<'_> {
             .iter()
             .chain(extras.failure.iter().flat_map(|failure| &failure.details))
         {
-            ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+            ui.label(
+                RichText::new(line)
+                    .color(theme::MUTED)
+                    .size(theme::TEXT_DETAIL),
+            );
         }
         if let Some(test) = &extras.remote_test {
             let status = DatabaseStatus {
@@ -2175,7 +2211,11 @@ impl ProjectCard<'_> {
                 managed: None,
             };
             if let Some(line) = status.technical().get(1) {
-                ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+                ui.label(
+                    RichText::new(line)
+                        .color(theme::MUTED)
+                        .size(theme::TEXT_DETAIL),
+                );
             }
         }
         ui.horizontal_wrapped(|ui| {
@@ -2201,7 +2241,7 @@ impl ProjectCard<'_> {
                     extras.stop_blocked_by.join(", ")
                 ))
                 .color(theme::MUTED)
-                .size(12.0),
+                .size(theme::TEXT_DETAIL),
             );
         }
         ui.horizontal_wrapped(|ui| {
@@ -2215,7 +2255,7 @@ impl ProjectCard<'_> {
                         .to_string_lossy()
                 ))
                 .color(theme::MUTED)
-                .size(12.0),
+                .size(theme::TEXT_DETAIL),
             )
             .on_hover_text(display_path(&project.path));
             if ui.small_button("Copiar caminho").clicked() {
@@ -2264,7 +2304,7 @@ impl ProjectCard<'_> {
                     command.command_line()
                 ))
                 .color(theme::MUTED)
-                .size(12.0),
+                .size(theme::TEXT_DETAIL),
             );
             ui.horizontal_wrapped(|ui| {
                 let edit = format!("Editar {}", command.name);

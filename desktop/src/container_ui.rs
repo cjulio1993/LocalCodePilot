@@ -971,43 +971,28 @@ impl LocalCodePilot {
         let Some(request) = &self.container_state.volume_confirmation else {
             return;
         };
-        let mut confirm = false;
-        let mut cancel = false;
-        egui::Window::new("Confirmar dados do ambiente")
-            .id(egui::Id::unique("compose-volume-confirmation"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_width((ctx.content_rect().width() - 48.0).clamp(240.0, 520.0));
-                ui.label(format!(
-                    "Confirme que estes volumes do {} pertencem ao ambiente em {}:",
-                    request.engine,
-                    display_path(&request.directory)
-                ));
-                for volume in &request.volumes {
-                    ui.label(RichText::new(&volume.name).monospace());
-                }
-                ui.label(
-                    RichText::new(
-                        "Ao iniciar, o ambiente vai usar esses dados. Confirme só se eles foram criados por este projeto.",
-                    )
-                    .color(Color32::from_rgb(255, 205, 75)),
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancelar").clicked() {
-                        cancel = true;
-                    }
-                    if ui
-                        .add(egui::Button::new("Confirmar que são deste projeto").fill(theme::PRIMARY))
-                        .clicked()
-                    {
-                        confirm = true;
-                    }
-                });
-            });
-        if cancel {
+        // The same confirmation as before, now with the shared component: focus on
+        // "Cancelar", Tab kept inside, Esc cancels (T036). Nothing is recorded before
+        // "Confirmar que são deste projeto".
+        let choice = components::Confirmation {
+            id: "compose-volume",
+            title: "Confirmar dados do ambiente",
+            consequence: "Ao iniciar, o ambiente vai usar esses dados. Confirme só se eles foram criados por este projeto.",
+            confirm: "Confirmar que são deste projeto",
+            destructive: false,
+        }
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "Confirme que estes volumes do {} pertencem ao ambiente em {}:",
+                request.engine,
+                display_path(&request.directory)
+            ));
+            for volume in &request.volumes {
+                ui.label(RichText::new(&volume.name).monospace());
+            }
+        });
+        let confirm = choice == Some(components::Choice::Confirm);
+        if choice == Some(components::Choice::Cancel) {
             self.container_state.volume_confirmation = None;
         }
         if confirm && let Some(request) = self.container_state.volume_confirmation.take() {
