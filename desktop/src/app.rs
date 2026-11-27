@@ -11,6 +11,8 @@ mod container_ui;
 #[path = "database_ui.rs"]
 mod database_ui;
 use database_ui::{DatabaseStatus, managed_info};
+#[path = "environment_ui.rs"]
+mod environment_ui;
 #[path = "help_ui.rs"]
 mod help_ui;
 #[path = "language_ui.rs"]
@@ -124,6 +126,8 @@ enum Page {
     Projects,
     Processes,
     Containers,
+    /// Ambiente: languages and container engines of this computer (T037.05).
+    Environment,
     Help,
     Settings,
 }
@@ -135,6 +139,7 @@ impl Page {
             Self::Projects => "projects",
             Self::Processes => "processes",
             Self::Containers => "containers",
+            Self::Environment => "environment",
             Self::Help => "help",
             Self::Settings => "settings",
         }
@@ -151,6 +156,7 @@ impl Page {
             "projects" => Self::Projects,
             "processes" => Self::Processes,
             "containers" => Self::Containers,
+            "environment" => Self::Environment,
             "help" => Self::Help,
             "settings" => Self::Settings,
             _ => Self::Overview,
@@ -1170,6 +1176,13 @@ impl LocalCodePilot {
                         );
                         // One entry for what runs: Processos and Containers are its tabs.
                         self.nav_button(ui, Page::Processes, CUBE, "Serviços", None);
+                        self.nav_button(
+                            ui,
+                            Page::Environment,
+                            egui_phosphor::regular::DESKTOP,
+                            "Ambiente",
+                            None,
+                        );
                         ui.add_space(14.0);
                         nav_group(ui, collapsed, "Aplicativo");
                         self.nav_button(ui, Page::Help, BOOK_OPEN, "Ajuda", None);
@@ -1329,7 +1342,11 @@ impl LocalCodePilot {
                         let search_hint = match self.page {
                             Page::Overview => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
-                            Page::Projects | Page::Help | Page::Settings | Page::Containers => None,
+                            Page::Projects
+                            | Page::Help
+                            | Page::Settings
+                            | Page::Containers
+                            | Page::Environment => None,
                         };
                         if let Some(search_hint) = search_hint {
                             let search = ui.add_sized(
@@ -1354,6 +1371,7 @@ impl LocalCodePilot {
             Page::Overview => "Visão geral",
             Page::Projects => "Projetos",
             Page::Processes | Page::Containers => "Serviços",
+            Page::Environment => "Ambiente",
             Page::Help => "Ajuda",
             Page::Settings => "Configurações",
         }
@@ -4785,15 +4803,18 @@ impl LocalCodePilot {
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("LocalCodePilot {}", updates::current_version())).strong());
+                // The installed version and what it does on the left, the actions on the
+                // right (T037.05).
+                let explanation = "A consulta automática acontece uma vez por dia ao abrir o app. Você pode verificar agora a qualquer momento.";
+                let version = format!("LocalCodePilot {}", updates::current_version());
+                components::settings_row(ui, &version, explanation, |ui| {
+                    if ui.add_enabled(self.update_session.check.is_none() && !updating, egui::Button::new("Verificar se há atualizações")).clicked() {
+                        retry_check = true;
+                    }
                     // The news of this version, again (T035).
                     let news = ui.button("Ver novidades");
                     if news.clicked() {
                         open_news = Some(news.id);
-                    }
-                    if ui.add_enabled(self.update_session.check.is_none() && !updating, egui::Button::new("Verificar se há atualizações")).clicked() {
-                        retry_check = true;
                     }
                     if automatic_update
                         && !refused
@@ -4868,7 +4889,6 @@ impl LocalCodePilot {
                 if self.workspace_state.last_update_check > 0 {
                     ui.label(RichText::new(format!("Última consulta concluída: {}", relative_time(self.workspace_state.last_update_check))).color(theme::MUTED).size(10.0));
                 }
-                ui.label(RichText::new("A consulta automática acontece uma vez por dia ao abrir o app. Você pode verificar agora a qualquer momento.").color(theme::MUTED).size(10.0));
             });
         if let Some(origin) = open_news {
             self.open_whats_new(Some(origin));
@@ -4883,25 +4903,26 @@ impl LocalCodePilot {
         if start_install && let Some(update) = available_update {
             self.request_update_install(&update, ui.ctx().clone());
         }
+        // The languages moved to Ambiente (T037.05).
         ui.add_space(24.0);
-        self.languages_section(ui);
-
-        ui.add_space(18.0);
-        ui.heading("Histórico de preparação");
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Limpar histórico").clicked() {
-                self.confirm_clear_history = true;
-            }
-            ui.label(
-                RichText::new(
-                    "Remove os logs de serviços e de preparação salvos neste computador. Não interrompe projetos em execução.",
-                )
-                .color(theme::MUTED)
-                .size(10.0),
-            );
-        });
+        ui.heading("Logs e histórico");
         ui.add_space(8.0);
+        let clear = components::settings_row(
+            ui,
+            "Logs salvos",
+            "Remove os logs de serviços e de preparação salvos neste computador. Não interrompe projetos em execução.",
+            |ui| ui.button("Limpar histórico").clicked(),
+        );
+        if clear {
+            self.confirm_clear_history = true;
+        }
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new("Histórico de preparação")
+                .strong()
+                .size(theme::TEXT_BODY),
+        );
+        ui.add_space(4.0);
         if self.workspace_state.preparations.is_empty() {
             ui.label(
                 RichText::new("Nenhuma preparação foi executada nesta máquina.")
@@ -5000,6 +5021,7 @@ impl LocalCodePilot {
                     Page::Projects => self.projects_page(&ctx, ui),
                     Page::Processes => self.processes_page(ui),
                     Page::Settings => self.settings_page(ui),
+                    Page::Environment => self.environment_page(ui),
                     Page::Containers => self.containers_page(ui),
                     Page::Help => self.help_page(ui),
                 });
@@ -8471,6 +8493,7 @@ mod tests {
             Page::Projects,
             Page::Processes,
             Page::Containers,
+            Page::Environment,
             Page::Help,
             Page::Settings,
         ] {

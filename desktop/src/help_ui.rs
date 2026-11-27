@@ -314,7 +314,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Linguagens neste computador",
-                "em Configurações, cada linguagem aparece com a versão instalada ou como não encontrada nos locais verificados, e Detalhes técnicos mostra onde o aplicativo procurou.",
+                "em Ambiente, cada linguagem aparece com a versão instalada ou como não encontrada nos locais verificados, e Detalhes técnicos mostra onde o aplicativo procurou.",
             ),
             Block::Item(
                 "Processos",

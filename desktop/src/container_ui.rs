@@ -337,7 +337,7 @@ struct PageRequests {
     check_again: bool,
 }
 
-fn engine_short_status(diagnosis: &EngineDiagnosis) -> (&'static str, Color32) {
+pub(super) fn engine_short_status(diagnosis: &EngineDiagnosis) -> (&'static str, Color32) {
     match diagnosis.state {
         EngineState::Ready if diagnosis.compose_available => ("pronto", theme::SUCCESS),
         EngineState::Ready => ("Compose não confirmado", theme::WARNING),
@@ -643,6 +643,13 @@ enum ContainerRefresh {
     RuntimeOnly,
 }
 
+impl ContainerState {
+    /// A check of the engines and files is running (Ambiente shows it, T037.05).
+    pub(super) fn checking(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
 /// Pages that show container state and how often they refresh it.
 fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)> {
     match page {
@@ -650,6 +657,8 @@ fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)
         Page::Overview | Page::Projects | Page::Processes => {
             Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
         }
+        // Ambiente shows whether each engine is available (T037.05).
+        Page::Environment => Some((Duration::from_secs(30), ContainerRefresh::Full)),
         Page::Help | Page::Settings => None,
     }
 }
