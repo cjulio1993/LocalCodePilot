@@ -1,6 +1,6 @@
 //! E2E of the database containers the app manages (CI on Linux with Docker, or any computer
 //! with a container engine ready):
-//! `sql_server_check <docker|podman> <folder> <port> [sqlserver|postgresql]`.
+//! `sql_server_check <docker|podman> <folder> <port> [sqlserver|postgresql|mysql|mariadb]`.
 //! PostgreSQL (T030) also checks that the port is published only on 127.0.0.1 and that the
 //! project's role has no server-wide rights.
 //! Accepts the license on behalf of the test only (the app never does: the person checks the
@@ -62,6 +62,8 @@ fn project(
             match kind {
                 ContainerKind::SqlServer => "sqlsrv",
                 ContainerKind::PostgreSql => "pgsql",
+                ContainerKind::MySql => "mysql",
+                ContainerKind::MariaDb => "mariadb",
             }
         ),
     )
@@ -71,6 +73,8 @@ fn project(
         engine: match kind {
             ContainerKind::SqlServer => DatabaseEngine::SqlServer,
             ContainerKind::PostgreSql => DatabaseEngine::PostgreSql,
+            ContainerKind::MySql => DatabaseEngine::MySql,
+            ContainerKind::MariaDb => DatabaseEngine::MariaDb,
         },
         host: Some("127.0.0.1".into()),
         port: Some(port),
@@ -105,6 +109,8 @@ fn main() -> ExitCode {
         .unwrap_or(14333);
     let kind = match arguments.get(3).map(String::as_str) {
         Some("postgresql") => ContainerKind::PostgreSql,
+        Some("mysql") => ContainerKind::MySql,
+        Some("mariadb") => ContainerKind::MariaDb,
         _ => ContainerKind::SqlServer,
     };
     fs::create_dir_all(&root).unwrap();
@@ -271,9 +277,15 @@ fn main() -> ExitCode {
         "app_loja",
         "senha'do-projeto",
     );
+    // MySQL and MariaDB answer a user with rights on its own database only with "access
+    // denied" (1044) for any other database, existing or not: they never tell it apart.
+    let expected_missing = match kind {
+        ContainerKind::MySql | ContainerKind::MariaDb => ConnectionOutcome::AccessDenied,
+        _ => ConnectionOutcome::DatabaseMissing,
+    };
     check(
-        "banco ausente",
-        login(&missing) == Some(ConnectionOutcome::DatabaseMissing),
+        "outro banco: ausente ou sem acesso",
+        login(&missing) == Some(expected_missing),
         format!(" {:?}", login(&missing)),
     );
     let stopped = sql_server_container::stop(&server, None);

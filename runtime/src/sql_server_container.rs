@@ -54,6 +54,20 @@ pub const POSTGRES_PREPARATION_FAILED: &str =
     "Não foi possível concluir a preparação do PostgreSQL. Seus dados foram mantidos.";
 pub const POSTGRES_STOP_NOT_CONFIRMED: &str = "Não foi possível confirmar que o PostgreSQL parou. Verifique o container na página Containers.";
 
+/// MySQL's and MariaDB's Docker Official Images (T032), for the systems without a native
+/// package (MariaDB on macOS, both on Linux ARM...), pinned by the digest of their
+/// multi-platform index (linux/amd64 and linux/arm64), read from registry-1.docker.io on
+/// 2026-11-27. MariaDB 12.3.4 has no official image yet: 12.3.3 is the latest of 12.3.
+pub const MYSQL_IMAGE: &str = "docker.io/library/mysql:9.7.4-oraclelinux9@sha256:1f2ca53a9e94ff9f1f313099fa7dc7fb2f72e180ca5b2ef83574031e451bbbf1";
+pub const MARIADB_IMAGE: &str = "docker.io/library/mariadb:12.3.3-noble@sha256:4aaf88b3106382c8c18e49f0cec60267be618fc22f858c4503afb2a2555afed3";
+/// The compressed layers for amd64 and arm64 (MySQL 251/247 MB, MariaDB 101/98 MB).
+pub const MYSQL_APPROXIMATE_DOWNLOAD: &str = "cerca de 250 MB";
+pub const MARIADB_APPROXIMATE_DOWNLOAD: &str = "cerca de 100 MB";
+/// The image extracted by the engine plus the data of a new server, measured by
+/// `examples/sql_server_check.rs` in CI on 2026-11-27 (MySQL 910 MB, MariaDB 335 MB extracted).
+pub const MYSQL_APPROXIMATE_SPACE: &str = "cerca de 1,1 GB";
+pub const MARIADB_APPROXIMATE_SPACE: &str = "cerca de 450 MB";
+
 /// What runs in the container. Registries written before T030 have no kind: SQL Server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ContainerKind {
@@ -62,13 +76,26 @@ pub enum ContainerKind {
     SqlServer,
     #[serde(rename = "postgresql")]
     PostgreSql,
+    #[serde(rename = "mysql")]
+    MySql,
+    #[serde(rename = "mariadb")]
+    MariaDb,
 }
 
 impl ContainerKind {
+    pub const ALL: [Self; 4] = [
+        Self::SqlServer,
+        Self::PostgreSql,
+        Self::MySql,
+        Self::MariaDb,
+    ];
+
     pub fn image(self) -> &'static str {
         match self {
             Self::SqlServer => IMAGE,
             Self::PostgreSql => POSTGRES_IMAGE,
+            Self::MySql => MYSQL_IMAGE,
+            Self::MariaDb => MARIADB_IMAGE,
         }
     }
 
@@ -76,6 +103,27 @@ impl ContainerKind {
         match self {
             Self::SqlServer => VERSION_LABEL,
             Self::PostgreSql => POSTGRES_VERSION_LABEL,
+            Self::MySql => "MySQL 9.7.4",
+            Self::MariaDb => "MariaDB 12.3.3",
+        }
+    }
+
+    /// The download and the space after preparing, for the confirmation (measured).
+    pub fn approximate_download(self) -> &'static str {
+        match self {
+            Self::SqlServer => APPROXIMATE_DOWNLOAD,
+            Self::PostgreSql => POSTGRES_APPROXIMATE_DOWNLOAD,
+            Self::MySql => MYSQL_APPROXIMATE_DOWNLOAD,
+            Self::MariaDb => MARIADB_APPROXIMATE_DOWNLOAD,
+        }
+    }
+
+    pub fn approximate_space(self) -> &'static str {
+        match self {
+            Self::SqlServer => APPROXIMATE_SPACE,
+            Self::PostgreSql => POSTGRES_APPROXIMATE_SPACE,
+            Self::MySql => MYSQL_APPROXIMATE_SPACE,
+            Self::MariaDb => MARIADB_APPROXIMATE_SPACE,
         }
     }
 
@@ -83,6 +131,12 @@ impl ContainerKind {
         match self {
             Self::SqlServer => PREPARATION_FAILED,
             Self::PostgreSql => POSTGRES_PREPARATION_FAILED,
+            Self::MySql => {
+                "Não foi possível concluir a preparação do MySQL. Seus dados foram mantidos."
+            }
+            Self::MariaDb => {
+                "Não foi possível concluir a preparação do MariaDB. Seus dados foram mantidos."
+            }
         }
     }
 
@@ -90,13 +144,43 @@ impl ContainerKind {
         match self {
             Self::SqlServer => STOP_NOT_CONFIRMED,
             Self::PostgreSql => POSTGRES_STOP_NOT_CONFIRMED,
+            Self::MySql => {
+                "Não foi possível confirmar que o MySQL parou. Verifique o container na página Containers."
+            }
+            Self::MariaDb => {
+                "Não foi possível confirmar que o MariaDB parou. Verifique o container na página Containers."
+            }
         }
     }
 
-    fn name(self) -> &'static str {
+    fn no_working_password(self) -> &'static str {
+        match self {
+            Self::SqlServer => NO_WORKING_PASSWORD,
+            Self::PostgreSql => POSTGRES_NO_WORKING_PASSWORD,
+            Self::MySql => {
+                "Nenhuma senha de administração guardada pelo LocalCodePilot entra neste MySQL."
+            }
+            Self::MariaDb => {
+                "Nenhuma senha de administração guardada pelo LocalCodePilot entra neste MariaDB."
+            }
+        }
+    }
+
+    fn container_missing(self) -> &'static str {
+        match self {
+            Self::SqlServer => CONTAINER_MISSING,
+            Self::PostgreSql => POSTGRES_CONTAINER_MISSING,
+            Self::MySql => "O container do MySQL deste projeto não existe mais.",
+            Self::MariaDb => "O container do MariaDB deste projeto não existe mais.",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
         match self {
             Self::SqlServer => "SQL Server",
             Self::PostgreSql => "PostgreSQL",
+            Self::MySql => "MySQL",
+            Self::MariaDb => "MariaDB",
         }
     }
 
@@ -105,6 +189,7 @@ impl ContainerKind {
         match self {
             Self::SqlServer => 1433,
             Self::PostgreSql => 5432,
+            Self::MySql | Self::MariaDb => 3306,
         }
     }
 
@@ -114,6 +199,7 @@ impl ContainerKind {
         match self {
             Self::SqlServer => "/var/opt/mssql",
             Self::PostgreSql => "/var/lib/postgresql",
+            Self::MySql | Self::MariaDb => "/var/lib/mysql",
         }
     }
 
@@ -122,6 +208,8 @@ impl ContainerKind {
         match self {
             Self::SqlServer => "mssql",
             Self::PostgreSql => "pg",
+            Self::MySql => "mysql",
+            Self::MariaDb => "mariadb",
         }
     }
 
@@ -129,6 +217,8 @@ impl ContainerKind {
         match self {
             Self::SqlServer => "sqlserver",
             Self::PostgreSql => "postgresql",
+            Self::MySql => "mysql",
+            Self::MariaDb => "mariadb",
         }
     }
 
@@ -136,6 +226,7 @@ impl ContainerKind {
         match self {
             Self::SqlServer => "sa",
             Self::PostgreSql => POSTGRES_ADMIN,
+            Self::MySql | Self::MariaDb => "root",
         }
     }
 
@@ -148,20 +239,32 @@ impl ContainerKind {
             Self::PostgreSql => format!(
                 "POSTGRES_USER={POSTGRES_ADMIN}\nPOSTGRES_PASSWORD={password}\nPOSTGRES_DB=postgres\n"
             ),
+            Self::MySql => format!("MYSQL_ROOT_PASSWORD={password}\n"),
+            Self::MariaDb => format!("MARIADB_ROOT_PASSWORD={password}\n"),
         }
     }
 
-    /// The statement that replaces the initial administrator password with the final one.
-    fn password_change(self, password: &str) -> String {
+    /// The statements that replace the initial administrator password with the final one.
+    fn password_change(self, password: &str) -> Vec<String> {
         match self {
-            Self::SqlServer => format!(
+            Self::SqlServer => vec![format!(
                 "ALTER LOGIN sa WITH PASSWORD = '{}'",
                 password.replace('\'', "''")
-            ),
-            Self::PostgreSql => format!(
+            )],
+            Self::PostgreSql => vec![format!(
                 "ALTER ROLE {POSTGRES_ADMIN} PASSWORD '{}'",
                 password.replace('\'', "''")
-            ),
+            )],
+            // The images create root for any host and for localhost: both change.
+            Self::MySql | Self::MariaDb => ["%", "localhost"]
+                .iter()
+                .map(|host| {
+                    format!(
+                        "ALTER USER IF EXISTS 'root'@'{host}' IDENTIFIED BY '{}'",
+                        mysql_literal(password)
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -443,7 +546,64 @@ fn as_admin(
     match server.kind {
         ContainerKind::SqlServer => as_sa(server, password, statements),
         ContainerKind::PostgreSql => as_postgres_admin(server, password, statements),
+        ContainerKind::MySql | ContainerKind::MariaDb => {
+            as_mysql_admin(server, password, statements)
+        }
     }
+}
+
+/// MySQL/MariaDB as root of the app's container, on 127.0.0.1, with TLS (MySQL 9's
+/// caching_sha2_password needs it on the first login); the server's own certificate is
+/// accepted, as for the native servers: it is the app's container on loopback.
+fn as_mysql_admin(
+    server: &SqlServerContainer,
+    password: &str,
+    statements: &[String],
+) -> Result<(), String> {
+    use mysql_async::prelude::Queryable;
+    crate::tls_ready();
+    let ssl = mysql_async::SslOpts::default().with_danger_accept_invalid_certs(true);
+    let options = mysql_async::OptsBuilder::default()
+        .ip_or_hostname("127.0.0.1")
+        .tcp_port(server.port)
+        .user(Some("root"))
+        .pass(Some(password))
+        .ssl_opts(ssl);
+    runtime()?
+        .block_on(async {
+            let mut connection =
+                tokio::time::timeout(Duration::from_secs(15), mysql_async::Conn::new(options))
+                    .await
+                    .map_err(|_| "o servidor não respondeu ao login de administração".to_owned())?
+                    .map_err(|error| error.to_string())?;
+            let mut result = Ok(());
+            for statement in statements {
+                if let Err(error) = connection.query_drop(statement.as_str()).await {
+                    result = Err(error.to_string());
+                    break;
+                }
+            }
+            let _ = connection.disconnect().await;
+            result
+        })
+        .map_err(|error: String| error.replace(password, "••••"))
+}
+
+fn mysql_literal(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\'', "''")
+}
+
+/// MySQL/MariaDB: the project's database and a user that reaches the container through the
+/// engine's network (`'user'@'%'`), with rights on its own database only.
+fn mysql_project_sql(database: &str, user: &str, password: &str) -> Vec<String> {
+    vec![
+        format!("CREATE DATABASE IF NOT EXISTS `{database}`"),
+        format!(
+            "CREATE USER IF NOT EXISTS '{user}'@'%' IDENTIFIED BY '{}'",
+            mysql_literal(password)
+        ),
+        format!("GRANT ALL PRIVILEGES ON `{database}`.* TO '{user}'@'%'"),
+    ]
 }
 
 fn as_postgres_admin(
@@ -568,11 +728,7 @@ pub fn start(
             )?;
         }
         ContainerState::Missing => {
-            return Err(match server.kind {
-                ContainerKind::SqlServer => CONTAINER_MISSING,
-                ContainerKind::PostgreSql => POSTGRES_CONTAINER_MISSING,
-            }
-            .into());
+            return Err(server.kind.container_missing().into());
         }
         ContainerState::NotOurs(reason) => return Err(reason),
     }
@@ -595,11 +751,7 @@ fn finish_password_change(server: &SqlServerContainer, vault: &dyn Vault) -> Res
         }
     }
     let Some(working) = working else {
-        return Err(match server.kind {
-            ContainerKind::SqlServer => NO_WORKING_PASSWORD,
-            ContainerKind::PostgreSql => POSTGRES_NO_WORKING_PASSWORD,
-        }
-        .into());
+        return Err(server.kind.no_working_password().into());
     };
     if let Some(initial) = vault.read(&server.initial_target())?
         && initial == working
@@ -615,7 +767,7 @@ fn finish_password_change(server: &SqlServerContainer, vault: &dyn Vault) -> Res
         as_admin(
             server,
             &working,
-            &[server.kind.password_change(&final_password)],
+            &server.kind.password_change(&final_password),
         )?;
         as_admin(server, &final_password, &[])?;
         vault.delete(&server.initial_target())?;
@@ -757,6 +909,20 @@ pub fn prepare(
 /// Writes `contents` to a new file of `<root>/.temp` that only this user can read.
 fn write_private_temp(root: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
     use std::io::Write;
+    write_private_temp_with(root, name, contents, |file, bytes| {
+        file.write_all(bytes).and_then(|()| file.sync_all())
+    })
+}
+
+/// `write_private_temp` with the write itself given, so a test can make it fail: a file
+/// that could not be written completely is removed, never left behind with part of a
+/// password in it.
+fn write_private_temp_with(
+    root: &Path,
+    name: &str,
+    contents: &str,
+    write: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+) -> Result<PathBuf, String> {
     let temp = root.join(".temp");
     fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
     #[cfg(unix)]
@@ -771,9 +937,11 @@ fn write_private_temp(root: &Path, name: &str, contents: &str) -> Result<PathBuf
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut file = options.open(&path).map_err(|error| error.to_string())?;
-    file.write_all(contents.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| error.to_string())?;
+    if let Err(error) = write(&mut file, contents.as_bytes()) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(error.to_string());
+    }
     Ok(path)
 }
 
@@ -813,6 +981,9 @@ pub fn ensure_project_database(
     match server.kind {
         ContainerKind::SqlServer => as_sa(server, &admin, &project_sql(database, user, password)),
         ContainerKind::PostgreSql => postgres_project(server, &admin, database, user, password),
+        ContainerKind::MySql | ContainerKind::MariaDb => {
+            as_mysql_admin(server, &admin, &mysql_project_sql(database, user, password))
+        }
     }
     .map_err(|error| error.replace(password, "••••"))
 }
@@ -899,6 +1070,10 @@ pub fn set_project_password(
             "ALTER ROLE \"{user}\" PASSWORD '{}'",
             password.replace('\'', "''")
         ),
+        ContainerKind::MySql | ContainerKind::MariaDb => format!(
+            "ALTER USER '{user}'@'%' IDENTIFIED BY '{}'",
+            mysql_literal(password)
+        ),
     };
     as_admin(server, &admin, &[statement]).map_err(|error| error.replace(password, "••••"))
 }
@@ -925,15 +1100,10 @@ pub fn mark_stop_failed(
 /// The start of a container failed because no administrator password the app keeps logs in:
 /// trying again does not help; a new container (with a new volume) does.
 pub fn needs_new_container(error: &str) -> bool {
-    [
-        NO_WORKING_PASSWORD,
-        ADMIN_PASSWORD_MISSING,
-        CONTAINER_MISSING,
-        POSTGRES_NO_WORKING_PASSWORD,
-        POSTGRES_CONTAINER_MISSING,
-    ]
-    .iter()
-    .any(|known| error.contains(known))
+    error.contains(ADMIN_PASSWORD_MISSING)
+        || ContainerKind::ALL.iter().any(|kind| {
+            error.contains(kind.no_working_password()) || error.contains(kind.container_missing())
+        })
 }
 
 /// Removes the test credentials of a container (tests and E2E only).
@@ -1061,6 +1231,70 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_that_could_not_be_written_is_not_left_behind() {
+        let root = std::env::temp_dir().join(format!("lcp-env-fail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let failed = write_private_temp_with(&root, "x.env", "MYSQL_ROOT_PASSWORD=x\n", |_, _| {
+            Err(std::io::Error::other("disco cheio"))
+        });
+        assert_eq!(failed, Err("disco cheio".into()));
+        assert!(!root.join(".temp").join("x.env").exists());
+        // The normal write keeps the file, with its contents.
+        let path = write_private_temp(&root, "y.env", "MYSQL_ROOT_PASSWORD=y\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "MYSQL_ROOT_PASSWORD=y\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mysql_and_mariadb_are_their_official_images_with_their_own_settings() {
+        for (kind, prefix, env) in [
+            (
+                ContainerKind::MySql,
+                "docker.io/library/mysql:9.7.4-",
+                "MYSQL_ROOT_PASSWORD=s3nha\n",
+            ),
+            (
+                ContainerKind::MariaDb,
+                "docker.io/library/mariadb:12.3.3-",
+                "MARIADB_ROOT_PASSWORD=s3nha\n",
+            ),
+        ] {
+            assert!(kind.image().starts_with(prefix));
+            let digest = kind.image().split("@sha256:").nth(1).unwrap();
+            assert_eq!(digest.len(), 64);
+            assert_eq!(kind.inner_port(), 3306);
+            assert_eq!(kind.initial_settings("s3nha"), env);
+            assert_eq!(
+                kind.password_change("a'b"),
+                vec![
+                    "ALTER USER IF EXISTS 'root'@'%' IDENTIFIED BY 'a''b'",
+                    "ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY 'a''b'",
+                ]
+            );
+            // Never the other engine's image.
+            let other = if kind == ContainerKind::MySql {
+                MARIADB_IMAGE
+            } else {
+                MYSQL_IMAGE
+            };
+            assert!(!is_pinned_image(other, kind));
+            assert!(is_pinned_image(kind.image(), kind));
+        }
+        let sql = mysql_project_sql("loja", "app", "s'e\\nha").join("\n");
+        assert!(sql.contains("CREATE DATABASE IF NOT EXISTS `loja`"));
+        assert!(sql.contains("CREATE USER IF NOT EXISTS 'app'@'%' IDENTIFIED BY 's''e\\\\nha'"));
+        assert!(sql.contains("GRANT ALL PRIVILEGES ON `loja`.* TO 'app'@'%'"));
+        assert!(!sql.contains("*.*"));
+        assert!(!sql.contains("GRANT OPTION"));
+        assert!(needs_new_container(
+            ContainerKind::MariaDb.container_missing()
+        ));
+    }
+
+    #[test]
     fn postgres_is_the_official_image_pinned_by_digest() {
         assert!(POSTGRES_IMAGE.starts_with("docker.io/library/postgres:19.0-"));
         let digest = POSTGRES_IMAGE.split("@sha256:").nth(1).unwrap();
@@ -1075,7 +1309,7 @@ mod tests {
         assert!(!settings.contains("EULA"));
         assert_eq!(
             kind.password_change("a'b"),
-            "ALTER ROLE localcodepilot_admin PASSWORD 'a''b'"
+            vec!["ALTER ROLE localcodepilot_admin PASSWORD 'a''b'"]
         );
     }
 

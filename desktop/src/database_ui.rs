@@ -49,42 +49,46 @@ pub(super) fn database_root() -> Option<PathBuf> {
 }
 
 /// The app prepares the servers of `engine` on this computer: SQL Server as a container on
-/// Windows, PostgreSQL as a container on macOS and Linux (T030), the others from a pinned
-/// package for this system (T029).
+/// Windows; a native pinned package where this system has one (T029); otherwise, on macOS
+/// and Linux, the engine's official image in a container (PostgreSQL T030, MySQL and MariaDB
+/// T032).
 fn engine_preparable_here(engine: DatabaseEngine) -> bool {
     match container_kind_here(engine) {
         Some(ContainerKind::SqlServer) => cfg!(windows),
-        Some(ContainerKind::PostgreSql) => true,
+        Some(_) => true,
         None => database_packages::package_for_this_system(engine).is_some(),
     }
 }
 
 /// The databases the app runs in a container on this computer: SQL Server (the gate itself
-/// refuses it outside Windows) and, on macOS and Linux, PostgreSQL: the Docker Official Image
-/// pinned by digest, where no package can be verified (T030). Windows keeps the native
-/// PostgreSQL package.
+/// refuses it outside Windows); on macOS and Linux, PostgreSQL always (no verifiable package,
+/// T030), and MySQL or MariaDB where this system has no native package or does not meet it
+/// (MariaDB on macOS, both on Linux ARM, an old glibc or macOS..., T032). Windows keeps the
+/// native packages.
 fn container_kind_here(engine: DatabaseEngine) -> Option<ContainerKind> {
+    let without_package =
+        || !cfg!(windows) && database_packages::package_for_this_system(engine).is_none();
     match engine {
         DatabaseEngine::SqlServer => Some(ContainerKind::SqlServer),
         DatabaseEngine::PostgreSql if !cfg!(windows) => Some(ContainerKind::PostgreSql),
+        DatabaseEngine::MySql if without_package() => Some(ContainerKind::MySql),
+        DatabaseEngine::MariaDb if without_package() => Some(ContainerKind::MariaDb),
         _ => None,
     }
 }
 
 fn kind_name(kind: ContainerKind) -> &'static str {
-    match kind {
-        ContainerKind::SqlServer => "SQL Server",
-        ContainerKind::PostgreSql => "PostgreSQL",
-    }
+    kind.name()
 }
 
 /// The card's sentence when no container engine is ready for `kind`.
-fn no_container_engine(kind: ContainerKind) -> &'static str {
+fn no_container_engine(kind: ContainerKind) -> String {
     match kind {
-        ContainerKind::SqlServer => NO_CONTAINER_ENGINE,
-        ContainerKind::PostgreSql => {
-            "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers."
-        }
+        ContainerKind::SqlServer => NO_CONTAINER_ENGINE.into(),
+        other => format!(
+            "O {} deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers.",
+            other.name()
+        ),
     }
 }
 
@@ -166,8 +170,8 @@ pub(super) enum DatabaseFix {
     /// No administrator password the app keeps logs in to its SQL Server: a new container and
     /// volume; the old ones are kept.
     NewSqlServer,
-    /// The same for the app's PostgreSQL container (macOS and Linux, T030).
-    NewPostgres,
+    /// The same for the app's other containers (PostgreSQL, MySQL, MariaDB on macOS and Linux).
+    NewContainer(ContainerKind),
 }
 
 impl DatabaseFix {
@@ -178,7 +182,12 @@ impl DatabaseFix {
             Self::NewData => "Criar banco novo",
             Self::OpenContainers => "Abrir Containers",
             Self::NewSqlServer => "Criar SQL Server novo",
-            Self::NewPostgres => "Criar PostgreSQL novo",
+            Self::NewContainer(kind) => match kind {
+                ContainerKind::SqlServer => "Criar SQL Server novo",
+                ContainerKind::PostgreSql => "Criar PostgreSQL novo",
+                ContainerKind::MySql => "Criar MySQL novo",
+                ContainerKind::MariaDb => "Criar MariaDB novo",
+            },
         }
     }
 }
@@ -399,7 +408,7 @@ impl JobFailure {
         } else if sql_server_container::needs_new_container(&error) {
             Some(match kind {
                 ContainerKind::SqlServer => DatabaseFix::NewSqlServer,
-                ContainerKind::PostgreSql => DatabaseFix::NewPostgres,
+                other => DatabaseFix::NewContainer(other),
             })
         } else {
             None
@@ -871,7 +880,7 @@ impl LocalCodePilot {
         let path = self.environment_path.clone();
         let Some(engine) = ready_container_engine(path.as_deref()) else {
             return Err(DatabaseFailure {
-                reason: no_container_engine(kind).into(),
+                reason: no_container_engine(kind),
                 fix: Some(DatabaseFix::OpenContainers),
                 detail_fix: None,
                 retry: false,
@@ -1059,7 +1068,7 @@ impl LocalCodePilot {
                 result.retry = false;
                 result.fix = Some(DatabaseFix::OpenContainers);
             }
-            Some(fix @ (DatabaseFix::NewSqlServer | DatabaseFix::NewPostgres)) => {
+            Some(fix @ (DatabaseFix::NewSqlServer | DatabaseFix::NewContainer(_))) => {
                 result.retry = false;
                 result.detail_fix = Some(fix);
                 result.details.push(format!(
@@ -1205,7 +1214,7 @@ impl LocalCodePilot {
                 self.page = Page::Containers;
                 return;
             }
-            DatabaseFix::NewSqlServer | DatabaseFix::NewPostgres => {
+            DatabaseFix::NewSqlServer | DatabaseFix::NewContainer(_) => {
                 let kind = kind.unwrap_or_default();
                 match self.sql_server_request(kind, project_path, &requirement, sql_server) {
                     Ok(request) => self.database.sql_confirmation = Some(request),
@@ -1250,9 +1259,9 @@ impl LocalCodePilot {
                         requirement: requirement.clone(),
                     })
             }
-            DatabaseFix::OpenContainers | DatabaseFix::NewSqlServer | DatabaseFix::NewPostgres => {
-                None
-            }
+            DatabaseFix::OpenContainers
+            | DatabaseFix::NewSqlServer
+            | DatabaseFix::NewContainer(_) => None,
         };
     }
 
@@ -1763,7 +1772,7 @@ fn sql_server_confirmation_window(
     root_ui: &mut egui::Ui,
     request: &mut SqlServerRequest,
 ) -> SqlChoice {
-    if request.kind == ContainerKind::PostgreSql {
+    if request.kind != ContainerKind::SqlServer {
         return postgres_confirmation_window(root_ui, request);
     }
     let engine_name = if request.engine == "podman" {
@@ -1870,7 +1879,8 @@ fn sql_server_confirmation_window(
         SqlChoice::Waiting
     }
 }
-/// "Preparar PostgreSQL para este projeto?" (T030): no license terms; the texts of the spec.
+/// "Preparar {motor} para este projeto?" for the containers without license terms: PostgreSQL
+/// (T030), MySQL and MariaDB (T032); the texts of the specs.
 fn postgres_confirmation_window(
     root_ui: &mut egui::Ui,
     request: &mut SqlServerRequest,
@@ -1883,7 +1893,9 @@ fn postgres_confirmation_window(
     let mut open = true;
     let mut cancel = false;
     let mut confirm = false;
-    let shown = egui::Window::new("Preparar PostgreSQL para este projeto?")
+    let kind = request.kind;
+    let name = kind.name();
+    let shown = egui::Window::new(format!("Preparar {name} para este projeto?"))
         .id(egui::Id::unique("postgres-container-confirmation"))
         .open(&mut open)
         .collapsible(false)
@@ -1892,7 +1904,7 @@ fn postgres_confirmation_window(
         .default_width(540.0)
         .show(root_ui, |ui| {
             ui.label(format!(
-                "O LocalCodePilot vai baixar a imagem oficial do PostgreSQL e criar um container com o {engine_name}. Os dados ficarão num volume do {engine_name} e permanecerão após fechar o aplicativo. O banco aceitará conexões deste computador, em 127.0.0.1. Ao fechar o aplicativo, o LocalCodePilot tentará parar o container."
+                "O LocalCodePilot vai baixar a imagem oficial do {name} e criar um container com o {engine_name}. Os dados ficarão num volume do {engine_name} e permanecerão após fechar o aplicativo. O banco aceitará conexões deste computador, em 127.0.0.1. Ao fechar o aplicativo, o LocalCodePilot tentará parar o container."
             ));
             if let Some(old) = &request.replaces {
                 ui.add_space(6.0);
@@ -1905,8 +1917,8 @@ fn postgres_confirmation_window(
             ui.label(
                 RichText::new(format!(
                     "Download estimado: {}. Espaço em disco depois do preparo: {}. Banco {} e usuário {}, com acesso só a esse banco.",
-                    sql_server_container::POSTGRES_APPROXIMATE_DOWNLOAD,
-                    sql_server_container::POSTGRES_APPROXIMATE_SPACE,
+                    kind.approximate_download(),
+                    kind.approximate_space(),
                     request.database,
                     request.user
                 ))
@@ -1916,8 +1928,8 @@ fn postgres_confirmation_window(
                 .id_salt("postgres-container-confirmation-details")
                 .show(ui, |ui| {
                     for line in [
-                        format!("PostgreSQL em 127.0.0.1:{}.", request.port),
-                        format!("Imagem: {}.", sql_server_container::POSTGRES_IMAGE),
+                        format!("{name} em 127.0.0.1:{}.", request.port),
+                        format!("Imagem: {}.", kind.image()),
                         format!("Container: {}.", request.planned.container()),
                         format!("Volume: {}.", request.planned.volume()),
                         format!("Configuração: {}.", display_path(&request.requirement.source)),
@@ -2520,12 +2532,13 @@ impl DatabaseStatus {
     /// PostgreSQL on macOS and Linux, stopped, that "Iniciar" can prepare in a container (T030):
     /// the card says so in its own words.
     pub(super) fn container_start_note(&self) -> Option<String> {
-        (self.not_running()
-            && self.local_server()
-            && container_kind_here(self.requirement.engine) == Some(ContainerKind::PostgreSql))
-        .then(|| {
-            "O PostgreSQL deste projeto não está rodando. Iniciar pode prepará-lo neste computador."
-                .into()
+        let kind = container_kind_here(self.requirement.engine)
+            .filter(|kind| *kind != ContainerKind::SqlServer)?;
+        (self.not_running() && self.local_server()).then(|| {
+            format!(
+                "O {} deste projeto não está rodando. Iniciar pode prepará-lo neste computador.",
+                kind.name()
+            )
         })
     }
 
@@ -2933,6 +2946,74 @@ mod tests {
             "localcodepilot-pg-a1b2c3d4e5f6"
         );
         assert_eq!(request.planned.volume(), "localcodepilot-pg-a1b2c3d4e5f6");
+    }
+
+    #[test]
+    fn mysql_and_mariadb_use_a_container_only_where_there_is_no_native_package() {
+        for (engine, kind) in [
+            (DatabaseEngine::MySql, ContainerKind::MySql),
+            (DatabaseEngine::MariaDb, ContainerKind::MariaDb),
+        ] {
+            let native = database_packages::package_for_this_system(engine).is_some();
+            let expected = (!cfg!(windows) && !native).then_some(kind);
+            assert_eq!(container_kind_here(engine), expected);
+            // Prepared either way: the package, or the container where there is none.
+            assert_eq!(
+                engine_preparable_here(engine),
+                cfg!(windows) || native || expected.is_some()
+            );
+            // Never the other engine.
+            assert_ne!(
+                container_kind_here(engine),
+                Some(if kind == ContainerKind::MySql {
+                    ContainerKind::MariaDb
+                } else {
+                    ContainerKind::MySql
+                })
+            );
+        }
+        assert_eq!(
+            no_container_engine(ContainerKind::MariaDb),
+            "O MariaDB deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers."
+        );
+        assert_eq!(
+            DatabaseFix::NewContainer(ContainerKind::MySql).label(),
+            "Criar MySQL novo"
+        );
+    }
+
+    #[test]
+    fn the_mariadb_confirmation_names_its_engine_image_and_measured_sizes() {
+        let mut request = postgres_request();
+        request.kind = ContainerKind::MariaDb;
+        request.planned = planned(ContainerKind::MariaDb, "podman", 3306);
+        request.engine = "podman";
+        let (choice, nodes, focused) = sql_confirmation_frames(&mut request, &[]);
+        assert_eq!(choice, SqlChoice::Waiting);
+        assert_eq!(focused.as_deref(), Some("Agora não"));
+        let text = nodes
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            text.contains("Preparar MariaDB para este projeto?"),
+            "{text}"
+        );
+        assert!(text.contains("O LocalCodePilot vai baixar a imagem oficial do MariaDB e criar um container com o Podman."), "{text}");
+        assert!(
+            text.contains(&format!(
+                "Download estimado: {}. Espaço em disco depois do preparo: {}.",
+                sql_server_container::MARIADB_APPROXIMATE_DOWNLOAD,
+                sql_server_container::MARIADB_APPROXIMATE_SPACE
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("termos de licença"), "{text}");
+        assert_eq!(
+            request.planned.container(),
+            "localcodepilot-mariadb-a1b2c3d4e5f6"
+        );
     }
 
     #[test]

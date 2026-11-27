@@ -37,10 +37,10 @@ A EDB não publica checksum do PostgreSQL para macOS nem binários atuais para L
 | Motor | Windows (x64) | macOS | Linux |
 |---|---|---|---|
 | PostgreSQL 19 | sim (pacote nativo) | em container, com Docker ou Podman | em container, com Docker ou Podman |
-| MySQL 9.7 | sim | macOS 15 ou mais novo (Apple Silicon e Intel) | x86_64 com glibc 2.28 ou mais nova |
-| MariaDB 12.3 | sim | ainda não | x86_64 com glibc 2.28 ou mais nova |
+| MySQL 9.7 | sim | macOS 15 ou mais novo (Apple Silicon e Intel); antes do 15, em container | x86_64 com glibc 2.28 ou mais nova; ARM, em container |
+| MariaDB 12.3 | sim | em container, com Docker ou Podman | x86_64 com glibc 2.28 ou mais nova; ARM, em container |
 
-Cada pacote é o oficial do projeto, com SHA-256 conferido contra uma fonte independente (assinatura GPG da Oracle para o MySQL, `sha256sums.txt` assinado para o MariaDB). Onde ainda não há pacote verificável (o MariaDB não publica binários para macOS, e o MySQL e o MariaDB não têm pacote enxuto para Linux ARM), o cartão diz "O {motor} deste projeto não está rodando. O LocalCodePilot ainda não consegue prepará-lo neste sistema." e **Detalhes técnicos** traz o motivo. O app nunca troca o motor pedido por outro.
+Cada pacote é o oficial do projeto, com SHA-256 conferido contra uma fonte independente (assinatura GPG da Oracle para o MySQL, `sha256sums.txt` assinado para o MariaDB). MariaDB no macOS e MySQL/MariaDB no Linux ARM são preparados em container com Docker ou Podman, após confirmação. A imagem oficial é fixada por digest, a porta fica restrita a 127.0.0.1 e os dados permanecem num volume do motor de containers. As imagens são `mysql:9.7.4-oraclelinux9` (download de cerca de 250 MB, cerca de 1,1 GB em disco) e `mariadb:12.3.3-noble` (cerca de 100 MB, cerca de 450 MB em disco); a imagem oficial do MariaDB ainda não tem a 12.3.4. O mesmo vale quando o sistema não atende ao pacote nativo (glibc antiga, macOS anterior ao 15, falta da libaio). O usuário do projeto tem acesso só ao próprio banco; por isso, um banco que não existe aparece como acesso recusado, que é como o MySQL e o MariaDB respondem. O app nunca troca o motor pedido por outro.
 
 No Linux, o MySQL precisa da biblioteca `libaio` do sistema (pacote `libaio1` ou `libaio1t64`, presente na maioria das instalações). No Ubuntu 24.04 e mais novos, que só têm `libaio.so.1t64`, o app cria o link que o MySQL procura dentro da pasta do próprio pacote, sem mexer no sistema. Sem a biblioteca, ou com Alpine (sem glibc), o cartão diz que o preparo não está disponível e por quê.
 

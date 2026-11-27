@@ -33,6 +33,10 @@ jobs:
             port: 14333
           - kind: postgresql
             port: 15432
+          - kind: mysql
+            port: 13306
+          - kind: mariadb
+            port: 13307
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
