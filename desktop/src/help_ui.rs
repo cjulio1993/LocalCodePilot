@@ -211,12 +211,12 @@ const SECTIONS: &[HelpSection] = &[
                 "O LocalCodePilot testa a conexão com os dados de acesso do projeto (banco, usuário e senha do .env ou do wp-config.php). Banco de dados conectado só aparece depois desse teste; uma porta aberta ou um container ativo não bastam. Se o banco impede o início, o projeto fica Parado ou Com problema, e o cartão diz o motivo por escrito.",
             ),
             Block::Item(
-                "No Windows, com PostgreSQL, MySQL ou MariaDB",
-                "Iniciar prepara um servidor só deste computador. Na primeira vez, a confirmação mostra o download, o espaço necessário, o banco e o usuário que serão criados; nada é baixado antes de Preparar e iniciar. A senha de administração fica no Gerenciador de Credenciais do Windows, e o projeto só inicia depois que o banco aceita os dados de acesso dele.",
+                "Preparo de PostgreSQL, MySQL ou MariaDB",
+                "Iniciar prepara um servidor só deste computador. Na primeira vez, a confirmação mostra o download, o espaço necessário, o banco e o usuário que serão criados; nada é baixado antes de Preparar e iniciar. O pacote é o oficial de cada banco, conferido pelo SHA-256 antes de ser usado. A senha de administração fica no Gerenciador de Credenciais do Windows (no macOS e no Linux, num arquivo que só o seu usuário lê), e o projeto só inicia depois que o banco aceita os dados de acesso dele.",
             ),
             Block::Item(
                 "Onde ficam os dados",
-                "na pasta do LocalCodePilot, em %LOCALAPPDATA%\\LocalCodePilot\\bancos. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar o servidor; os dados permanecem e voltam no próximo Iniciar.",
+                "na pasta do LocalCodePilot: %LOCALAPPDATA%\\LocalCodePilot\\bancos no Windows, ~/Library/Application Support/LocalCodePilot/bancos no macOS e ~/.local/share/localcodepilot/bancos no Linux. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar o servidor; os dados permanecem e voltam no próximo Iniciar.",
             ),
             Block::Item(
                 "Servidor que você já tem",
@@ -239,8 +239,8 @@ const SECTIONS: &[HelpSection] = &[
                 "o login do projeto é testado. No Windows, com o Docker ou o Podman prontos, Iniciar pode criar um container do SQL Server 2022 Developer, gratuito para desenvolvimento e teste: antes, você precisa marcar que leu e aceita os termos de licença da Microsoft, e os dados ficam num volume do motor de containers. Sem Docker nem Podman prontos, o cartão leva à página Containers. O LocalCodePilot não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.",
             ),
             Block::Item(
-                "Mac e Linux",
-                "o login do projeto também é testado, mas o LocalCodePilot não prepara servidores de banco: inicie o seu banco como de costume.",
+                "macOS e Linux",
+                "Quando há um pacote verificado para o motor e este computador, Iniciar prepara o banco após sua confirmação. O servidor e os dados ficam na pasta do LocalCodePilot e o projeto só inicia depois de testar o login. Se o preparo não estiver disponível, o cartão informa o motivo. Hoje: MySQL no macOS 15 ou mais novo e no Linux x86_64, MariaDB no Linux x86_64. PostgreSQL, por enquanto, só no Windows.",
             ),
             Block::Item(
                 "Banco em outro computador",
@@ -743,21 +743,22 @@ mod tests {
             .filter_map(|block| block.content().0)
             .collect();
         for case in [
-            "No Windows, com PostgreSQL, MySQL ou MariaDB",
+            "Preparo de PostgreSQL, MySQL ou MariaDB",
             "Onde ficam os dados",
             "Servidor que você já tem",
             "Migrations",
             "Correções",
             "Compose",
             "SQL Server",
-            "Mac e Linux",
+            "macOS e Linux",
             "Banco em outro computador",
         ] {
             assert!(terms.contains(&case), "falta o item {case}");
         }
         let text = all_text();
         for fact in [
-            "não prepara servidores de banco",
+            "PostgreSQL, por enquanto, só no Windows",
+            "~/Library/Application Support/LocalCodePilot/bancos",
             "%LOCALAPPDATA%\\LocalCodePilot\\bancos",
             "os dados permanecem",
             "termos de licença da Microsoft",

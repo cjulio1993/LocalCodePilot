@@ -408,9 +408,16 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             .iter()
             .filter(|database| database.not_running())
             .all(DatabaseStatus::app_can_prepare);
+        // Named engine when the app cannot prepare it on this system (T029, CA-6).
+        let reason = environment
+            .databases
+            .iter()
+            .find_map(DatabaseStatus::not_preparable_here)
+            .filter(|_| !can_prepare)
+            .unwrap_or_else(|| "O banco de dados deste projeto não está rodando.".into());
         return summary(
             ProjectState::Stopped,
-            Some("O banco de dados deste projeto não está rodando.".into()),
+            Some(reason),
             if can_prepare {
                 PrimaryAction::Start
             } else {
@@ -2013,17 +2020,26 @@ mod tests {
             assert!(status.not_running());
             let summary = summarize_project(&facts(&with_database(status)));
             assert_eq!(summary.state, ProjectState::Stopped);
-            assert_eq!(
-                summary.reason.as_deref(),
-                Some("O banco de dados deste projeto não está rodando.")
-            );
-            // Windows prepares the server through Iniciar; elsewhere the person reads why.
-            let expected = if cfg!(windows) {
-                PrimaryAction::Start
+            // Where the app has a MySQL package (Windows, macOS 15+, Linux x86_64, T029)
+            // Iniciar prepares it; elsewhere the card names the engine and the person reads
+            // why in "Detalhes".
+            let preparable = localcodepilot_runtime::database_packages::package_for_this_system(
+                DatabaseEngine::MySql,
+            )
+            .is_some();
+            let (reason, primary) = if preparable {
+                (
+                    "O banco de dados deste projeto não está rodando.",
+                    PrimaryAction::Start,
+                )
             } else {
-                PrimaryAction::Details
+                (
+                    "O MySQL deste projeto não está rodando. O LocalCodePilot ainda não consegue prepará-lo neste sistema.",
+                    PrimaryAction::Details,
+                )
             };
-            assert_eq!(summary.primary, expected);
+            assert_eq!(summary.reason.as_deref(), Some(reason));
+            assert_eq!(summary.primary, primary);
         }
     }
 

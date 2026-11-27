@@ -420,6 +420,12 @@ impl ProjectEnvironment {
             ))
         } else if let Some(rejection) = self.databases.iter().find_map(DatabaseStatus::rejection) {
             Some(rejection)
+        } else if let Some(reason) = self
+            .databases
+            .iter()
+            .find_map(DatabaseStatus::not_preparable_here)
+        {
+            Some(reason)
         } else if self.databases.iter().any(DatabaseStatus::not_running) {
             Some("O banco de dados deste projeto não está rodando.".into())
         } else if self.databases.iter().any(|database| {

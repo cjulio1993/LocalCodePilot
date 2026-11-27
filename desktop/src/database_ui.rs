@@ -23,10 +23,37 @@ use localcodepilot_runtime::{
 use sha2::{Digest, Sha256};
 use std::sync::mpsc::{Receiver, Sender};
 
-/// Where the app keeps database packages and servers: `%LOCALAPPDATA%\LocalCodePilot\bancos`.
+/// Where the app keeps database packages and servers: `%LOCALAPPDATA%\LocalCodePilot\bancos`
+/// on Windows, `~/Library/Application Support/LocalCodePilot/bancos` on macOS and
+/// `$XDG_DATA_HOME/localcodepilot/bancos` (or `~/.local/share/...`) on Linux (T029).
 pub(super) fn database_root() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|folder| PathBuf::from(folder).join("LocalCodePilot").join("bancos"))
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(|folder| PathBuf::from(folder).join("LocalCodePilot").join("bancos"));
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        return home.map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join("LocalCodePilot")
+                .join("bancos")
+        });
+    }
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join(".local").join("share")))
+        .map(|data| data.join("localcodepilot").join("bancos"))
+}
+
+/// The app prepares the servers of `engine` on this computer: SQL Server as a container on
+/// Windows, the others from a pinned package for this system (T029).
+fn engine_preparable_here(engine: DatabaseEngine) -> bool {
+    if engine == DatabaseEngine::SqlServer {
+        cfg!(windows)
+    } else {
+        database_packages::package_for_this_system(engine).is_some()
+    }
 }
 
 fn engine_key(engine: DatabaseEngine) -> Option<&'static str> {
@@ -224,7 +251,12 @@ pub(super) struct PortChange {
 /// The steps shown under "Iniciando".
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum DatabaseStep {
-    Downloading { received: u64, total: u64 },
+    Downloading {
+        received: u64,
+        total: u64,
+    },
+    /// The download is complete and its SHA-256 is being checked against the pinned one.
+    Verifying,
     Preparing,
     StartingServer,
 }
@@ -239,6 +271,7 @@ impl DatabaseStep {
                 total / (1024 * 1024)
             ),
             Self::Downloading { .. } => format!("Baixando {engine}..."),
+            Self::Verifying => format!("Verificando o pacote de {engine}…"),
             Self::Preparing => "Preparando o banco de dados…".into(),
             Self::StartingServer => "Iniciando o banco de dados…".into(),
         }
@@ -498,8 +531,7 @@ impl LocalCodePilot {
             let managed = root
                 .as_deref()
                 .and_then(|root| database_servers::find_server(root, engine, port));
-            let can_manage = cfg!(windows)
-                && root.is_some()
+            let can_manage = root.is_some()
                 && database_packages::package_for_this_system(requirement.engine).is_some();
             let listener = localcodepilot_core::ports::Port::new(port)
                 .and_then(localcodepilot_platform::ports::listener_process_id)
@@ -652,7 +684,8 @@ impl LocalCodePilot {
                 })
                 .unwrap_or_else(|| status_now.card_state(None))
         };
-        let Some(root) = database_root().filter(|_| cfg!(windows)) else {
+        let Some(root) = database_root().filter(|_| engine_preparable_here(requirement.engine))
+        else {
             return Some(DatabaseGate::Blocked(
                 DatabaseFailure::plain(plain_reason()),
             ));
@@ -1215,7 +1248,7 @@ impl LocalCodePilot {
         let mut cancel = false;
         let mut confirm = false;
         let mut retry = false;
-        egui::Window::new("Preparar banco de dados para este projeto?")
+        let shown = egui::Window::new("Preparar banco de dados para este projeto?")
             .id(egui::Id::unique("database-prepare-confirmation"))
             .open(&mut open)
             .collapsible(false)
@@ -1225,7 +1258,7 @@ impl LocalCodePilot {
             .show(root_ui, |ui| {
                 let size = size_label(request.package.size_bytes);
                 ui.label(format!(
-                    "O LocalCodePilot vai baixar {} ({size}), criar o banco {} e o usuário {}. Os dados ficarão na pasta do LocalCodePilot. Ao fechar o aplicativo, o LocalCodePilot tentará encerrar o servidor. Os dados permanecerão.",
+                    "O LocalCodePilot vai baixar {} ({size}), criar o banco {} e o usuário {}. O servidor aceitará conexões só deste computador. O programa e os dados ficarão na pasta do LocalCodePilot. Ao fechar o aplicativo, tentaremos encerrar o servidor; os dados permanecerão.",
                     request.engine_label(),
                     request.database,
                     request.user
@@ -1253,6 +1286,7 @@ impl LocalCodePilot {
                             format!("Pasta: {}", display_path(&folder)),
                             format!("Configuração: {}", display_path(&request.requirement.source)),
                             format!("Origem do pacote: {}", request.package.url),
+                            format!("SHA-256 conferido: {}", request.package.sha256),
                         ] {
                             ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
                         }
@@ -1288,6 +1322,12 @@ impl LocalCodePilot {
             });
         if escape_pressed(root_ui) {
             cancel = true;
+        }
+        if !(confirm || retry || cancel || !open) {
+            super::notice::keep_focus_inside(
+                root_ui.ctx(),
+                shown.as_ref().map(|shown| &shown.response),
+            );
         }
         if confirm || retry || cancel || !open {
             forget_first_focus(root_ui, PREPARE_FOCUS);
@@ -1812,16 +1852,19 @@ fn registered(root: &Path, id: &str) -> Option<ManagedServer> {
 fn run_start_job(request: &DatabaseRequest, sender: &Sender<JobEvent>) -> JobResult {
     let Some(root) = database_root() else {
         return JobResult::Failed(JobFailure::text(
-            "a pasta de dados do Windows não foi encontrada",
+            "a pasta de dados do aplicativo não foi encontrada",
         ));
     };
     let package = request.package;
     if !package.is_prepared(&root) {
         let archive = match package.download(&root, |received, total| {
-            let _ = sender.send(JobEvent::Step(DatabaseStep::Downloading {
-                received,
-                total,
-            }));
+            // The last bytes are followed by the SHA-256 check of the whole file.
+            let step = if total > 0 && received >= total {
+                DatabaseStep::Verifying
+            } else {
+                DatabaseStep::Downloading { received, total }
+            };
+            let _ = sender.send(JobEvent::Step(step));
         }) {
             Ok(archive) => archive,
             Err(error) => return JobResult::Failed(JobFailure::text(error.to_string())),
@@ -1913,7 +1956,7 @@ fn run_fix_password_job(
 ) -> JobResult {
     let Some(root) = database_root() else {
         return JobResult::Failed(JobFailure::text(
-            "a pasta de dados do Windows não foi encontrada",
+            "a pasta de dados do aplicativo não foi encontrada",
         ));
     };
     let password = read_credentials(requirement).password_for_setup();
@@ -1973,7 +2016,7 @@ fn run_new_data_job(
 ) -> JobResult {
     let Some(root) = database_root() else {
         return JobResult::Failed(JobFailure::text(
-            "a pasta de dados do Windows não foi encontrada",
+            "a pasta de dados do aplicativo não foi encontrada",
         ));
     };
     let Some(mut server) = registered(&root, server_id) else {
@@ -2078,7 +2121,7 @@ fn run_sql_start_job(
 fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) -> JobResult {
     let Some(root) = database_root() else {
         return JobResult::Failed(JobFailure::text(
-            "a pasta de dados do Windows não foi encontrada",
+            "a pasta de dados do aplicativo não foi encontrada",
         ));
     };
     let path = request.path.as_deref();
@@ -2181,22 +2224,39 @@ impl DatabaseStatus {
                 ))
     }
 
-    /// The app can prepare and start this database itself (Windows, a pinned package for the
-    /// engine, a host on this computer, not a Compose service): "Iniciar" leads there.
-    pub(super) fn app_can_prepare(&self) -> bool {
-        cfg!(windows)
-            && self.requirement.compose_service.is_none()
+    /// A server on this computer that is not a Compose service: the kind the app prepares.
+    fn local_server(&self) -> bool {
+        self.requirement.compose_service.is_none()
             && self
                 .requirement
                 .host
                 .as_deref()
                 .and_then(localcodepilot_runtime::database_connection::loopback_address)
                 .is_some()
-            && (self.requirement.engine == DatabaseEngine::SqlServer
-                || localcodepilot_runtime::database_packages::package_for_this_system(
-                    self.requirement.engine,
-                )
-                .is_some())
+    }
+
+    /// The app can prepare and start this database itself (a package for the engine on this
+    /// system, a host on this computer, not a Compose service): "Iniciar" leads there.
+    pub(super) fn app_can_prepare(&self) -> bool {
+        self.local_server() && engine_preparable_here(self.requirement.engine)
+    }
+
+    /// A local server the app prepares elsewhere but not on this system (PostgreSQL on macOS
+    /// and Linux, MariaDB on macOS...): the card names the engine and says so, with the reason
+    /// in "Detalhes técnicos" (T029, CA-6). Never another engine in its place.
+    pub(super) fn not_preparable_here(&self) -> Option<String> {
+        let engine = self.requirement.engine;
+        if !self.not_running()
+            || !self.local_server()
+            || engine == DatabaseEngine::SqlServer
+            || engine_preparable_here(engine)
+        {
+            return None;
+        }
+        Some(format!(
+            "O {} deste projeto não está rodando. O LocalCodePilot ainda não consegue prepará-lo neste sistema.",
+            engine.label()
+        ))
     }
 
     /// The server answered but did not let the project in: "Com problema", with the reason.
@@ -2294,6 +2354,11 @@ impl DatabaseStatus {
                 test.user.as_deref().unwrap_or("?"),
                 test.database.as_deref().unwrap_or("?"),
             ));
+        }
+        if self.not_preparable_here().is_some()
+            && let Err(reason) = database_packages::availability(requirement.engine)
+        {
+            lines.push(format!("Preparo neste sistema: {reason}"));
         }
         lines
     }
@@ -2575,6 +2640,68 @@ mod tests {
         assert_eq!(failure.recovery, Some(DatabaseFix::NewSqlServer));
     }
 
+    fn stopped_server(engine: DatabaseEngine, host: &str, compose: Option<&str>) -> DatabaseStatus {
+        DatabaseStatus {
+            requirement: DatabaseRequirement {
+                source: PathBuf::from(".env"),
+                engine,
+                host: Some(host.into()),
+                port: Some(5432),
+                compose_service: compose.map(str::to_owned),
+            },
+            available: Some(false),
+            connection: None,
+            managed: None,
+        }
+    }
+
+    #[test]
+    fn a_local_engine_without_a_package_here_is_named_and_never_offered() {
+        for engine in [
+            DatabaseEngine::PostgreSql,
+            DatabaseEngine::MySql,
+            DatabaseEngine::MariaDb,
+        ] {
+            let status = stopped_server(engine, "127.0.0.1", None);
+            let here = database_packages::package_for_this_system(engine).is_some();
+            assert_eq!(status.app_can_prepare(), here);
+            match status.not_preparable_here() {
+                None => assert!(here),
+                Some(reason) => {
+                    assert!(!here);
+                    assert_eq!(
+                        reason,
+                        format!(
+                            "O {} deste projeto não está rodando. O LocalCodePilot ainda não consegue prepará-lo neste sistema.",
+                            engine.label()
+                        )
+                    );
+                    assert!(
+                        status
+                            .technical()
+                            .iter()
+                            .any(|line| line.starts_with("Preparo neste sistema: "))
+                    );
+                }
+            }
+        }
+        // Remote hosts and Compose services are not the app's to prepare anywhere.
+        for status in [
+            stopped_server(DatabaseEngine::PostgreSql, "db.empresa.example", None),
+            stopped_server(DatabaseEngine::PostgreSql, "db", Some("db")),
+        ] {
+            assert!(!status.app_can_prepare());
+            assert_eq!(status.not_preparable_here(), None);
+        }
+        // On Windows every engine has a package; PostgreSQL has none on macOS and Linux.
+        assert_eq!(
+            stopped_server(DatabaseEngine::PostgreSql, "localhost", None)
+                .not_preparable_here()
+                .is_some(),
+            !cfg!(windows)
+        );
+    }
+
     #[test]
     fn sizes_read_like_the_confirmation_says_them() {
         assert_eq!(size_label(68_546_993), "65 MB");
@@ -2598,6 +2725,10 @@ mod tests {
             }
             .text("MySQL"),
             "Baixando MySQL..."
+        );
+        assert_eq!(
+            DatabaseStep::Verifying.text("MariaDB"),
+            "Verificando o pacote de MariaDB…"
         );
         assert_eq!(
             DatabaseStep::Preparing.text("MySQL"),
