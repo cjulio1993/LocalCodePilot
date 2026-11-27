@@ -35,13 +35,13 @@
       "os": "windows",
       "arch": "x86_64",
       "file_name": "mariadb-12.3.4-winx64.zip",
-      "url": "https://archive.mariadb.org/mariadb-12.3.4/winx64-packages/mariadb-12.3.4-winx64.zip",
+      "url": "https://dlm.mariadb.com/MariaDB/mariadb-12.3.4/winx64-packages/mariadb-12.3.4-winx64.zip",
       "sha256": "178020ae8ff7d0caf77b5a3ad7e33e574e13001352d31b02503f97224e4b1f77",
       "size_bytes": 106623921,
       "space_bytes": 500000000,
       "archive_root": "mariadb-12.3.4-winx64",
       "server_program": "bin/mariadbd.exe",
-      "provenance": "sha256sums.txt of the release (signed) and the downloads.mariadb.org REST API; MariaDB 12.3 is the current LTS"
+      "provenance": "sha256sums.txt of the release (signed) and the downloads.mariadb.org REST API; MariaDB 12.3 is the current LTS; served by MariaDB's official download CDN (dlm.mariadb.com), the same files and sums as archive.mariadb.org, which is much slower"
     },
     {
       "engine": "mysql",
@@ -95,7 +95,7 @@
       "arch": "x86_64",
       "min_system": "2.28",
       "file_name": "mariadb-12.3.4-linux-systemd-x86_64.tar.gz",
-      "url": "https://archive.mariadb.org/mariadb-12.3.4/bintar-linux-systemd-x86_64/mariadb-12.3.4-linux-systemd-x86_64.tar.gz",
+      "url": "https://dlm.mariadb.com/MariaDB/mariadb-12.3.4/bintar-linux-systemd-x86_64/mariadb-12.3.4-linux-systemd-x86_64.tar.gz",
       "sha256": "26868ab54e3fffa822ffe433537e9c6dde0bdaa45f45a83ef43bd72e29b58baa",
       "size_bytes": 456123358,
       "space_bytes": 1400000000,
@@ -107,7 +107,7 @@
         "man"
       ],
       "server_program": "bin/mariadbd",
-      "provenance": "sha256sums.txt of the release folder and the GPG signature (.asc) by the MariaDB Signing Key 177F4010FE56CA3336300305F1656F24C74CD1D8; MariaDB 12.3 is the current LTS"
+      "provenance": "sha256sums.txt of the release folder and the GPG signature (.asc) by the MariaDB Signing Key 177F4010FE56CA3336300305F1656F24C74CD1D8; MariaDB 12.3 is the current LTS; served by MariaDB's official download CDN (dlm.mariadb.com), the same files and sums as archive.mariadb.org, which is much slower"
     }
   ]
 }
