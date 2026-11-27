@@ -22,7 +22,7 @@ O LocalCodePilot é um aplicativo para desenvolvedores, do júnior ao especialis
 
 - **Encontra seus projetos sozinho** e reconhece a linguagem e o framework de cada um.
 - **Prepara o que falta:** instala as dependências do projeto e, quando a linguagem nem está instalada, oferece instalá-la com um clique.
-- **Inicia, mostra o endereço e abre o site.** Se algo der errado (uma porta ocupada, um programa que fechou), diz o motivo em português e oferece **Tentar de novo**.
+- **Inicia, mostra o endereço e abre o site.** Se algo der errado (uma porta ocupada, um programa que fechou), diz o motivo em português e oferece **Tentar de novo**. Em **Detalhes técnicos**, "Por que este diagnóstico?" mostra a regra aplicada e o que o app encontrou; o que ele não verificou aparece como "não verificado", sem causa presumida ([regras e precedência](docs/DETALHES-TECNICOS.md#diagnóstico-do-cartão-regras-e-precedência)).
 - **Também cuida de containers** (Docker e Podman), com proteção para um projeto não mexer nos containers de outro.
 - **Testa o banco de dados do projeto** com os dados de acesso dele e, no Windows, prepara o servidor de banco quando falta (veja [Bancos de dados](#bancos-de-dados)).
 
@@ -156,7 +156,7 @@ LocalCodePilot is an app for developers, from junior to expert, that finds the p
 
 - **Finds your projects on its own** and recognizes each one's language and framework.
 - **Prepares what is missing:** installs the project's dependencies and, when the language itself is not installed, offers to install it with one click.
-- **Starts the project, shows its address, and opens the site.** When something goes wrong (a port in use, a program that closed), it tells you why and offers **Try again**.
+- **Starts the project, shows its address, and opens the site.** When something goes wrong (a port in use, a program that closed), it tells you why and offers **Try again**. Under **Detalhes técnicos** (technical details), "Por que este diagnóstico?" (why this diagnosis) shows the rule that applied and what the app found; anything it did not check is shown as "não verificado" (not verified), never as a presumed cause ([rules and precedence](docs/DETALHES-TECNICOS.md#card-diagnosis-rules-and-precedence)).
 - **Also handles containers** (Docker and Podman), with protection so one project does not touch another project's containers.
 - **Tests the project's database** with the project's own credentials and, on Windows, prepares the database server when it is missing (see [Databases](#databases)).
 

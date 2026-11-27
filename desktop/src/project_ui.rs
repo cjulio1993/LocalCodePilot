@@ -133,6 +133,85 @@ pub(super) struct ProjectSummary {
     pub retry: bool,
     /// "Parar" while the project is not running yet: it is compiling (T028.02).
     pub stoppable: bool,
+    /// The rule that produced this summary, shown in "Detalhes técnicos" (T034).
+    pub rule: DiagnosticRule,
+    /// What the app observed for that rule, one fact per line; empty: nothing verified.
+    pub evidence: Vec<String>,
+}
+
+/// The rules of the card's diagnosis, in the order they are evaluated: the first whose
+/// condition holds decides the state, the reason and the action (T034). The order is the
+/// precedence between rules that hold at the same time, documented in
+/// docs/DETALHES-TECNICOS.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DiagnosticRule {
+    Running,
+    PreparationRunning,
+    PreparationFailed,
+    DatabasePreparing,
+    Building,
+    Starting,
+    DatabaseFailed,
+    MigrationFailed,
+    ResolvingPlan,
+    Verifying,
+    ProcessFailed,
+    ManifestInvalid,
+    ContainersOnly,
+    NoCommand,
+    Ready,
+    DatabaseStopped,
+    NeedsPreparation,
+    RequirementProblem,
+}
+
+impl DiagnosticRule {
+    /// Every rule, in the order of evaluation.
+    #[cfg(test)]
+    pub(super) const ALL: [Self; 18] = [
+        Self::Running,
+        Self::PreparationRunning,
+        Self::PreparationFailed,
+        Self::DatabasePreparing,
+        Self::Building,
+        Self::Starting,
+        Self::DatabaseFailed,
+        Self::MigrationFailed,
+        Self::ResolvingPlan,
+        Self::Verifying,
+        Self::ProcessFailed,
+        Self::ManifestInvalid,
+        Self::ContainersOnly,
+        Self::NoCommand,
+        Self::Ready,
+        Self::DatabaseStopped,
+        Self::NeedsPreparation,
+        Self::RequirementProblem,
+    ];
+
+    /// The name shown after "Regra:".
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Running => "Projeto rodando",
+            Self::PreparationRunning => "Preparação em andamento",
+            Self::PreparationFailed => "Preparação falhou",
+            Self::DatabasePreparing => "Banco de dados em preparo",
+            Self::Building => "Compilação em andamento",
+            Self::Starting => "Início em andamento",
+            Self::DatabaseFailed => "Banco de dados impediu o início",
+            Self::MigrationFailed => "Migrations falharam",
+            Self::ResolvingPlan => "Consulta de versões em andamento",
+            Self::Verifying => "Verificação do projeto em andamento",
+            Self::ProcessFailed => "Processo parou com erro",
+            Self::ManifestInvalid => "Manifesto ilegível",
+            Self::ContainersOnly => "Projeto só com containers",
+            Self::NoCommand => "Sem comando de início",
+            Self::Ready => "Pronto para iniciar",
+            Self::DatabaseStopped => "Banco de dados parado",
+            Self::NeedsPreparation => "Falta preparar o ambiente",
+            Self::RequirementProblem => "Requisito incompatível ou pendente",
+        }
+    }
 }
 
 /// A process of the project that failed, with what the app knows about why.
@@ -214,9 +293,167 @@ fn filter_name(label: &str, count: usize) -> String {
     }
 }
 
+/// The card's diagnosis: the first rule that holds, with what the app observed for it.
 pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
+    let mut summary = decide(facts);
+    summary.evidence = evidence(summary.rule, facts);
+    summary
+}
+
+/// What the app observed for a rule. Only facts the app has; a fact it did not check is
+/// said to be unverified, never inferred.
+fn evidence(rule: DiagnosticRule, facts: &ProjectFacts<'_>) -> Vec<String> {
     let environment = facts.environment;
-    let summary = |state, reason: Option<String>, primary| ProjectSummary {
+    match rule {
+        DiagnosticRule::Running => [
+            facts
+                .running
+                .then(|| "Processos iniciados pelo app estão rodando.".to_owned()),
+            facts
+                .container_running
+                .then(|| "Containers do projeto estão rodando.".to_owned()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        DiagnosticRule::PreparationRunning => {
+            vec!["Uma preparação deste projeto está em andamento.".into()]
+        }
+        DiagnosticRule::PreparationFailed => match facts.dependency_install {
+            Some(DependencyInstallStatus::Failed { error, .. }) => {
+                vec![format!("A última preparação terminou com erro: {error}")]
+            }
+            _ => vec![],
+        },
+        DiagnosticRule::DatabasePreparing => facts.database_step.iter().cloned().collect(),
+        DiagnosticRule::Building => {
+            vec!["As etapas de compilação estão em andamento.".into()]
+        }
+        DiagnosticRule::Starting => vec!["Um processo do projeto está iniciando.".into()],
+        DiagnosticRule::DatabaseFailed => facts
+            .database_failure
+            .map(|failure| failure.reason.clone())
+            .into_iter()
+            .collect(),
+        DiagnosticRule::MigrationFailed => {
+            vec!["A última execução das migrations terminou com erro.".into()]
+        }
+        DiagnosticRule::ResolvingPlan => {
+            vec!["O app está consultando as versões para preparar o ambiente.".into()]
+        }
+        DiagnosticRule::Verifying => {
+            vec!["A verificação do projeto ainda não terminou.".into()]
+        }
+        DiagnosticRule::ProcessFailed => {
+            let Some(failed) = &facts.failed_process else {
+                return vec![];
+            };
+            let mut lines = vec![match failed.exit_code {
+                Some(code) => format!("{} terminou com o código de saída {code}.", failed.name),
+                None => format!("{} terminou; código de saída não verificado.", failed.name),
+            }];
+            lines.push(match failed.failure {
+                Some(ProcessFailure::Exited) | None => {
+                    "nenhuma causa específica foi verificada.".into()
+                }
+                Some(failure) => format!("Causa verificada: {}", failure.sentence()),
+            });
+            lines
+        }
+        DiagnosticRule::ManifestInvalid => environment.manifest_errors.clone(),
+        DiagnosticRule::ContainersOnly => {
+            vec!["Arquivo do Compose encontrado; nenhum comando de processo foi detectado.".into()]
+        }
+        DiagnosticRule::NoCommand => {
+            let mut lines = vec![if facts.languages.is_empty() {
+                "Nenhuma linguagem com início automático foi reconhecida.".to_owned()
+            } else {
+                format!(
+                    "Linguagens reconhecidas: {}.",
+                    facts
+                        .languages
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }];
+            if let Some(entries) = &environment.ambiguous_entry {
+                lines.push(format!("Entradas possíveis: {entries}."));
+            }
+            lines
+        }
+        DiagnosticRule::Ready => vec![format!(
+            "{} encontrado(s); requisitos verificados.",
+            match environment.command_count {
+                1 => "1 comando".to_owned(),
+                count => format!("{count} comandos"),
+            }
+        )],
+        DiagnosticRule::DatabaseStopped => environment
+            .databases
+            .iter()
+            .filter(|database| database.not_running())
+            .map(|database| format!("{} não está rodando.", database.requirement.engine.label()))
+            .collect(),
+        DiagnosticRule::NeedsPreparation | DiagnosticRule::RequirementProblem => {
+            requirement_evidence(environment)
+        }
+    }
+}
+
+/// What is missing or incompatible in the environment, one fact per line.
+fn requirement_evidence(environment: &ProjectEnvironment) -> Vec<String> {
+    let mut lines = Vec::new();
+    if environment.missing_compiler {
+        lines.push("Compilador C/C++: não encontrado.".to_owned());
+    }
+    for requirement in &environment.runtime_requirements {
+        match &requirement.status {
+            RequirementStatus::Missing => lines.push(format!(
+                "{} {}: não encontrado.",
+                requirement.runtime, requirement.version.value
+            )),
+            RequirementStatus::Incompatible {
+                installed_version, ..
+            } => lines.push(format!(
+                "{} {}: instalado {installed_version}, incompatível.",
+                requirement.runtime, requirement.version.value
+            )),
+            _ => {}
+        }
+    }
+    if !environment.missing_programs.is_empty() {
+        lines.push(format!(
+            "Programas não encontrados: {}.",
+            environment.missing_programs.join(", ")
+        ));
+    }
+    if !environment.missing_dependencies.is_empty() {
+        lines.push(format!(
+            "Dependências não instaladas: {}.",
+            environment.missing_dependencies.join(", ")
+        ));
+    }
+    if !environment.missing_php_extensions.is_empty() {
+        lines.push(format!(
+            "Extensões PHP ausentes: {}.",
+            environment.missing_php_extensions.join(", ")
+        ));
+    }
+    lines.extend(
+        environment
+            .databases
+            .iter()
+            .filter_map(DatabaseStatus::rejection),
+    );
+    lines
+}
+
+/// The rules in order: the first that holds decides.
+fn decide(facts: &ProjectFacts<'_>) -> ProjectSummary {
+    let environment = facts.environment;
+    let summary = |rule, state, reason: Option<String>, primary| ProjectSummary {
         state,
         reason,
         http: None,
@@ -227,6 +464,8 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         technical: vec![],
         retry: false,
         stoppable: false,
+        rule,
+        evidence: vec![],
     };
     if facts.running || facts.container_running {
         let url = facts
@@ -264,11 +503,14 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             technical: vec![],
             retry: false,
             stoppable: false,
+            rule: DiagnosticRule::Running,
+            evidence: vec![],
         };
     }
     match facts.dependency_install {
         Some(DependencyInstallStatus::Running | DependencyInstallStatus::Cancelling) => {
             return summary(
+                DiagnosticRule::PreparationRunning,
                 ProjectState::Starting,
                 Some(if facts.preparing_compiler {
                     "Preparando o compilador C/C++".into()
@@ -280,6 +522,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         }
         Some(DependencyInstallStatus::Failed { .. }) => {
             return summary(
+                DiagnosticRule::PreparationFailed,
                 ProjectState::Problem,
                 Some(if facts.preparing_compiler {
                     super::COMPILER_FAILED.into()
@@ -293,6 +536,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if let Some(step) = &facts.database_step {
         return summary(
+            DiagnosticRule::DatabasePreparing,
             ProjectState::Starting,
             Some(step.clone()),
             PrimaryAction::Wait,
@@ -302,6 +546,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         return ProjectSummary {
             stoppable: true,
             ..summary(
+                DiagnosticRule::Building,
                 ProjectState::Starting,
                 Some(build_steps::BUILDING.into()),
                 PrimaryAction::ViewLogs,
@@ -310,6 +555,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if facts.starting {
         return summary(
+            DiagnosticRule::Starting,
             ProjectState::Starting,
             Some("Iniciando os serviços".into()),
             PrimaryAction::ViewLogs,
@@ -317,6 +563,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if let Some(failure) = facts.database_failure {
         let mut problem = summary(
+            DiagnosticRule::DatabaseFailed,
             ProjectState::Problem,
             Some(failure.reason.clone()),
             failure
@@ -328,6 +575,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if facts.migration_failed {
         let mut problem = summary(
+            DiagnosticRule::MigrationFailed,
             ProjectState::Problem,
             Some(migration_ui::FAILED.into()),
             PrimaryAction::ViewMigrationLogs,
@@ -337,6 +585,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if facts.resolving_plan {
         return summary(
+            DiagnosticRule::ResolvingPlan,
             ProjectState::Starting,
             Some("Consultando as versões disponíveis".into()),
             PrimaryAction::Wait,
@@ -344,17 +593,27 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if facts.environment_pending {
         return summary(
+            DiagnosticRule::Verifying,
             ProjectState::Stopped,
             Some("Verificando o projeto".into()),
             PrimaryAction::Wait,
         );
     }
     if let Some(failed) = &facts.failed_process {
-        let reason = failed.failure.map_or_else(
-            || format!("{} parou com erro", failed.name),
-            ProcessFailure::sentence,
+        // Without a known cause, the card says so and points to the logs (T034).
+        let reason = match failed.failure {
+            Some(ProcessFailure::Exited) | None => format!(
+                "{} parou com erro. Veja os logs para encontrar a causa.",
+                failed.name
+            ),
+            Some(failure) => failure.sentence(),
+        };
+        let mut problem = summary(
+            DiagnosticRule::ProcessFailed,
+            ProjectState::Problem,
+            Some(reason),
+            PrimaryAction::ViewLogs,
         );
-        let mut problem = summary(ProjectState::Problem, Some(reason), PrimaryAction::ViewLogs);
         problem.technical = vec![
             format!("Processo: {}", failed.name),
             format!("Comando: {}", failed.command),
@@ -372,15 +631,17 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if let Some(error) = environment.manifest_errors.first() {
         return summary(
+            DiagnosticRule::ManifestInvalid,
             ProjectState::Problem,
             Some(format!(
-                "{error}. Corrija o arquivo para iniciar este projeto"
+                "{error}. Corrija o arquivo indicado e atualize o projeto."
             )),
             PrimaryAction::Details,
         );
     }
     if facts.has_containers && environment.command_count == 0 {
         let mut stopped = summary(
+            DiagnosticRule::ContainersOnly,
             ProjectState::Stopped,
             Some("Roda com containers".into()),
             PrimaryAction::StartWithContainers,
@@ -390,6 +651,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     }
     if environment.command_count == 0 {
         return summary(
+            DiagnosticRule::NoCommand,
             ProjectState::Stopped,
             Some(no_command_reason(
                 facts.languages,
@@ -406,7 +668,12 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             .iter()
             .any(|database| database.not_running() || database.rejection().is_some())
     {
-        return summary(ProjectState::Stopped, None, PrimaryAction::Start);
+        return summary(
+            DiagnosticRule::Ready,
+            ProjectState::Stopped,
+            None,
+            PrimaryAction::Start,
+        );
     }
     // A database server that is not running, before any start, is not a failure: the project
     // is stopped and says why. A refused login or a missing database is a problem.
@@ -442,6 +709,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             })
             .unwrap_or_else(|| "O banco de dados deste projeto não está rodando.".into());
         return summary(
+            DiagnosticRule::DatabaseStopped,
             ProjectState::Stopped,
             Some(reason),
             if can_prepare {
@@ -475,9 +743,19 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         } else {
             reason
         };
-        return summary(ProjectState::Stopped, Some(reason), primary);
+        return summary(
+            DiagnosticRule::NeedsPreparation,
+            ProjectState::Stopped,
+            Some(reason),
+            primary,
+        );
     }
-    summary(ProjectState::Problem, Some(reason), primary)
+    summary(
+        DiagnosticRule::RequirementProblem,
+        ProjectState::Problem,
+        Some(reason),
+        primary,
+    )
 }
 
 fn language_missing(environment: &ProjectEnvironment) -> bool {
@@ -1721,6 +1999,28 @@ impl ProjectCard<'_> {
                 ui.label(RichText::new(text).color(theme::MUTED).size(12.0));
             }
         };
+        // Why the card says what it says: the rule and what the app found (T034).
+        ui.label(
+            RichText::new("Por que este diagnóstico?")
+                .strong()
+                .size(12.0),
+        );
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("Regra: {}", self.summary.rule.name())).size(12.0),
+            )
+            .selectable(true),
+        );
+        if self.summary.evidence.is_empty() {
+            ui.label(RichText::new("Encontrado: não verificado").size(12.0));
+        }
+        for line in &self.summary.evidence {
+            ui.add(
+                egui::Label::new(RichText::new(format!("Encontrado: {line}")).size(12.0))
+                    .selectable(true)
+                    .wrap(),
+            );
+        }
         for line in self.summary.technical.iter().chain(&self.languages) {
             detail(ui, line);
         }
@@ -2267,6 +2567,129 @@ mod tests {
     }
 
     #[test]
+    fn each_diagnosis_names_its_rule_and_what_was_found() {
+        // A process that stopped without a known cause: the card says so, and Detalhes
+        // says the cause was not verified instead of guessing one.
+        let environment = ready();
+        let mut stopped = facts(&environment);
+        stopped.failed_process = Some(FailedProcess {
+            name: "web",
+            command: "npm run dev".into(),
+            exit_code: None,
+            failure: None,
+        });
+        let summary = summarize_project(&stopped);
+        assert_eq!(summary.rule, DiagnosticRule::ProcessFailed);
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some("web parou com erro. Veja os logs para encontrar a causa.")
+        );
+        assert_eq!(
+            summary.evidence,
+            vec![
+                "web terminou; código de saída não verificado.".to_owned(),
+                "nenhuma causa específica foi verificada.".to_owned()
+            ]
+        );
+        // A known cause keeps its own sentence and is the verified cause.
+        let port = ProcessFailure::PortTaken {
+            port: Port::new(3000).unwrap(),
+            owner: None,
+        };
+        stopped.failed_process = Some(FailedProcess {
+            name: "web",
+            command: "npm run dev".into(),
+            exit_code: Some(1),
+            failure: Some(&port),
+        });
+        let summary = summarize_project(&stopped);
+        assert_eq!(summary.reason.as_deref(), Some(port.sentence().as_str()));
+        assert_eq!(
+            summary.evidence,
+            vec![
+                "web terminou com o código de saída 1.".to_owned(),
+                format!("Causa verificada: {}", port.sentence())
+            ]
+        );
+
+        // A missing compiler and a missing program: both found, one per line.
+        let missing = ProjectEnvironment {
+            command_count: 1,
+            missing_compiler: true,
+            missing_programs: vec!["cmake".into()],
+            ..ProjectEnvironment::default()
+        };
+        let summary = summarize_project(&facts(&missing));
+        assert_eq!(summary.rule, DiagnosticRule::NeedsPreparation);
+        assert_eq!(
+            summary.evidence,
+            vec![
+                "Compilador C/C++: não encontrado.".to_owned(),
+                "Programas não encontrados: cmake.".to_owned()
+            ]
+        );
+
+        // Ready to start.
+        let summary = summarize_project(&facts(&environment));
+        assert_eq!(summary.rule, DiagnosticRule::Ready);
+        assert_eq!(
+            summary.evidence,
+            vec!["1 comando encontrado(s); requisitos verificados.".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_first_rule_that_holds_decides_and_the_same_facts_give_the_same_result() {
+        // Two conditions at once: an invalid manifest and a failed process. The process rule
+        // comes first in the documented order.
+        let invalid = ProjectEnvironment {
+            command_count: 1,
+            manifest_errors: vec!["package.json inválido (linha 1)".into()],
+            ..ProjectEnvironment::default()
+        };
+        let mut both = facts(&invalid);
+        both.failed_process = Some(FailedProcess {
+            name: "web",
+            command: "npm run dev".into(),
+            exit_code: Some(1),
+            failure: None,
+        });
+        let first = summarize_project(&both);
+        assert_eq!(first.rule, DiagnosticRule::ProcessFailed);
+        for _ in 0..5 {
+            assert_eq!(summarize_project(&both), first);
+        }
+        let position = |rule| {
+            DiagnosticRule::ALL
+                .iter()
+                .position(|candidate| *candidate == rule)
+                .unwrap()
+        };
+        assert!(
+            position(DiagnosticRule::ProcessFailed) < position(DiagnosticRule::ManifestInvalid)
+        );
+        // Building comes before starting: a project compiling and starting says compiling.
+        let environment = ready();
+        let mut busy = facts(&environment);
+        busy.building = true;
+        busy.starting = true;
+        assert_eq!(summarize_project(&busy).rule, DiagnosticRule::Building);
+    }
+
+    #[test]
+    fn the_documented_precedence_is_the_order_of_the_code() {
+        let doc = include_str!("../../docs/DETALHES-TECNICOS.md");
+        let mut cursor = 0;
+        for (index, rule) in DiagnosticRule::ALL.iter().enumerate() {
+            let line = format!("| {} | {} |", index + 1, rule.name());
+            let found = doc[cursor..]
+                .find(&line)
+                .unwrap_or_else(|| panic!("falta na documentação, nesta ordem: {line}"));
+            cursor += found + line.len();
+        }
+    }
+
+    #[test]
     fn problems_explain_the_reason_and_offer_one_action() {
         let invalid = ProjectEnvironment {
             manifest_errors: vec!["package.json inválido (linha 1)".into()],
@@ -2276,7 +2699,14 @@ mod tests {
         assert_eq!(summary.state, ProjectState::Problem);
         assert_eq!(
             summary.reason.as_deref(),
-            Some("package.json inválido (linha 1). Corrija o arquivo para iniciar este projeto")
+            Some(
+                "package.json inválido (linha 1). Corrija o arquivo indicado e atualize o projeto."
+            )
+        );
+        assert_eq!(summary.rule, DiagnosticRule::ManifestInvalid);
+        assert_eq!(
+            summary.evidence,
+            vec!["package.json inválido (linha 1)".to_owned()]
         );
         assert_eq!(summary.primary, PrimaryAction::Details);
 
@@ -2292,7 +2722,7 @@ mod tests {
         assert_eq!(summary.state, ProjectState::Problem);
         assert_eq!(
             summary.reason.as_deref(),
-            Some("npm run start parou com erro")
+            Some("npm run start parou com erro. Veja os logs para encontrar a causa.")
         );
         assert_eq!(summary.primary, PrimaryAction::ViewLogs);
         assert!(summary.technical.contains(&"Código de saída: 1".to_owned()));
