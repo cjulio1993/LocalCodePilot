@@ -175,13 +175,22 @@ pub(super) struct ProjectFacts<'a> {
 
 /// Why there is nothing to start: a language the app does not start yet is named, so the
 /// card does not suggest a command is missing from the project.
-fn no_command_reason(languages: &[RuntimeKind], ambiguous: bool) -> String {
-    if ambiguous {
-        return "Encontramos mais de uma forma de iniciar este projeto. Defina qual comando usar."
-            .into();
+fn no_command_reason(languages: &[RuntimeKind], ambiguous: Option<&str>) -> String {
+    // C/C++ builds programs (CMake, Meson, Visual Studio): the card speaks of programs (T033).
+    if let Some(entries) = ambiguous {
+        return if entries.starts_with("C/C++") {
+            "Encontramos mais de um programa para iniciar neste projeto. Defina qual comando usar."
+        } else {
+            "Encontramos mais de uma forma de iniciar este projeto. Defina qual comando usar."
+        }
+        .into();
     }
     match languages {
         [] => "Nenhum comando para iniciar foi encontrado".into(),
+        [RuntimeKind::Cpp] => {
+            "Reconhecemos C/C++, mas não encontramos um programa único para iniciar. Defina o comando de início."
+                .into()
+        }
         languages => {
             let names = languages
                 .iter()
@@ -374,7 +383,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             ProjectState::Stopped,
             Some(no_command_reason(
                 facts.languages,
-                environment.ambiguous_entry.is_some(),
+                environment.ambiguous_entry.as_deref(),
             )),
             PrimaryAction::DefineCommand,
         );
@@ -2392,6 +2401,27 @@ mod tests {
             )
         );
         assert_eq!(summary.primary, PrimaryAction::DefineCommand);
+        // C/C++: the card speaks of programs (T033).
+        let mut cpp = facts(&empty);
+        cpp.languages = &[RuntimeKind::Cpp];
+        assert_eq!(
+            summarize_project(&cpp).reason.as_deref(),
+            Some(
+                "Reconhecemos C/C++, mas não encontramos um programa único para iniciar. Defina o comando de início."
+            )
+        );
+        let cpp_ambiguous = ProjectEnvironment {
+            ambiguous_entry: Some("C/C++: servidor, cliente".into()),
+            ..ProjectEnvironment::default()
+        };
+        let mut two_programs = facts(&cpp_ambiguous);
+        two_programs.languages = &[RuntimeKind::Cpp];
+        assert_eq!(
+            summarize_project(&two_programs).reason.as_deref(),
+            Some(
+                "Encontramos mais de um programa para iniciar neste projeto. Defina qual comando usar."
+            )
+        );
         // Several plausible entries: the card says so instead of picking one (T028.01).
         let ambiguous = ProjectEnvironment {
             ambiguous_entry: Some("Perl: a.pl, b.pl".into()),
