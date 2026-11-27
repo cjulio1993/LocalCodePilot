@@ -176,7 +176,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Use Abrir site quando o projeto mostrar um endereço. Se a página não abrir, confira o estado, o endereço e a porta, depois use Ver logs.",
             ),
             Block::Text(
-                "Ver logs leva a Processos, para projetos que rodam direto na máquina, ou a Containers, para projetos com Docker ou Podman.",
+                "Ver logs leva à aba Processos ou Containers em Serviços, conforme a forma de execução do projeto.",
             ),
             Block::Text(
                 "Os logs salvos ficam neste computador por até 30 dias. Senhas e tokens em formatos conhecidos, como TOKEN=valor, aparecem como •••• nos logs salvos e em Copiar logs. Limpar histórico, em Configurações, remove todos os logs salvos.",
@@ -201,7 +201,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Dois projetos com o mesmo nome de ambiente Compose, por exemplo duas pastas docker/ com compose.yaml, ficam bloqueados para iniciar e parar até receberem nomes diferentes. Isso evita que um projeto altere os containers e os dados do outro. No aviso do ambiente, Como resolver mostra os passos e a configuração sugerida; se os containers do outro projeto estiverem rodando, Parar containers do outro projeto para só eles, sem remover volumes.",
             ),
         ],
-        link: Some((Page::Containers, "Abrir Containers")),
+        link: Some((Page::Containers, "Abrir Serviços > Containers")),
     },
     HelpSection {
         id: "bancos",

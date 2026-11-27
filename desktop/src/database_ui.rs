@@ -123,7 +123,7 @@ fn looked_after(engine: DatabaseEngine) -> bool {
 }
 
 const NO_CONTAINER_ENGINE: &str =
-    "Para preparar o SQL Server, prepare o Docker ou o Podman na página Containers.";
+    "Para preparar o SQL Server, prepare o Docker ou o Podman em Serviços > Containers.";
 
 /// The first container engine that answers (Docker first).
 fn ready_container_engine(path: Option<&std::ffi::OsStr>) -> Option<&'static str> {

@@ -140,6 +140,12 @@ impl Page {
         }
     }
 
+    /// The tabs of Serviços (T037): Processos and Containers. Each keeps its own saved key, so
+    /// a page saved by an older version opens the same tab.
+    fn is_service(self) -> bool {
+        matches!(self, Self::Processes | Self::Containers)
+    }
+
     fn from_key(key: &str) -> Self {
         match key {
             "projects" => Self::Projects,
@@ -530,6 +536,8 @@ enum DiscoveryEvent {
 
 pub struct LocalCodePilot {
     page: Page,
+    /// The last tab of Serviços (Processos or Containers), opened again from the sidebar.
+    last_services_tab: Page,
     projects: Vec<Project>,
     /// The managed processes and their ports (T025).
     managed: ManagedProcesses,
@@ -675,6 +683,11 @@ impl LocalCodePilot {
         Self {
             page,
             projects: cached_projects,
+            last_services_tab: if page.is_service() {
+                page
+            } else {
+                Page::Processes
+            },
             managed: ManagedProcesses::default(),
             migrations: migration_ui::MigrationState::default(),
             migration_targets: HashMap::new(),
@@ -1150,8 +1163,8 @@ impl LocalCodePilot {
                             "Projetos",
                             Some(self.projects.len()),
                         );
-                        self.nav_button(ui, Page::Processes, TERMINAL, "Processos", None);
-                        self.nav_button(ui, Page::Containers, CUBE, "Containers", None);
+                        // One entry for what runs: Processos and Containers are its tabs.
+                        self.nav_button(ui, Page::Processes, CUBE, "Serviços", None);
                         ui.add_space(14.0);
                         nav_group(ui, collapsed, "Aplicativo");
                         self.nav_button(ui, Page::Help, BOOK_OPEN, "Ajuda", None);
@@ -1171,7 +1184,17 @@ impl LocalCodePilot {
         projects: Option<usize>,
     ) {
         let collapsed = self.workspace_state.sidebar_collapsed;
-        let selected = self.page == page;
+        // Serviços is selected on any of its tabs, and opens the last one used.
+        let selected = if page.is_service() {
+            self.page.is_service()
+        } else {
+            self.page == page
+        };
+        let page = if page.is_service() {
+            self.last_services_tab
+        } else {
+            page
+        };
         let color = if selected {
             Color32::WHITE
         } else {
@@ -1216,16 +1239,61 @@ impl LocalCodePilot {
             response = response.on_hover_text(&name);
         }
         if response.clicked() {
-            self.page = page;
-            if matches!(page, Page::Processes | Page::Containers) {
+            self.open_page(page, ui.ctx());
+        }
+    }
+
+    /// Opens a page or a tab of Serviços, as the sidebar and the tabs do.
+    fn open_page(&mut self, page: Page, ctx: &egui::Context) {
+        let entering_services = page.is_service() && !self.page.is_service();
+        self.page = page;
+        if page.is_service() {
+            self.last_services_tab = page;
+            if entering_services {
                 self.focused_project = None;
                 self.search.clear();
             }
-            if matches!(page, Page::Processes | Page::Containers)
-                && !self.container_refresh_pending()
-            {
-                self.refresh_containers(ui.ctx().clone());
+            if !self.container_refresh_pending() {
+                self.refresh_containers(ctx.clone());
             }
+        }
+    }
+
+    /// The tabs of Serviços: Processos and Containers (T037). Screen readers hear each as a
+    /// tab and which one is selected.
+    fn services_tabs(&mut self, ui: &mut egui::Ui) {
+        let mut open = None;
+        ui.horizontal(|ui| {
+            for (page, label) in [
+                (Page::Processes, "Processos"),
+                (Page::Containers, "Containers"),
+            ] {
+                let selected = self.page == page;
+                let response = ui.add(
+                    egui::Button::selectable(
+                        selected,
+                        RichText::new(label)
+                            .size(theme::TEXT_BODY)
+                            .color(if selected {
+                                Color32::WHITE
+                            } else {
+                                theme::MUTED
+                            }),
+                    )
+                    .min_size(egui::vec2(120.0, 32.0))
+                    .corner_radius(8),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::Tab, true, selected, label)
+                });
+                if response.clicked() && !selected {
+                    open = Some(page);
+                }
+            }
+        });
+        ui.add_space(6.0);
+        if let Some(page) = open {
+            self.open_page(page, ui.ctx());
         }
     }
 
@@ -1280,8 +1348,7 @@ impl LocalCodePilot {
         match self.page {
             Page::Overview => "Visão geral",
             Page::Projects => "Projetos",
-            Page::Processes => "Processos",
-            Page::Containers => "Containers",
+            Page::Processes | Page::Containers => "Serviços",
             Page::Help => "Ajuda",
             Page::Settings => "Configurações",
         }
@@ -1931,7 +1998,7 @@ impl LocalCodePilot {
             self.focused_project = Some(project_path.to_path_buf());
             self.page = Page::Containers;
             self.notify(
-                "Este projeto usa o banco definido no Compose. Inicie os serviços na página Containers.",
+                "Este projeto usa o banco definido no Compose. Inicie os serviços em Serviços > Containers.",
             );
             return;
         }
@@ -4821,6 +4888,9 @@ impl LocalCodePilot {
             .show(root_ui, |ui| {
                 self.show_update_banner(ui);
                 self.config_recovery_banner(ui);
+                if self.page.is_service() {
+                    self.services_tabs(ui);
+                }
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Overview => self.overview(ui),
                     Page::Projects => self.projects_page(&ctx, ui),
@@ -4856,6 +4926,11 @@ impl eframe::App for LocalCodePilot {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Links and actions open a tab directly ("Ver logs", "Abrir Containers"): the
+        // sidebar remembers it.
+        if self.page.is_service() {
+            self.last_services_tab = self.page;
+        }
         self.sidebar(ui);
         self.topbar(ui);
         self.content(ui);
@@ -8271,6 +8346,17 @@ mod tests {
         );
         assert_eq!(super::choose_listening_port(&[port(9229)], &[]), None);
         assert_eq!(super::choose_listening_port(&[], &printed), None);
+    }
+
+    #[test]
+    fn processes_and_containers_are_the_tabs_of_servicos() {
+        // A page saved by an older version opens the same tab of Serviços.
+        assert!(Page::from_key("processes") == Page::Processes);
+        assert!(Page::from_key("containers") == Page::Containers);
+        assert!(Page::Processes.is_service() && Page::Containers.is_service());
+        for page in [Page::Overview, Page::Projects, Page::Help, Page::Settings] {
+            assert!(!page.is_service());
+        }
     }
 
     #[test]
