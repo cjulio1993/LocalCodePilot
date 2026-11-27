@@ -283,7 +283,7 @@ const SECTIONS: &[HelpSection] = &[
         title: "Atualizar o LocalCodePilot",
         blocks: &[
             Block::Text(
-                "A atualização pelo aplicativo é experimental. Quando há uma versão nova, o aviso mostra o que mudou e Atualizar agora; a mesma ação fica em Configurações > Atualizações. Antes de baixar, o LocalCodePilot verifica a assinatura dos checksums.",
+                "A atualização pelo aplicativo é experimental. Quando há uma versão nova, o aviso mostra o que mudou e Atualizar agora; a mesma ação fica em Configurações > Atualizações. Antes de baixar, o LocalCodePilot verifica a assinatura dos checksums. Depois de uma atualização concluída, as novidades da versão aparecem uma vez. Você pode vê-las novamente em Configurações > Atualizações, ao lado da versão instalada, ou abrir as notas completas.",
             ),
             Block::Item(
                 "Etapas",
