@@ -171,7 +171,10 @@ impl ProcessFailure {
             Self::Exited => "O processo fechou inesperadamente.".into(),
             Self::SpawnFailed(_) => "Não foi possível iniciar o processo.".into(),
             Self::WaitFailed(_) => "Não foi possível acompanhar o processo.".into(),
-            Self::BuildFailed(_) => "Não foi possível compilar o projeto. Veja os logs.".into(),
+            Self::BuildFailed(_) => {
+                "A compilação falhou. O projeto não foi iniciado. Use Ver logs para encontrar o erro."
+                    .into()
+            }
         }
     }
 

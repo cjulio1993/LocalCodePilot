@@ -94,6 +94,11 @@ pub enum InstallationStepKind {
         manager: String,
         install_directory: PathBuf,
     },
+    /// Confirms that a C/C++ compiler is installed (T033.03). With `wait`, checks again
+    /// until the system's own installer finishes (the Apple window) or the person cancels.
+    VerifyCppCompiler {
+        wait: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

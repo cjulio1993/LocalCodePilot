@@ -230,6 +230,9 @@ enum ProcessAction {
 struct ProjectEnvironment {
     command_count: usize,
     missing_programs: Vec<String>,
+    /// The project compiles C/C++ (CMake, Meson, Visual Studio, `make run`) and this machine
+    /// has no compiler (T033.03).
+    missing_compiler: bool,
     missing_dependencies: Vec<String>,
     install_steps: Vec<DependencyInstall>,
     runtime_requirements: Vec<RuntimeRequirement>,
@@ -342,6 +345,7 @@ impl DependencyInstallSession {
 impl ProjectEnvironment {
     fn is_ready(&self) -> bool {
         self.command_count > 0
+            && !self.missing_compiler
             && self.missing_programs.is_empty()
             && self.missing_dependencies.is_empty()
             && self.runtime_requirements.iter().all(|requirement| {
@@ -359,6 +363,8 @@ impl ProjectEnvironment {
             .any(|requirement| matches!(requirement.status, RequirementStatus::Incompatible { .. }))
         {
             ("Versão incompatível", Color32::from_rgb(255, 205, 75))
+        } else if self.missing_compiler {
+            ("Compilador C/C++ ausente", Color32::from_rgb(255, 205, 75))
         } else if !self.missing_programs.is_empty()
             || self
                 .runtime_requirements
@@ -396,6 +402,8 @@ impl ProjectEnvironment {
                 "{} {installed_version} não atende ao projeto ({required_version})",
                 requirement.runtime
             ))
+        } else if self.missing_compiler {
+            Some(missing_compiler_sentence())
         } else if let Some(requirement) = self
             .runtime_requirements
             .iter()
@@ -447,7 +455,14 @@ impl ProjectEnvironment {
     }
 
     fn can_prepare_environment(&self) -> bool {
-        cfg!(target_os = "windows") && self.needs_environment_preparation()
+        if cfg!(target_os = "windows") {
+            self.missing_compiler || self.needs_environment_preparation()
+        } else {
+            // macOS: only the Apple command line tools, through the Apple installer (T033.03).
+            cfg!(target_os = "macos")
+                && self.missing_compiler
+                && !self.needs_environment_preparation()
+        }
     }
 
     fn needs_environment_preparation(&self) -> bool {
@@ -2167,11 +2182,16 @@ impl LocalCodePilot {
                         }
                     }
                 };
-                completed.push((project_path.clone(), result, PlanVerb::of(&session.plan)));
+                completed.push((
+                    project_path.clone(),
+                    result,
+                    PlanVerb::of(&session.plan),
+                    prepares_compiler(&session.plan),
+                ));
             }
         }
 
-        for (project_path, result, verb) in completed {
+        for (project_path, result, verb, compiler) in completed {
             self.record_environment_preparation(
                 &project_path,
                 if result.is_ok() {
@@ -2213,7 +2233,11 @@ impl LocalCodePilot {
                 }
                 Err(error) => {
                     self.dependency_terminal = Some(project_path);
-                    self.notify(verb.failed(&error));
+                    if compiler {
+                        self.notify(COMPILER_FAILED);
+                    } else {
+                        self.notify(verb.failed(&error));
+                    }
                 }
             }
         }
@@ -2881,6 +2905,9 @@ impl LocalCodePilot {
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.label(RichText::new(&plan.title).strong().size(16.0));
+                        if let Some(notice) = compiler_notice(&plan) {
+                            ui.add(egui::Label::new(RichText::new(notice).strong()).wrap());
+                        }
                         ui.label(
                             RichText::new(display_path(&plan.project_path))
                                 .color(theme::MUTED)
@@ -5217,6 +5244,9 @@ fn resolve_environment_plan_with_tools_directory(
     tools_directory: Option<PathBuf>,
 ) -> Result<InstallationPlan, String> {
     let mut steps = Vec::new();
+    if environment.missing_compiler {
+        steps.extend(compiler_steps(project_path));
+    }
     let node_constraints = environment
         .runtime_requirements
         .iter()
@@ -5739,8 +5769,15 @@ fn command_argument_after(step: &InstallationStep, argument: &str) -> Option<Str
 
 fn installation_step_command(step: &InstallationStep) -> String {
     match &step.kind {
-        InstallationStepKind::Command { program, args, .. } => std::iter::once(program.as_str())
-            .chain(args.iter().map(String::as_str))
+        // An argument with spaces is quoted, as typed in a terminal (`--override "--wait …"`).
+        InstallationStepKind::Command { program, args, .. } => std::iter::once(program.clone())
+            .chain(args.iter().map(|arg| {
+                if arg.contains(' ') {
+                    format!("\"{arg}\"")
+                } else {
+                    arg.clone()
+                }
+            }))
             .collect::<Vec<_>>()
             .join(" "),
         InstallationStepKind::RefreshEnvironment => "Atualizar PATH".into(),
@@ -5756,6 +5793,18 @@ fn installation_step_command(step: &InstallationStep) -> String {
         ),
         InstallationStepKind::ConfigurePhpExtension { extension } => {
             format!("habilitar ext-{extension} no php.ini")
+        }
+        InstallationStepKind::VerifyCppCompiler { .. } => {
+            if cfg!(windows) {
+                format!(
+                    "vswhere -latest -products * -requires {}",
+                    localcodepilot_runtime::build_languages::MSVC_COMPONENT
+                )
+            } else if cfg!(target_os = "macos") {
+                "xcode-select -p".into()
+            } else {
+                "cc --version".into()
+            }
         }
         InstallationStepKind::CreateCorepackShim {
             manager,
@@ -5835,6 +5884,9 @@ fn run_installation_plan(
                 manager,
                 install_directory,
             } => create_corepack_shim(manager, install_directory)?,
+            InstallationStepKind::VerifyCppCompiler { wait } => {
+                verify_cpp_compiler(*wait, environment_path.as_deref(), sender, cancel)?;
+            }
             InstallationStepKind::Command {
                 program,
                 args,
@@ -5859,19 +5911,27 @@ fn run_installation_plan(
                     .take()
                     .map(|stderr| spawn_dependency_output_reader(stderr, sender.clone()));
                 let step_started = Instant::now();
+                let step_timeout = if args
+                    .iter()
+                    .any(|arg| arg == localcodepilot_runtime::build_languages::BUILD_TOOLS_PACKAGE)
+                {
+                    COMPILER_STEP_TIMEOUT
+                } else {
+                    INSTALLATION_STEP_TIMEOUT
+                };
                 let status = loop {
                     if cancel.load(Ordering::Relaxed) {
                         let _ = child.kill();
                         let _ = child.wait();
                         return Err(PLAN_CANCELLED.into());
                     }
-                    if step_started.elapsed() >= INSTALLATION_STEP_TIMEOUT {
+                    if step_started.elapsed() >= step_timeout {
                         let _ = child.kill();
                         let _ = child.wait();
                         return Err(format!(
                             "{} excedeu o limite de {} minutos",
                             step.label,
-                            INSTALLATION_STEP_TIMEOUT.as_secs() / 60
+                            step_timeout.as_secs() / 60
                         ));
                     }
                     match child.try_wait() {
@@ -5900,6 +5960,12 @@ fn run_installation_plan(
                     let _ = sender.send(DependencyInstallEvent::Log(
                         "[informação] Pacote já instalado; a versão será validada nas próximas etapas".into(),
                     ));
+                } else if program == "xcode-select" {
+                    // It only opens the Apple installer; whether the tools arrive is what the
+                    // next step checks (it also answers nonzero when they are being installed).
+                    let _ = sender.send(DependencyInstallEvent::Log(
+                        "[informação] Conclua a instalação na janela da Apple".into(),
+                    ));
                 } else if !status.success() {
                     let error = format!(
                         "{} falhou com código de saída {}",
@@ -5919,6 +5985,48 @@ fn run_installation_plan(
         )));
     }
     Ok(InstallationOutcome { environment_path })
+}
+
+/// Confirms the C/C++ compiler; with `wait`, checks again every few seconds until the Apple
+/// installer finishes, the person cancels, or the step's time runs out.
+fn verify_cpp_compiler(
+    wait: bool,
+    environment_path: Option<&OsStr>,
+    sender: &mpsc::Sender<DependencyInstallEvent>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let mut announced = false;
+    loop {
+        if localcodepilot_runtime::build_languages::cpp_compiler_available(environment_path) {
+            let _ = sender.send(DependencyInstallEvent::Log(
+                "[verificado] compilador C/C++ encontrado".into(),
+            ));
+            return Ok(());
+        }
+        if !wait {
+            return Err("o compilador C/C++ não foi encontrado depois da instalação".into());
+        }
+        if !announced {
+            announced = true;
+            let _ = sender.send(DependencyInstallEvent::Log(
+                "[aguardando] instalador da Apple; o LocalCodePilot confere a cada poucos segundos"
+                    .into(),
+            ));
+        }
+        if started.elapsed() >= INSTALLATION_STEP_TIMEOUT {
+            return Err(format!(
+                "o compilador não apareceu em {} minutos; conclua o instalador da Apple e use Preparar ambiente de novo",
+                INSTALLATION_STEP_TIMEOUT.as_secs() / 60
+            ));
+        }
+        for _ in 0..30 {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(PLAN_CANCELLED.into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
 }
 
 fn install_composer(
@@ -6425,6 +6533,141 @@ fn decode_oem(bytes: &[u8]) -> Option<String> {
         &wide[..usize::try_from(written).ok()?],
     ))
 }
+
+fn program_stem(program: &str) -> String {
+    Path::new(program)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+fn is_msbuild(program: &str) -> bool {
+    program_stem(program) == "msbuild"
+}
+
+/// The process compiles C/C++ before it runs: CMake, Meson or MSBuild steps, or `make run`.
+fn compiles_cpp(process: &ProjectProcess) -> bool {
+    process.prepare.iter().any(|step| {
+        matches!(
+            program_stem(&step.program).as_str(),
+            "cmake" | "meson" | "msbuild"
+        )
+    }) || (matches!(program_stem(&process.program).as_str(), "make" | "gmake")
+        && process.args == ["run"])
+}
+
+/// What the card says when the compiler is missing, for this system (T033.03).
+fn missing_compiler_sentence() -> String {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        return "Falta um compilador C/C++ para este projeto. Use Preparar ambiente.".into();
+    }
+    let package = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|text| localcodepilot_runtime::build_languages::linux_compiler_package(&text));
+    linux_compiler_sentence(package)
+}
+
+fn linux_compiler_sentence(package: Option<&str>) -> String {
+    match package {
+        Some(package) => format!(
+            "Falta um compilador C/C++. Instale o pacote {package} da sua distribuição e use Atualizar."
+        ),
+        None => "Falta um compilador C/C++. Instale o pacote de desenvolvimento da sua distribuição (por exemplo, build-essential ou gcc) e use Atualizar.".into(),
+    }
+}
+
+/// The steps that install the C/C++ compiler (T033.03): the Microsoft Build Tools with the
+/// C++ workload on Windows; on macOS, the Apple installer, then a wait for it to finish.
+fn compiler_steps(project_path: &Path) -> Vec<InstallationStep> {
+    use localcodepilot_runtime::build_languages::{BUILD_TOOLS_PACKAGE, BUILD_TOOLS_WORKLOAD};
+    if cfg!(target_os = "macos") {
+        return vec![
+            InstallationStep {
+                label: "Abrir o instalador da Apple".into(),
+                detail: "As ferramentas de linha de comando da Apple são instaladas pela janela do macOS".into(),
+                source: Some("Apple · xcode-select".into()),
+                requires_elevation: false,
+                kind: InstallationStepKind::Command {
+                    program: "xcode-select".into(),
+                    args: vec!["--install".into()],
+                    working_directory: project_path.to_path_buf(),
+                },
+            },
+            InstallationStep {
+                label: "Verificar compilador".into(),
+                detail: "Aguardar a conclusão no instalador da Apple e confirmar o compilador".into(),
+                source: None,
+                requires_elevation: false,
+                kind: InstallationStepKind::VerifyCppCompiler { wait: true },
+            },
+        ];
+    }
+    if !cfg!(target_os = "windows") {
+        // Linux: the card explains the package; the app does not install with sudo.
+        return Vec::new();
+    }
+    vec![
+        InstallationStep {
+            label: "Instalar ferramentas C/C++".into(),
+            detail: "Baixar e instalar o Visual Studio Build Tools 2022 com o compilador C/C++ da Microsoft (MSVC) e o SDK do Windows".into(),
+            source: Some(format!("Microsoft · winget · {BUILD_TOOLS_PACKAGE}")),
+            requires_elevation: true,
+            kind: InstallationStepKind::Command {
+                program: "winget".into(),
+                args: vec![
+                    "install".into(),
+                    "--id".into(),
+                    BUILD_TOOLS_PACKAGE.into(),
+                    "--exact".into(),
+                    "--source".into(),
+                    "winget".into(),
+                    "--accept-package-agreements".into(),
+                    "--accept-source-agreements".into(),
+                    "--disable-interactivity".into(),
+                    "--override".into(),
+                    format!(
+                        "--wait --passive --norestart --add {BUILD_TOOLS_WORKLOAD} --includeRecommended"
+                    ),
+                ],
+                working_directory: project_path.to_path_buf(),
+            },
+        },
+        InstallationStep {
+            label: "Verificar compilador".into(),
+            detail: "Confirmar o compilador C/C++ instalado".into(),
+            source: None,
+            requires_elevation: false,
+            kind: InstallationStepKind::VerifyCppCompiler { wait: false },
+        },
+    ]
+}
+
+/// The plan installs the C/C++ compiler.
+fn prepares_compiler(plan: &InstallationPlan) -> bool {
+    plan.steps
+        .iter()
+        .any(|step| matches!(step.kind, InstallationStepKind::VerifyCppCompiler { .. }))
+}
+
+/// The sentence of the confirmation of a plan that installs the compiler.
+fn compiler_notice(plan: &InstallationPlan) -> Option<&'static str> {
+    plan.steps.iter().find_map(|step| match step.kind {
+        InstallationStepKind::VerifyCppCompiler { wait: true } => Some(
+            "Instalar as ferramentas de linha de comando da Apple? O instalador do macOS será aberto. Siga as etapas nele e volte ao LocalCodePilot para verificar o compilador.",
+        ),
+        InstallationStepKind::VerifyCppCompiler { wait: false } => Some(COMPILER_NOTICE_WINDOWS),
+        _ => None,
+    })
+}
+
+const COMPILER_NOTICE_WINDOWS: &str = "Instalar as ferramentas C/C++ da Microsoft? O download e a instalação ocupam alguns gigabytes, e o instalador da Microsoft mostra o andamento. O Windows pode pedir permissão de administrador. Depois, o LocalCodePilot verificará o compilador.";
+
+/// A plan that installs the compiler failed or was not concluded.
+pub(super) const COMPILER_FAILED: &str =
+    "Não foi possível preparar o compilador C/C++. Confira o motivo em Ver logs e tente novamente.";
+
+/// The Build Tools download and install can take longer than other packages.
+const COMPILER_STEP_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 
 fn is_build_tool(program: &str) -> bool {
     localcodepilot_platform::installations::BUILD_TOOL_PACKAGES
@@ -7032,6 +7275,10 @@ fn inspect_project_environment_with_inventory(
                 .collect()
         };
         for program in programs {
+            // MSBuild comes with the C/C++ Build Tools: a missing one is a missing compiler.
+            if is_msbuild(&program) {
+                continue;
+            }
             if find_executable(&program, environment_path).is_none()
                 && !missing_programs.contains(&program)
             {
@@ -7385,9 +7632,18 @@ fn inspect_project_environment_with_inventory(
             }
         })
         .collect();
+    let missing_compiler = project_processes
+        .iter()
+        .any(|process| compiles_cpp(process))
+        && !localcodepilot_runtime::build_languages::cpp_compiler_available(environment_path);
+    if missing_compiler && cfg!(target_os = "macos") {
+        // make comes with the Apple command line tools.
+        missing_programs.retain(|program| program != "make");
+    }
     ProjectEnvironment {
         command_count: project_processes.len(),
         missing_programs,
+        missing_compiler,
         missing_dependencies,
         install_steps,
         runtime_requirements,
@@ -8318,6 +8574,146 @@ mod tests {
         let packages = localcodepilot_platform::installations::BUILD_TOOL_PACKAGES;
         assert!(packages.contains(&("cmake", "Kitware.CMake", "CMake")));
         assert!(packages.contains(&("meson", "mesonbuild.meson", "Meson")));
+    }
+
+    #[test]
+    fn a_missing_cpp_compiler_is_prepared_where_the_system_allows() {
+        use localcodepilot_core::processes::PrepareStep;
+        let process = |program: &str, args: &[&str], prepare: &[&str]| ProjectProcess {
+            id: "p".into(),
+            project_name: "loja".into(),
+            project_path: PathBuf::from("loja"),
+            working_directory: PathBuf::from("loja"),
+            name: "loja".into(),
+            program: program.into(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            state: ProcessState::Stopped,
+            process_id: None,
+            exit_code: None,
+            expected_port: None,
+            port_override: None,
+            prepare: prepare
+                .iter()
+                .map(|program| PrepareStep {
+                    program: (*program).into(),
+                    args: vec![],
+                    skip_if_exists: None,
+                })
+                .collect(),
+        };
+        // What compiles C/C++: CMake, Meson, MSBuild (any path), or make run.
+        assert!(super::compiles_cpp(&process(
+            "B/bin/loja.exe",
+            &[],
+            &["cmake", "cmake"]
+        )));
+        assert!(super::compiles_cpp(&process(
+            "B/loja",
+            &[],
+            &["meson", "meson"]
+        )));
+        assert!(super::compiles_cpp(&process(
+            "B/bin/loja.exe",
+            &[],
+            &[r"C:\VS\MSBuild\Current\Bin\MSBuild.exe"]
+        )));
+        assert!(super::compiles_cpp(&process("make", &["run"], &[])));
+        assert!(!super::compiles_cpp(&process("make", &["test"], &[])));
+        assert!(!super::compiles_cpp(&process("npm", &["run", "dev"], &[])));
+        assert!(super::is_msbuild(r"C:\VS\MSBuild\Current\Bin\MSBuild.exe"));
+
+        // The card: stopped, not a problem, with the action this system allows.
+        let environment = ProjectEnvironment {
+            command_count: 1,
+            missing_compiler: true,
+            ..ProjectEnvironment::default()
+        };
+        assert!(!environment.is_ready());
+        assert_eq!(environment.status().0, "Compilador C/C++ ausente");
+        assert_eq!(
+            environment.can_prepare_environment(),
+            cfg!(any(target_os = "windows", target_os = "macos"))
+        );
+        let reason = environment.problem_details().unwrap();
+        if cfg!(any(target_os = "windows", target_os = "macos")) {
+            assert_eq!(
+                reason,
+                "Falta um compilador C/C++ para este projeto. Use Preparar ambiente."
+            );
+        } else {
+            assert!(reason.starts_with("Falta um compilador C/C++. Instale o pacote "));
+            assert!(!reason.contains("Preparar ambiente"));
+        }
+        // On macOS the Apple installer prepares only the compiler: with CMake missing too,
+        // the app does not offer a preparation it cannot finish.
+        let with_cmake = ProjectEnvironment {
+            missing_programs: vec!["cmake".into()],
+            ..environment.clone()
+        };
+        assert_eq!(
+            with_cmake.can_prepare_environment(),
+            cfg!(target_os = "windows")
+        );
+
+        // The plan: install, then verify, before anything else. Linux has none.
+        if !cfg!(any(target_os = "windows", target_os = "macos")) {
+            return;
+        }
+        let plan = super::resolve_environment_plan_with_tools_directory(
+            std::path::Path::new("loja"),
+            &environment,
+            None,
+        )
+        .unwrap();
+        assert!(super::prepares_compiler(&plan));
+        let commands = plan
+            .steps
+            .iter()
+            .map(super::installation_step_command)
+            .collect::<Vec<_>>();
+        if cfg!(target_os = "macos") {
+            assert_eq!(commands[0], "xcode-select --install");
+            assert!(!plan.requires_elevation());
+            assert!(matches!(
+                plan.steps[1].kind,
+                InstallationStepKind::VerifyCppCompiler { wait: true }
+            ));
+            assert!(
+                super::compiler_notice(&plan)
+                    .unwrap()
+                    .contains("instalador do macOS")
+            );
+        } else {
+            assert!(commands[0].starts_with(
+                "winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget"
+            ));
+            assert!(commands[0].ends_with(
+                "--override \"--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\""
+            ));
+            assert!(plan.requires_elevation());
+            assert_eq!(plan.steps[0].label, "Instalar ferramentas C/C++");
+            assert_eq!(plan.steps[1].label, "Verificar compilador");
+            assert!(matches!(
+                plan.steps[1].kind,
+                InstallationStepKind::VerifyCppCompiler { wait: false }
+            ));
+            assert_eq!(
+                super::compiler_notice(&plan),
+                Some(super::COMPILER_NOTICE_WINDOWS)
+            );
+        }
+    }
+
+    #[test]
+    fn the_linux_card_names_the_package_of_the_distribution() {
+        assert_eq!(
+            super::linux_compiler_sentence(Some("build-essential")),
+            "Falta um compilador C/C++. Instale o pacote build-essential da sua distribuição e use Atualizar."
+        );
+        assert_eq!(
+            super::linux_compiler_sentence(None),
+            "Falta um compilador C/C++. Instale o pacote de desenvolvimento da sua distribuição (por exemplo, build-essential ou gcc) e use Atualizar."
+        );
     }
 
     #[test]
