@@ -1,7 +1,7 @@
 //! Full life cycle of one managed database server, for manual and E2E checks:
 //! `managed_database_server <postgresql|mysql|mariadb> <folder> <port>`.
 //! Prepares the pinned package, initializes and starts the server (password in the
-//! Windows Credential Manager), checks the administrator login, recognizes it, stops it,
+//! system vault), checks the administrator login, recognizes it, stops it,
 //! starts it again, stops it and removes the test credential. Use a disposable folder
 //! and a free port.
 
@@ -86,7 +86,17 @@ fn main() -> ExitCode {
         "mariadb" => DatabaseEngine::MariaDb,
         _ => return ExitCode::from(2),
     };
-    let package = database_packages::catalog_package(engine).expect("pinned package");
+    // The same check the app makes before it offers to prepare the engine here.
+    let package = match database_packages::availability(engine) {
+        Ok(package) => {
+            println!("ok: pacote para este sistema: {}", package.file_name);
+            package
+        }
+        Err(reason) => {
+            println!("FALHOU: pacote para este sistema: {reason}");
+            return ExitCode::FAILURE;
+        }
+    };
     let step = |name: &str, result: Result<(), String>| -> bool {
         match result {
             Ok(()) => {

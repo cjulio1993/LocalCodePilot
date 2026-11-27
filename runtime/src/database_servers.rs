@@ -1,7 +1,8 @@
-//! Database servers the app prepares and runs for the user on Windows: PostgreSQL, MySQL
-//! and MariaDB from the pinned packages (`database_packages`). Each server has its own
-//! data folder under `<root>\servidores\<id>`, listens only on 127.0.0.1, and keeps its
-//! administrator password in the Windows Credential Manager (`platform::credentials`).
+//! Database servers the app prepares and runs for the user: PostgreSQL, MySQL and MariaDB
+//! from the pinned packages (`database_packages`) on Windows, and MySQL and MariaDB on macOS
+//! and Linux where a package exists (T029). Each server has its own data folder under
+//! `<root>/servidores/<id>`, listens only on 127.0.0.1, and keeps its administrator
+//! password in the system's vault (`platform::credentials`).
 //!
 //! Decisions agreed with the product side are in
 //! `.internal/conversas/2026-11-20-t019-02-servidor-gerenciado.md`:
@@ -188,16 +189,27 @@ impl ManagedServer {
         }
     }
 
+    /// A program of the package's `bin` folder, by its name without `.exe`.
     fn program(&self, name: &str) -> PathBuf {
-        self.program_folder.join("bin").join(name)
+        self.program_folder
+            .join("bin")
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     }
 
     fn server_program(&self) -> PathBuf {
         self.program(match self.engine.as_str() {
-            "postgresql" => "postgres.exe",
-            "mysql" => "mysqld.exe",
-            _ => "mariadbd.exe",
+            "postgresql" => "postgres",
+            "mysql" => "mysqld",
+            _ => "mariadbd",
         })
+    }
+
+    /// MySQL and MariaDB also listen on a Unix socket outside Windows. It goes to the
+    /// temporary folder, not the server folder: the path of a socket is limited to about
+    /// 100 characters, and the app's folder on macOS is already long.
+    fn socket_file(&self) -> PathBuf {
+        let short = self.id.get(..12).unwrap_or(&self.id);
+        std::env::temp_dir().join(format!("lcp-{short}.sock"))
     }
 
     pub fn admin_user(&self) -> &'static str {
@@ -228,6 +240,9 @@ fn mysql_config(server: &ManagedServer) -> String {
         server.port,
         slash(&server.pid_file()),
     );
+    if !cfg!(windows) {
+        config.push_str(&format!("socket={}\n", slash(&server.socket_file())));
+    }
     if server.engine == "mysql" {
         // No X Protocol: no second port (33060) next to the one the project uses.
         config.push_str("mysqlx=OFF\n");
@@ -296,12 +311,22 @@ impl SecretFile {
         use std::io::Write;
         let folder = root.join(TEMP_FOLDER);
         fs::create_dir_all(&folder).map_err(io("não foi possível criar a pasta temporária"))?;
+        // On macOS and Linux only this user may enter the folder and read the file, from the
+        // moment it exists (T029): the default rights would let other users read it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))
+                .map_err(io("não foi possível proteger a pasta temporária"))?;
+        }
         let pid = std::process::id();
         let started = ports::process_started_at(pid).unwrap_or_default();
         let path = folder.join(format!("{pid}-{started}-{}.tmp", new_id()?));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options
             .open(&path)
             .map_err(io("não foi possível criar o arquivo temporário"))?;
         let written = file
@@ -700,7 +725,7 @@ fn initialize_postgres(
     password: &str,
 ) -> Result<(), ServerError> {
     let password_file = SecretFile::create(root, password)?;
-    let mut command = Command::new(server.program("initdb.exe"));
+    let mut command = Command::new(server.program("initdb"));
     command
         .arg("-D")
         .arg(server.data_folder())
@@ -723,23 +748,57 @@ fn initialize_postgres(
 fn initialize_mysql(server: &ManagedServer, password: &str) -> Result<(), ServerError> {
     fs::write(server.config_file(), mysql_config(server))
         .map_err(io("não foi possível gravar a configuração do banco"))?;
+    link_system_libraries(server)?;
     let mut command = if server.engine == "mysql" {
-        let mut command = Command::new(server.program("mysqld.exe"));
+        let mut command = Command::new(server.program("mysqld"));
         command
             .arg(format!(
                 "--defaults-file={}",
                 server.config_file().display()
             ))
-            .arg("--initialize-insecure")
-            .arg("--console");
+            .arg("--initialize-insecure");
+        // Outside Windows the errors already go to the console (no log-error set), and
+        // `--console` is a Windows option.
+        if cfg!(windows) {
+            command.arg("--console");
+        }
+        command
+    } else if cfg!(windows) {
+        let mut command = Command::new(server.program("mariadb-install-db"));
+        command.arg(format!("--datadir={}", server.data_folder().display()));
         command
     } else {
-        let mut command = Command::new(server.program("mariadb-install-db.exe"));
-        command.arg(format!("--datadir={}", server.data_folder().display()));
+        // The Linux package has the script in `scripts`. "normal" creates a root that logs
+        // in with a password, as on Windows (the init file sets it), instead of the system
+        // account through the socket.
+        let mut command = Command::new(
+            server
+                .program_folder
+                .join("scripts")
+                .join("mariadb-install-db"),
+        );
+        command
+            .arg(format!(
+                "--defaults-file={}",
+                server.config_file().display()
+            ))
+            .arg(format!("--basedir={}", server.program_folder.display()))
+            .arg(format!("--datadir={}", server.data_folder().display()))
+            .arg("--auth-root-authentication-method=normal");
         command
     };
     command.current_dir(&server.folder);
     run_to_end(command, &server.log_file(), "inicialização", Some(password))
+}
+
+/// MySQL on Linux loads `libaio.so.1`, which newer systems ship as `libaio.so.1t64`:
+/// the package gets a link of its own (see `database_packages::libaio`). Nothing elsewhere.
+fn link_system_libraries(server: &ManagedServer) -> Result<(), ServerError> {
+    if cfg!(target_os = "linux") && server.engine == "mysql" {
+        crate::database_packages::libaio::link_if_needed(&server.program_folder)
+            .map_err(io("não foi possível preparar a biblioteca libaio do MySQL"))?;
+    }
+    Ok(())
 }
 
 /// Opens the log for a program. With a `secret`, the program writes to pipes the app reads,
@@ -855,6 +914,7 @@ fn start_with(
     if !port_is_free(server.port) {
         return Err(ServerError::PortInUse(server.port));
     }
+    link_system_libraries(server)?;
     let mut command = Command::new(server.server_program());
     if server.engine == "postgresql" {
         command
@@ -869,7 +929,7 @@ fn start_with(
             "--defaults-file={}",
             server.config_file().display()
         ));
-        if server.engine == "mysql" {
+        if server.engine == "mysql" && cfg!(windows) {
             // On Windows MySQL otherwise starts a monitor process that runs the real server
             // as a child: the port would belong to a PID the app did not start, and the
             // server would never be recognized as the app's (nor stopped by it).
@@ -877,9 +937,12 @@ fn start_with(
         }
         match first_start {
             Some((init, _)) => {
-                command
-                    .arg("--console")
-                    .arg(format!("--init-file={}", init.path.display()));
+                // Without log-error the errors go to the console; `--console` says so on
+                // Windows, where it is the only system that has the option.
+                if cfg!(windows) {
+                    command.arg("--console");
+                }
+                command.arg(format!("--init-file={}", init.path.display()));
             }
             None => {
                 command.arg(format!("--log-error={}", server.log_file().display()));
@@ -907,6 +970,12 @@ fn start_with(
     // "ready for connections": MariaDB opens its port before it reads the init file.
     let ready_line = (server.engine != "postgresql").then(|| (server.log_file(), log_start));
     let waited = wait_until_ready(&mut child, server.port, ready_line, START_TIMEOUT);
+    // The server outlives this call. On Linux a child that ends stays in the process table
+    // (a zombie, same PID and start time) until its parent collects it, and "Parar" would
+    // wait for it forever: a thread collects it when it ends.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     save_server(root, server)?;
     waited.map_err(|detail| ServerError::StartFailed {
         detail,
@@ -964,7 +1033,7 @@ pub fn stop(server: &mut ManagedServer, root: &Path, vault: &dyn Vault) -> Resul
     }
     match server.engine.as_str() {
         "postgresql" => {
-            let mut command = Command::new(server.program("pg_ctl.exe"));
+            let mut command = Command::new(server.program("pg_ctl"));
             command
                 .arg("stop")
                 .arg("-D")
@@ -1593,6 +1662,22 @@ mod tests {
             secret.path.clone()
         };
         assert!(!path.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_secret_file_is_readable_only_by_this_user_while_it_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("lcp-secret-mode-{}", std::process::id()));
+        // A folder left with open rights by an earlier version is closed again.
+        fs::create_dir_all(root.join(TEMP_FOLDER)).unwrap();
+        fs::set_permissions(root.join(TEMP_FOLDER), fs::Permissions::from_mode(0o777)).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let secret = SecretFile::create(&root, "segredo").unwrap();
+        assert_eq!(mode(&secret.path), 0o600);
+        assert_eq!(mode(&root.join(TEMP_FOLDER)), 0o700);
+        drop(secret);
         let _ = fs::remove_dir_all(&root);
     }
 

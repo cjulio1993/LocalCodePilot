@@ -7,7 +7,11 @@
 //! The vault protects the stored secret; other programs running as the same user can
 //! still read it, as with any system vault.
 //!
-//! Other systems have no vault in this version: every call fails with a message.
+//! On macOS and Linux (T029) each secret is a file readable only by this user (mode 0600,
+//! in a 0700 folder of the app's data), as `~/.pgpass` and `~/.my.cnf` are. The macOS
+//! Keychain was left out: the app is not signed with a stable identity, so every update
+//! would ask the person to allow access again. The protection is the same as the system
+//! vault's against other users; programs of the same user can read it, as they can there.
 
 /// Saves `secret` under a new `target`. Fails if the name already exists, so a secret
 /// is never replaced, and reads it back to confirm it is stored.
@@ -127,18 +131,118 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    const UNSUPPORTED: &str = "o cofre de senhas só existe no Windows nesta versão";
+    use std::{
+        env, fs,
+        io::{ErrorKind, Write},
+        path::PathBuf,
+    };
 
-    pub(super) fn write(_: &str, _: &str, _: &str) -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+    /// `~/Library/Application Support/LocalCodePilot/cofre` on macOS,
+    /// `$XDG_DATA_HOME/localcodepilot/cofre` (or `~/.local/share/...`) elsewhere.
+    fn folder() -> Result<PathBuf, String> {
+        if let Some(folder) = env::var_os("LOCALCODEPILOT_VAULT_DIR") {
+            return Ok(PathBuf::from(folder));
+        }
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let base = if cfg!(target_os = "macos") {
+            home.map(|home| {
+                home.join("Library")
+                    .join("Application Support")
+                    .join("LocalCodePilot")
+            })
+        } else {
+            env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| home.map(|home| home.join(".local").join("share")))
+                .map(|data| data.join("localcodepilot"))
+        };
+        base.map(|base| base.join("cofre"))
+            .ok_or_else(|| "a pasta pessoal do usuário não foi encontrada".to_owned())
     }
 
-    pub(super) fn read(_: &str) -> Result<Option<String>, String> {
-        Err(UNSUPPORTED.into())
+    /// One file per secret; the name keeps only letters, digits, `-` and `_`.
+    fn file(target: &str) -> Result<PathBuf, String> {
+        let name: String = target
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || character == '-' {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        Ok(folder()?.join(name))
     }
 
-    pub(super) fn delete(_: &str) -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+    pub(super) fn write(target: &str, _: &str, secret: &str) -> Result<(), String> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+        let folder = folder()?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&folder)
+            .map_err(|error| format!("não foi possível criar a pasta do cofre: {error}"))?;
+        // A folder created earlier with other rights is closed again.
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("não foi possível proteger a pasta do cofre: {error}"))?;
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(file(target)?)
+            .map_err(|error| format!("não foi possível gravar a credencial: {error}"))?;
+        output
+            .write_all(secret.as_bytes())
+            .and_then(|()| output.sync_all())
+            .map_err(|error| format!("não foi possível gravar a credencial: {error}"))
+    }
+
+    pub(super) fn read(target: &str) -> Result<Option<String>, String> {
+        match fs::read_to_string(file(target)?) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("não foi possível ler a credencial: {error}")),
+        }
+    }
+
+    pub(super) fn delete(target: &str) -> Result<(), String> {
+        match fs::remove_file(file(target)?) {
+            Err(error) if error.kind() != ErrorKind::NotFound => {
+                Err(format!("não foi possível apagar a credencial: {error}"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_secret_file_is_private_created_once_and_never_overwritten() {
+        let folder = std::env::temp_dir().join(format!("lcp-cofre-teste-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        // SAFETY of the test: only this test reads the variable, before and after.
+        unsafe { std::env::set_var("LOCALCODEPILOT_VAULT_DIR", &folder) };
+        let target = "LocalCodePilot/banco/abc";
+        assert_eq!(read(target).unwrap(), None);
+        save_new(target, "root", "segredo-1").unwrap();
+        assert_eq!(read(target).unwrap().as_deref(), Some("segredo-1"));
+        assert!(save_new(target, "root", "segredo-2").is_err());
+        assert_eq!(read(target).unwrap().as_deref(), Some("segredo-1"));
+        let file = folder.join("LocalCodePilot_banco_abc");
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(mode(&folder), 0o700);
+        delete(target).unwrap();
+        assert_eq!(read(target).unwrap(), None);
+        delete(target).unwrap();
+        unsafe { std::env::remove_var("LOCALCODEPILOT_VAULT_DIR") };
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }
 
