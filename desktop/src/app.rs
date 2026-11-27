@@ -11,6 +11,8 @@ use database_ui::{DatabaseStatus, managed_info};
 mod help_ui;
 #[path = "language_ui.rs"]
 mod language_ui;
+#[path = "migration_ui.rs"]
+mod migration_ui;
 #[path = "notice.rs"]
 mod notice;
 #[path = "process_state.rs"]
@@ -465,6 +467,8 @@ enum ProjectCardAction {
     PrepareEnvironment(PathBuf),
     InstallDependencies(PathBuf),
     ViewDependencyLogs(PathBuf),
+    /// The output of the last run of the project's migrations (T027).
+    ViewMigrationLogs(PathBuf),
     DefineCommand(PathBuf),
     EditCommand(PathBuf, String),
     RemoveCommand(PathBuf, String),
@@ -494,6 +498,11 @@ pub struct LocalCodePilot {
     projects: Vec<Project>,
     /// The managed processes and their ports (T025).
     managed: ManagedProcesses,
+    /// Pending migrations of Laravel projects, checked and run on "Iniciar" (T027).
+    migrations: migration_ui::MigrationState,
+    migration_targets: HashMap<PathBuf, migration_ui::MigrationTarget>,
+    /// Lets background work ask for a new frame.
+    repaint: egui::Context,
     project_environments: HashMap<PathBuf, ProjectEnvironment>,
     focused_project: Option<PathBuf>,
     dependency_installs: HashMap<PathBuf, DependencyInstallSession>,
@@ -600,6 +609,9 @@ impl LocalCodePilot {
             page,
             projects: cached_projects,
             managed: ManagedProcesses::default(),
+            migrations: migration_ui::MigrationState::default(),
+            migration_targets: HashMap::new(),
+            repaint: cc.egui_ctx.clone(),
             project_environments: HashMap::new(),
             focused_project,
             dependency_installs: HashMap::new(),
@@ -1910,6 +1922,11 @@ impl LocalCodePilot {
                     }
                 }
             }
+        }
+        // Pending migrations of a Laravel project run, after a confirmation, before its
+        // processes start (T027).
+        if let migration_ui::MigrationGate::Waiting = self.migration_gate(project_path) {
+            return;
         }
         let process_ids = project_process_ids(&self.managed.processes, project_path, false);
         let pending_processes: Vec<_> = process_ids
@@ -4672,6 +4689,7 @@ impl LocalCodePilot {
         // Cards and Containers both ask to confirm container actions.
         self.container_confirmation(&ctx);
         self.command_dialog(&ctx);
+        self.migration_log_window(&ctx);
     }
 }
 
@@ -4684,6 +4702,7 @@ impl eframe::App for LocalCodePilot {
         self.poll_processes(ctx);
         self.poll_update_check();
         self.poll_update_install(ctx);
+        self.poll_migrations();
         self.poll_containers(ctx);
         self.poll_engine_start(ctx);
         self.poll_languages(ctx);
@@ -4704,6 +4723,7 @@ impl eframe::App for LocalCodePilot {
         self.show_clear_history_confirmation(ui);
         self.show_update_confirmation(ui);
         self.engine_start_confirmation(ui);
+        self.migration_confirmation(ui);
         self.show_database_confirmation(ui);
         self.show_notification(ui);
     }
