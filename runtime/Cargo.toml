@@ -16,6 +16,11 @@ serde.workspace = true
 sha2.workspace = true
 ureq.workspace = true
 zip.workspace = true
+# The official macOS and Linux database packages are .tar.gz (MySQL macOS, MariaDB) and
+# .tar.xz (MySQL Linux). lzma-rs is pure Rust: no C toolchain for liblzma.
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+lzma-rs = "0.3"
 ring.workspace = true
 # Administrator connections to the servers the app manages (127.0.0.1 only).
 tokio = { version = "1.54", features = ["rt", "net", "time"] }
@@ -27,3 +32,7 @@ tokio-util = { version = "0.7.20", features = ["compat"] }
 # tiberius turns on rustls' aws-lc-rs next to the ring that mysql_async uses; with two
 # backends rustls has no default and mysql_async's TLS panics. `tls_ready` picks ring.
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# gnu_get_libc_version: the official packages need a minimum glibc.
+libc = "0.2"

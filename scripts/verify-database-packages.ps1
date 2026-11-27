@@ -9,7 +9,8 @@
     - MariaDB: o SHA-256 tem de estar no sha256sums.txt da mesma pasta da release.
     - MySQL: o tamanho anunciado pelo servidor tem de ser o fixado; com -Completo, o
       zip é baixado e a assinatura GPG da MySQL Release Engineering é conferida.
-    Com -Completo, os três zips são baixados e o SHA-256 de cada um é recalculado.
+    Com -Completo, todos os pacotes (zip, tar.gz, tar.xz) são baixados e o SHA-256 de cada um
+    é recalculado.
 
 .EXAMPLE
     ./scripts/verify-database-packages.ps1
@@ -31,7 +32,7 @@ $curl = if ($env:OS -eq 'Windows_NT') { 'curl.exe' } else { 'curl' }
 function Get-Texto([string]$Url) { (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 60).Content }
 
 foreach ($pacote in $catalogo.packages) {
-    $nome = "$($pacote.engine) $($pacote.version)"
+    $nome = "$($pacote.engine) $($pacote.version) ($($pacote.os)/$($pacote.arch))"
     if ($pacote.url -notlike "https://*" -or -not $pacote.url.EndsWith($pacote.file_name)) { $falhas.Add("${nome}: URL inválida") }
     switch ($pacote.engine) {
         'postgresql' {

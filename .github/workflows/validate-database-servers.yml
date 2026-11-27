@@ -1,0 +1,64 @@
+name: Validate database servers (macOS and Linux)
+
+# The whole life cycle of a server the app prepares, on the systems where it has a pinned
+# package outside Windows (T029): download and verify the official package, extract it,
+# initialize with the password from the vault, start on 127.0.0.1, check the login (and
+# that a wrong one fails), make sure no password reached a file or the command line, stop,
+# start again and stop. Runs when the database code changes and every week.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 6 * * 1"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-database-servers.yml"
+      - "runtime/src/database-packages.json"
+      - "runtime/src/database_packages.rs"
+      - "runtime/src/database_servers.rs"
+      - "runtime/examples/managed_database_server.rs"
+      - "platform/src/credentials.rs"
+      - "platform/src/ports.rs"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-servers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: ${{ matrix.engine }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: mysql
+          - os: ubuntu-latest
+            engine: mariadb
+          - os: macos-latest
+            engine: mysql
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Show what this runner offers (glibc, libaio, macOS version)
+        shell: bash
+        run: |
+          uname -a
+          if [ "$RUNNER_OS" = "Linux" ]; then ldd --version | head -1; ls -l /usr/lib/x86_64-linux-gnu/libaio* || true; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then sw_vers; fi
+      - name: Prepare, start, check, stop and start again
+        shell: bash
+        env:
+          LOCALCODEPILOT_VAULT_DIR: ${{ runner.temp }}/cofre
+        run: cargo run -p localcodepilot-runtime --example managed_database_server --locked -- ${{ matrix.engine }} "$RUNNER_TEMP/lcp-db" 3399
+      - name: The server's log, when something failed
+        if: failure()
+        shell: bash
+        run: find "$RUNNER_TEMP/lcp-db/servidores" -name servidor.log -exec tail -n 80 {} \; || true
