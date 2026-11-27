@@ -6,9 +6,10 @@
 .DESCRIPTION
     - PostgreSQL: o SHA-256, a versão e a URL têm de ser os do manifesto do Scoop
       (ScoopInstaller/Main, bucket/postgresql.json) no commit citado em "provenance".
-    - MariaDB: o SHA-256 tem de estar no sha256sums.txt da mesma pasta da release.
-    - MySQL: o tamanho anunciado pelo servidor tem de ser o fixado; com -Completo, o
-      zip é baixado e a assinatura GPG da MySQL Release Engineering é conferida.
+    - MariaDB: o SHA-256 tem de estar no sha256sums.txt da mesma pasta da release; com
+      -Completo, a assinatura GPG do pacote (.asc) pela MariaDB Signing Key é conferida.
+    - MySQL: o tamanho anunciado pelo servidor tem de ser o fixado; com -Completo, a
+      assinatura GPG do pacote pela MySQL Release Engineering é conferida.
     Com -Completo, todos os pacotes (zip, tar.gz, tar.xz) são baixados e o SHA-256 de cada um
     é recalculado.
 
@@ -24,6 +25,8 @@ $repositorio = Split-Path -Parent $PSScriptRoot
 $catalogo = Get-Content -Raw -Encoding UTF8 (Join-Path $repositorio 'runtime/src/database-packages.json') | ConvertFrom-Json
 # Chave da MySQL Release Engineering para 9.5.0 e posteriores (manual do MySQL, "Signature Checking Using GnuPG").
 $chaveMysql = 'BCA43417C3B485DD128EC6D4B7B3B788A8D3785C'
+# MariaDB Signing Key (https://mariadb.org/download, "Verifying downloads"); assina os pacotes desde 2023.
+$chaveMariadb = '177F4010FE56CA3336300305F1656F24C74CD1D8'
 $falhas = New-Object System.Collections.Generic.List[string]
 
 # No Windows PowerShell 5.1, `curl` é um apelido de Invoke-WebRequest.
@@ -64,15 +67,20 @@ foreach ($pacote in $catalogo.packages) {
         $hash = (Get-FileHash -LiteralPath $arquivo -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($hash -ne $pacote.sha256) { $falhas.Add("${nome}: o arquivo baixado tem SHA-256 $hash") }
         if ((Get-Item -LiteralPath $arquivo).Length -ne $pacote.size_bytes) { $falhas.Add("${nome}: tamanho diferente do fixado") }
-        if ($pacote.engine -eq 'mysql') {
+        # The package's own signature, by the fixed key of its project (MySQL and MariaDB).
+        $chave = switch ($pacote.engine) { 'mysql' { $chaveMysql } 'mariadb' { $chaveMariadb } default { $null } }
+        if ($chave) {
             $gnupg = Join-Path $pasta 'gnupg'
             New-Item -ItemType Directory -Force $gnupg | Out-Null
             $env:GNUPGHOME = $gnupg
             & $curl -sSfL -o "$arquivo.asc" "$($pacote.url).asc"
-            & $curl -sSfL -o (Join-Path $pasta 'mysql-key.asc') "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$chaveMysql"
-            & gpg --batch --import (Join-Path $pasta 'mysql-key.asc') 2>$null
+            if ($LASTEXITCODE -ne 0) { $falhas.Add("${nome}: a assinatura .asc não foi encontrada") }
+            $chaveArquivo = Join-Path $pasta "chave-$chave.asc"
+            & $curl -sSfL -o $chaveArquivo "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$chave"
+            & gpg --batch --import $chaveArquivo 2>$null
             $saida = & gpg --batch --status-fd 1 --verify "$arquivo.asc" $arquivo 2>$null
-            if (-not ($saida -match "VALIDSIG $chaveMysql")) { $falhas.Add("${nome}: assinatura GPG não confere com a chave $chaveMysql") }
+            if (-not ($saida -match "VALIDSIG $chave")) { $falhas.Add("${nome}: assinatura GPG não confere com a chave $chave") }
+            Remove-Item -LiteralPath "$arquivo.asc" -Force -ErrorAction SilentlyContinue
         }
         Remove-Item -LiteralPath $arquivo -Force
     }
