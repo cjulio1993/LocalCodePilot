@@ -223,6 +223,10 @@ const SECTIONS: &[HelpSection] = &[
                 "se um banco já responde na porta do projeto, o LocalCodePilot só testa o login: não cria banco nem usuário, não altera o servidor e não oferece Parar para ele.",
             ),
             Block::Item(
+                "Migrations",
+                "Iniciar prepara o banco do projeto quando necessário. Se houver migrations pendentes que o LocalCodePilot reconhece, ele mostra o que será executado e pede sua confirmação antes de aplicá-las. O projeto só inicia depois que essa etapa termina com sucesso. O comando exato fica em Detalhes técnicos; em caso de falha, use Ver logs. Por enquanto, o LocalCodePilot reconhece as migrations de projetos Laravel com banco neste computador ou SQLite dentro do projeto.",
+            ),
+            Block::Item(
                 "Correções",
                 "quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: Usar outra porta (muda só DB_PORT e guarda uma cópia do .env), Corrigir conexão (só no servidor do LocalCodePilot) ou Criar banco novo (os dados anteriores ficam guardados).",
             ),
@@ -742,6 +746,7 @@ mod tests {
             "No Windows, com PostgreSQL, MySQL ou MariaDB",
             "Onde ficam os dados",
             "Servidor que você já tem",
+            "Migrations",
             "Correções",
             "Compose",
             "SQL Server",

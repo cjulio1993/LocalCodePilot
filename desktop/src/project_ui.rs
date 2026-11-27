@@ -81,6 +81,8 @@ pub(super) enum PrimaryAction {
     StartWithContainers,
     ViewLogs,
     ViewInstallLogs,
+    /// The output of a failed run of the project's migrations.
+    ViewMigrationLogs,
     PrepareEnvironment,
     InstallDependencies,
     /// No command was found: the person tells how the project starts.
@@ -98,7 +100,9 @@ impl PrimaryAction {
         Some(match self {
             Self::OpenSite(_) => format!("{ARROW_SQUARE_OUT}  Abrir site"),
             Self::Start | Self::StartWithContainers => format!("{PLAY}  Iniciar"),
-            Self::ViewLogs | Self::ViewInstallLogs => format!("{TERMINAL}  Ver logs"),
+            Self::ViewLogs | Self::ViewInstallLogs | Self::ViewMigrationLogs => {
+                format!("{TERMINAL}  Ver logs")
+            }
             Self::PrepareEnvironment => "Preparar ambiente".into(),
             Self::InstallDependencies => "Instalar dependências".into(),
             Self::DefineCommand => "Definir comando de início".into(),
@@ -161,6 +165,8 @@ pub(super) struct ProjectFacts<'a> {
     pub database_failure: Option<&'a database_ui::DatabaseFailure>,
     /// Shown with "Rodando" after "Criar banco novo".
     pub database_note: Option<&'a str>,
+    /// The last run of the project's migrations failed (T027).
+    pub migration_failed: bool,
 }
 
 /// Why there is nothing to start: a language the app does not start yet is named, so the
@@ -277,6 +283,15 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
                 .map_or(PrimaryAction::Details, PrimaryAction::DatabaseFix),
         );
         problem.retry = failure.retry;
+        return problem;
+    }
+    if facts.migration_failed {
+        let mut problem = summary(
+            ProjectState::Problem,
+            Some(migration_ui::FAILED.into()),
+            PrimaryAction::ViewMigrationLogs,
+        );
+        problem.retry = true;
         return problem;
     }
     if facts.resolving_plan {
@@ -599,9 +614,11 @@ impl LocalCodePilot {
                 .jobs
                 .get(&project.path)
                 .filter(|job| job.visible)
-                .map(|job| job.step.text(job.engine)),
+                .map(|job| job.step.text(job.engine))
+                .or_else(|| self.migrations.step(&project.path)),
             database_failure: self.database.failures.get(&project.path),
             database_note: self.database.notes.get(&project.path).map(String::as_str),
+            migration_failed: self.migrations.failed.contains(&project.path),
         })
     }
 
@@ -681,6 +698,9 @@ impl LocalCodePilot {
             }
             ProjectCardAction::ViewDependencyLogs(path) => {
                 self.dependency_terminal = Some(path);
+            }
+            ProjectCardAction::ViewMigrationLogs(path) => {
+                self.migrations.log_window = Some(path);
             }
             ProjectCardAction::DefineCommand(path) => self.open_command_dialog(&path, None),
             ProjectCardAction::EditCommand(path, name) => {
@@ -1039,6 +1059,7 @@ fn primary_to_card_action(project: &Project, summary: &ProjectSummary) -> Projec
         PrimaryAction::StartWithContainers => ProjectCardAction::ViewContainers(path),
         PrimaryAction::ViewLogs => logs_action(project, summary),
         PrimaryAction::ViewInstallLogs => ProjectCardAction::ViewDependencyLogs(path),
+        PrimaryAction::ViewMigrationLogs => ProjectCardAction::ViewMigrationLogs(path),
         PrimaryAction::PrepareEnvironment => ProjectCardAction::PrepareEnvironment(path),
         PrimaryAction::InstallDependencies => ProjectCardAction::InstallDependencies(path),
         PrimaryAction::DefineCommand => ProjectCardAction::DefineCommand(path),
@@ -1866,6 +1887,7 @@ mod tests {
             database_step: None,
             database_failure: None,
             database_note: None,
+            migration_failed: false,
         }
     }
 
