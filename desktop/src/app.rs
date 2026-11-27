@@ -236,6 +236,12 @@ struct ProjectEnvironment {
     databases: Vec<DatabaseStatus>,
     /// Manifests that exist but cannot be read, such as an invalid `package.json`.
     manifest_errors: Vec<String>,
+    /// Several plausible entries (two `.pl` files, two Cabal executables): the card asks for
+    /// the command and says why, and "Detalhes técnicos" lists them (T028.01).
+    ambiguous_entry: Option<String>,
+    /// Each command the app found: (name, effective command, working folder), for
+    /// "Detalhes técnicos".
+    detected_commands: Vec<(String, String, String)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7244,6 +7250,22 @@ fn inspect_project_environment_with_inventory(
         laravel_constraint,
         databases,
         manifest_errors: manifest_errors(&project.path),
+        ambiguous_entry: localcodepilot_runtime::entry_languages::ambiguous_entries(project),
+        detected_commands: project_processes
+            .iter()
+            .map(|process| {
+                let folder = process
+                    .working_directory
+                    .strip_prefix(&project.path)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map_or_else(
+                        || "pasta do projeto".to_owned(),
+                        |relative| relative.display().to_string(),
+                    );
+                (process.name.clone(), process.command_line(), folder)
+            })
+            .collect(),
     }
 }
 
