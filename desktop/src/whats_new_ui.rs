@@ -49,16 +49,24 @@ pub(super) fn news_for(text: &str, version: &str) -> Result<Vec<String>, String>
     Ok(items)
 }
 
-/// Whether the news show when the app opens: a version newer than the last one seen, or a
-/// state saved by a version that did not record it (an update from Alpha 10 or earlier).
-/// A clean install, the same version or an older one (a failed update that restored the
-/// previous version, a reinstall) never shows them.
-pub(super) fn should_show(current: &Version, last_seen: Option<&str>, state_existed: bool) -> bool {
+/// Whether the news show when the app opens:
+/// - an update by the app, confirmed by the updater's marker (`updated_by_app`), unless this
+///   version was already seen;
+/// - a manual update: a version newer than the last one seen, or a state saved by a version
+///   that did not record it (Alpha 10 or earlier).
+///
+/// A clean install, the same version or an older one never shows them. A failed update
+/// restores the previous version, which opens without the marker and was already seen.
+pub(super) fn should_show(
+    current: &Version,
+    last_seen: Option<&str>,
+    state_existed: bool,
+    updated_by_app: bool,
+) -> bool {
     match last_seen.map(Version::parse) {
         Some(Ok(seen)) => current > &seen,
-        // A value no version wrote: shown once, then the current version is recorded.
-        Some(Err(_)) => state_existed,
-        None => state_existed,
+        // No version recorded (Alpha 10 or earlier) or a value no version wrote.
+        Some(Err(_)) | None => state_existed || updated_by_app,
     }
 }
 
@@ -147,6 +155,8 @@ impl LocalCodePilot {
                 .open_url(egui::OpenUrl::new_tab(release_page(&news.version)));
         }
         // Esc or a click outside closes it too.
+        // Screen readers name the modal by its title when the focus enters it.
+        announced(modal.response.clone(), egui::Role::Dialog, &title);
         if close || modal.should_close() {
             // Seen: the modal does not come back for this version.
             if let Ok(current) = Version::parse(app_version()) {
@@ -204,24 +214,29 @@ mod tests {
     #[test]
     fn the_news_show_once_after_an_update_and_never_on_a_clean_install() {
         let current = Version::parse("1.0.0-alpha.1").unwrap();
-        // Clean install: no saved state.
-        assert!(!should_show(&current, None, false));
-        // State of Alpha 10 or earlier, which did not record the version: an update.
-        assert!(should_show(&current, None, true));
-        // Update by the app or by hand: a newer version than the one seen.
-        assert!(should_show(&current, Some("0.4.0-alpha.10"), true));
-        // Already seen, a failed update that restored the previous version, or a reinstall.
-        assert!(!should_show(&current, Some("1.0.0-alpha.1"), true));
-        assert!(!should_show(
-            &Version::parse("0.4.0-alpha.10").unwrap(),
-            Some("1.0.0-alpha.1"),
-            true
-        ));
+        let alpha10 = Version::parse("0.4.0-alpha.10").unwrap();
+        // Clean install: no saved state, no marker.
+        assert!(!should_show(&current, None, false, false));
+        // Update by the app, confirmed by the marker: from Alpha 10 (no version recorded)
+        // or from a version that recorded it.
+        assert!(should_show(&current, None, true, true));
+        assert!(should_show(&current, Some("0.4.0-alpha.10"), true, true));
+        // Manual update: state of Alpha 10 or earlier, or a newer version than the one seen.
+        assert!(should_show(&current, None, true, false));
+        assert!(should_show(&current, Some("0.4.0-alpha.10"), true, false));
+        // Failed update by the app: the previous version is restored and opens without the
+        // marker, with its own version already seen.
+        assert!(!should_show(&alpha10, Some("0.4.0-alpha.10"), true, false));
+        // Already seen (the same version opens again, or is reinstalled), or an older one.
+        assert!(!should_show(&current, Some("1.0.0-alpha.1"), true, false));
+        assert!(!should_show(&current, Some("1.0.0-alpha.1"), true, true));
+        assert!(!should_show(&alpha10, Some("1.0.0-alpha.1"), true, false));
         // A later version shows its own news once.
         assert!(should_show(
             &Version::parse("1.0.0-alpha.2").unwrap(),
             Some("1.0.0-alpha.1"),
-            true
+            true,
+            false
         ));
         // Closing records the version, never going back to an older one.
         assert_eq!(

@@ -810,17 +810,25 @@ pub struct StartupUpdate {
     pub notice: Option<String>,
     /// The installer did not finish: shown as an update error, with "Tentar de novo".
     pub failure: Option<UpdateFailure>,
+    /// This start was confirmed by the updater's marker: an update by the app succeeded and
+    /// this is the new version (T035).
+    pub updated_by_app: bool,
 }
 
 pub fn complete_updated_startup() -> StartupUpdate {
-    let notice = updated_startup_notice();
+    let (notice, updated_by_app) = updated_startup_notice();
     let failure = read_installer_failure().map(|failure| {
         UpdateFailure::installer(failure.from_version, failure.to_version, failure.technical)
     });
-    StartupUpdate { notice, failure }
+    StartupUpdate {
+        notice,
+        failure,
+        updated_by_app,
+    }
 }
 
-fn updated_startup_notice() -> Option<String> {
+/// The notice of this start and whether the updater's marker confirmed it.
+fn updated_startup_notice() -> (Option<String>, bool) {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next();
     if first.as_deref() == Some(UPDATED_STARTUP_FLAG.as_ref()) {
@@ -838,12 +846,12 @@ fn updated_startup_notice() -> Option<String> {
             let _ = fs::remove_file(installer_failure_path());
             spawn_update_cleanup(helper_path, stage_directory);
             spawn_confirmed_update_cleanup();
-            return Some(updated_message(&version));
+            return (Some(updated_message(&version)), true);
         }
     }
     let error = read_persistent_update_error();
     let recovered = recover_interrupted_update();
-    error.or(recovered)
+    (error.or(recovered), false)
 }
 
 fn updated_message(version: &str) -> String {

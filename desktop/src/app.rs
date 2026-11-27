@@ -599,6 +599,7 @@ impl LocalCodePilot {
             &app_version,
             workspace_state.last_seen_version.as_deref(),
             state_existed,
+            startup_update.updated_by_app,
         );
         // Without the news, this version counts as seen; with them, closing records it.
         let mut news_seen_changed = false;
@@ -652,12 +653,18 @@ impl LocalCodePilot {
             .clone()
             .filter(updates::cached_update_is_newer)
             .filter(|_| installer_failed || workspace_state.update_remind_after <= now);
-        let startup_notice = startup_update.notice.or_else(|| {
-            startup_update
-                .failure
-                .as_ref()
-                .map(|failure| format!("{}. {}", failure.title(), failure.message()))
-        });
+        // After an update by the app, the news modal says it ("LocalCodePilot atualizado
+        // para {versão}"): the short notice would repeat it.
+        let updated_notice_replaced = show_news && startup_update.updated_by_app;
+        let startup_notice = startup_update
+            .notice
+            .filter(|_| !updated_notice_replaced)
+            .or_else(|| {
+                startup_update
+                    .failure
+                    .as_ref()
+                    .map(|failure| format!("{}. {}", failure.title(), failure.message()))
+            });
         let update_check = (now.saturating_sub(workspace_state.last_update_check)
             >= updates::CHECK_INTERVAL_SECONDS)
             .then(|| updates::spawn_update_check(cc.egui_ctx.clone()));
