@@ -1415,12 +1415,18 @@ impl LocalCodePilot {
             .into_iter()
             .filter(|(_, summary)| filter.matches(summary.state))
             .collect::<Vec<_>>();
+        if visible.is_empty() && self.discovery.is_some() {
+            components::loading_state(
+                ui,
+                "Procurando projetos...",
+                "Estamos examinando as pastas mais comuns da sua máquina.",
+            );
+            return;
+        }
         if visible.is_empty() {
             empty_hint(
                 ui,
-                if self.discovery.is_some() {
-                    "Procurando projetos..."
-                } else if !self.search.trim().is_empty() {
+                if !self.search.trim().is_empty() {
                     "Nenhum projeto com esse nome."
                 } else if self.projects.is_empty() {
                     "Nenhum projeto encontrado. Use Adicionar pasta para escolher onde ficam seus projetos."
