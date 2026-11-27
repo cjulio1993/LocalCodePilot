@@ -63,7 +63,7 @@ Tudo roda no seu computador. O app não envia seus projetos para lugar nenhum, e
 
 Se um dia não for possível ler seus projetos e configurações, o app guarda os arquivos e restaura sozinho a última cópia válida. Sem cópia válida, ele começa com as configurações padrão e avisa que alguns dados podem estar ausentes; **Abrir pasta** mostra os arquivos guardados, e o aviso continua em **Configurações** até você clicar em **Entendi**. A busca de projetos refaz só a lista de projetos, não favoritos, histórico, comandos personalizados nem confirmações.
 
-Na barra lateral, **Visão geral** e **Projetos** mostram os projetos, e **Serviços** reúne o que está rodando, nas abas **Processos** (programas iniciados pelo app) e **Containers** (Docker, Podman e Compose). A página **Ajuda**, dentro do app, explica cada estado e o que fazer em cada caso.
+Na barra lateral, **Visão geral** e **Projetos** mostram os projetos, e **Serviços** reúne o que está rodando, nas abas **Processos** (programas iniciados pelo app, um por linha, com estado, porta e ações) e **Containers** (Docker, Podman e Compose). A página **Ajuda**, dentro do app, explica cada estado e o que fazer em cada caso.
 
 ### Linguagens e projetos
 
@@ -197,7 +197,7 @@ Everything runs on your computer. The app does not send your projects anywhere, 
 
 If your projects and settings ever cannot be read, the app keeps the files and restores the last valid copy on its own. Without a valid copy, it starts with the default settings and warns that some data may be missing; **Abrir pasta** (Open folder) shows the kept files, and the notice stays in Settings until you click **Entendi** (Got it). The project scan rebuilds only the project list, not favorites, history, custom commands or confirmations.
 
-In the sidebar, **Visão geral** (overview) and **Projetos** (projects) show your projects, and **Serviços** (services) gathers what is running, in the **Processos** (programs the app started) and **Containers** (Docker, Podman, and Compose) tabs. The **Help** page inside the app explains each state and what to do.
+In the sidebar, **Visão geral** (overview) and **Projetos** (projects) show your projects, and **Serviços** (services) gathers what is running, in the **Processos** (programs the app started, one per row, with state, port, and actions) and **Containers** (Docker, Podman, and Compose) tabs. The **Help** page inside the app explains each state and what to do.
 
 ### Languages and projects
 

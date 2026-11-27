@@ -223,6 +223,8 @@ impl Notification {
 }
 
 enum ProcessAction {
+    /// "Detalhes" of a row in Serviços > Processos (T037.02).
+    ToggleDetails(String),
     Start(String),
     Stop(String),
     Restart(String),
@@ -538,6 +540,8 @@ pub struct LocalCodePilot {
     page: Page,
     /// The last tab of Serviços (Processos or Containers), opened again from the sidebar.
     last_services_tab: Page,
+    /// Rows of Serviços > Processos with their details open (T037.02).
+    expanded_processes: HashSet<String>,
     projects: Vec<Project>,
     /// The managed processes and their ports (T025).
     managed: ManagedProcesses,
@@ -683,6 +687,7 @@ impl LocalCodePilot {
         Self {
             page,
             projects: cached_projects,
+            expanded_processes: HashSet::new(),
             last_services_tab: if page.is_service() {
                 page
             } else {
@@ -3250,7 +3255,7 @@ impl LocalCodePilot {
                     if matches!(&status, DependencyInstallStatus::Failed { .. })
                         && ui
                             .add(
-                                egui::Button::new("Tentar novamente")
+                                egui::Button::new("Tentar de novo")
                                     .fill(theme::PRIMARY.gamma_multiply(0.72)),
                             )
                             .clicked()
@@ -4142,7 +4147,7 @@ impl LocalCodePilot {
                                 if ui
                                     .add(
                                         egui::Button::new(if dependency_install_failed {
-                                            "Tentar novamente"
+                                            "Tentar de novo"
                                         } else {
                                             "Instalar dependências"
                                         })
@@ -4306,31 +4311,62 @@ impl LocalCodePilot {
                         } else {
                             process_state_display(command.state)
                         };
+                        // One row per service (T037.02): Serviço · Estado · Porta, then the
+                        // actions, always in the same place. A failure says why and what to do
+                        // under the row; the rest is one click away in Detalhes.
+                        let details_open = self.expanded_processes.contains(&command.id);
+                        let failure_reason = (command.state == ProcessState::Failed)
+                            .then(|| {
+                                self.managed
+                                    .failures
+                                    .get(&command.id)
+                                    .map(ProcessFailure::sentence)
+                            })
+                            .flatten();
+                        let build_logs = if self.managed.running.contains_key(&command.id) {
+                            None
+                        } else {
+                            self.managed
+                                .build_logs
+                                .get(&command.id)
+                                .or_else(|| {
+                                    self.managed.builds.get(&command.id).map(|job| &job.logs)
+                                })
+                                .filter(|logs| !logs.is_empty())
+                        };
+                        let has_logs = self.managed.running.contains_key(&command.id)
+                            || process_history
+                                .as_ref()
+                                .is_some_and(|history| !history.logs.is_empty());
+                        let port_text = assigned_port
+                            .or(command.expected_port)
+                            .map_or_else(|| "—".to_owned(), |port| port.value().to_string());
                         Frame::new()
                             .fill(theme::BACKGROUND)
-                            .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.75)))
-                            .corner_radius(9)
-                            .inner_margin(Margin::same(13))
+                            .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
+                            .corner_radius(8)
+                            .inner_margin(Margin::symmetric(12, 8))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(&command.name).strong().size(12.0));
-                                        runtime_badge(ui, state_label, state_color);
-                                    });
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if (self.managed.running.contains_key(&command.id)
-                                            || process_history
-                                                .as_ref()
-                                                .is_some_and(|history| !history.logs.is_empty()))
+                                // The actions stay on the row when they fit; in a narrow window
+                                // they go to a second line, right-aligned, and the row keeps
+                                // Serviço, Estado and Porta readable.
+                                let narrow = ui.available_width() < 760.0;
+                                let mut actions = |ui: &mut egui::Ui| {
+                                        let details = if details_open {
+                                            "Ocultar detalhes"
+                                        } else {
+                                            "Detalhes"
+                                        };
+                                        if ui.button(details).clicked() {
+                                            action = Some(ProcessAction::ToggleDetails(
+                                                command.id.clone(),
+                                            ));
+                                        }
+                                        if has_logs
                                             && ui
                                                 .button(RichText::new(format!(
-                                                    "{TERMINAL}  {}",
-                                                    if self.managed.running.contains_key(&command.id) {
-                                                        "Abrir terminal"
-                                                    } else {
-                                                        "Últimos logs"
-                                                    }
+                                                    "{TERMINAL}  Ver logs"
                                                 )))
                                                 .clicked()
                                         {
@@ -4339,17 +4375,18 @@ impl LocalCodePilot {
                                         }
                                         match command.state {
                                             ProcessState::Running => {
+                                                if ui.button("Reiniciar").clicked() {
+                                                    action = Some(ProcessAction::Restart(
+                                                        command.id.clone(),
+                                                    ));
+                                                }
                                                 if ui
                                                     .add(
                                                         egui::Button::new("Parar")
-                                                            .fill(
-                                                                Color32::from_rgb(235, 87, 87)
-                                                                    .gamma_multiply(0.18),
-                                                            )
+                                                            .fill(theme::DANGER.gamma_multiply(0.18))
                                                             .stroke(Stroke::new(
                                                                 1.0,
-                                                                Color32::from_rgb(235, 87, 87)
-                                                                    .gamma_multiply(0.65),
+                                                                theme::DANGER.gamma_multiply(0.65),
                                                             )),
                                                     )
                                                     .clicked()
@@ -4358,17 +4395,8 @@ impl LocalCodePilot {
                                                         command.id.clone(),
                                                     ));
                                                 }
-                                                if ui.button("Reiniciar").clicked() {
-                                                    action = Some(ProcessAction::Restart(
-                                                        command.id.clone(),
-                                                    ));
-                                                }
                                             }
                                             ProcessState::Starting => {
-                                                ui.add_enabled(
-                                                    false,
-                                                    egui::Button::new("Iniciando..."),
-                                                );
                                                 // The compilation can be interrupted (T028.02).
                                                 if self.managed.builds.contains_key(&command.id)
                                                     && ui.button("Parar").clicked()
@@ -4377,8 +4405,14 @@ impl LocalCodePilot {
                                                         command.id.clone(),
                                                     ));
                                                 }
+                                                ui.add_enabled(
+                                                    false,
+                                                    egui::Button::new("Iniciando..."),
+                                                );
                                             }
-                                            ProcessState::Stopped | ProcessState::Completed | ProcessState::Failed => {
+                                            ProcessState::Stopped
+                                            | ProcessState::Completed
+                                            | ProcessState::Failed => {
                                                 let start = ui.add_enabled(
                                                     environment.is_ready(),
                                                     egui::Button::new(RichText::new(format!(
@@ -4386,7 +4420,7 @@ impl LocalCodePilot {
                                                         if port_conflict.is_some()
                                                             || command.state == ProcessState::Failed
                                                         {
-                                                            "Tentar novamente"
+                                                            "Tentar de novo"
                                                         } else {
                                                             "Iniciar"
                                                         }
@@ -4400,77 +4434,79 @@ impl LocalCodePilot {
                                                 }
                                             }
                                         }
+                                        if let Some(server_url) = &server_url
+                                            && ui
+                                                .button(RichText::new(format!(
+                                                    "{ARROW_SQUARE_OUT}  Abrir site"
+                                                )))
+                                                .on_hover_text(server_url.address())
+                                                .clicked()
+                                        {
+                                            action = Some(ProcessAction::OpenUrl(
+                                                server_url.address().to_owned(),
+                                            ));
+                                        }
+                                };
+                                ui.horizontal(|ui| {
+                                    let column = |width: f32| {
+                                        (egui::vec2(width, 24.0), Layout::left_to_right(Align::Center))
+                                    };
+                                    let (size, layout) = column(160.0);
+                                    ui.allocate_ui_with_layout(size, layout, |ui| {
+                                        ui.set_min_width(size.x);
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&command.name)
+                                                    .strong()
+                                                    .size(theme::TEXT_BODY),
+                                            )
+                                            .truncate(),
+                                        );
                                     });
-                                });
-                                if let Some(server_url) = &server_url {
-                                    ui.add_space(3.0);
-                                    if ui
-                                        .link(
-                                            RichText::new(format!(
-                                                "Abrir {} no navegador {ARROW_SQUARE_OUT}",
-                                                project.name
-                                            ))
-                                            .color(theme::SUCCESS)
-                                            .size(10.0),
+                                    let (size, layout) = column(130.0);
+                                    ui.allocate_ui_with_layout(size, layout, |ui| {
+                                        ui.set_min_width(size.x);
+                                        runtime_badge(ui, state_label, state_color);
+                                    });
+                                    let (size, layout) = column(56.0);
+                                    ui.allocate_ui_with_layout(size, layout, |ui| {
+                                        ui.set_min_width(size.x);
+                                        ui.label(
+                                            RichText::new(&port_text)
+                                                .monospace()
+                                                .color(theme::MUTED)
+                                                .size(theme::TEXT_DETAIL),
                                         )
-                                        .on_hover_text(format!(
-                                            "Abrir no navegador · porta {}",
-                                            server_url.port().value()
-                                        ))
-                                        .clicked()
-                                    {
-                                        action = Some(ProcessAction::OpenUrl(
-                                            server_url.address().to_owned(),
-                                        ));
+                                        .on_hover_text("Porta");
+                                    });
+                                    if !narrow {
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            actions(ui);
+                                        });
                                     }
-                                    ui.add_space(2.0);
-                                    if let Some(health) = &http_health {
-                                        let (message, color) = http_health_display(&health.status);
-                                        ui.label(RichText::new(message).color(color).size(9.0));
-                                    } else if http_health_checking {
-                                        ui.label(
-                                            RichText::new("Verificando resposta HTTP...")
-                                                .color(theme::MUTED)
-                                                .size(9.0),
-                                        );
-                                    } else {
-                                        ui.label(
-                                            RichText::new("Aguardando verificação HTTP...")
-                                                .color(theme::MUTED)
-                                                .size(9.0),
-                                        );
-                                    }
-                                    ui.add_space(2.0);
-                                    if let (Some(preferred), Some(selected)) =
-                                        (command.expected_port, assigned_port)
-                                        && preferred != selected
-                                    {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "Porta {} · ajustada automaticamente (preferida: {})",
-                                                selected.value(),
-                                                preferred.value()
-                                            ))
-                                            .color(theme::SUCCESS)
-                                            .size(9.0),
-                                        );
-                                    }
-                                } else if let Some(conflict) = &port_conflict {
+                                });
+                                if narrow {
+                                    // A line one button tall: the layout would take all the height left.
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(ui.available_width(), 32.0),
+                                        Layout::right_to_left(Align::Center),
+                                        |ui| actions(ui),
+                                    );
+                                }
+                                if let Some(conflict) = &port_conflict {
                                     ui.add_space(4.0);
                                     Frame::new()
-                                        .fill(Color32::from_rgb(235, 87, 87).gamma_multiply(0.08))
-                                        .stroke(Stroke::new(
-                                            1.0,
-                                            Color32::from_rgb(235, 87, 87).gamma_multiply(0.4),
-                                        ))
+                                        .fill(theme::DANGER.gamma_multiply(0.08))
+                                        .stroke(Stroke::new(1.0, theme::DANGER.gamma_multiply(0.4)))
                                         .corner_radius(6)
                                         .inner_margin(Margin::same(8))
                                         .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
                                             ui.horizontal_wrapped(|ui| {
                                                 ui.label(
                                                     RichText::new(port_conflict_details(conflict))
                                                         .color(Color32::from_rgb(245, 144, 144))
-                                                        .size(10.0),
+                                                        .size(theme::TEXT_DETAIL),
                                                 );
                                                 if conflict.owner.is_some()
                                                     && ui
@@ -4487,102 +4523,158 @@ impl LocalCodePilot {
                                                 }
                                             });
                                         });
-                                    ui.add_space(2.0);
-                                } else if let Some(port) = command.expected_port {
-                                    ui.add_space(3.0);
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "Porta prevista: {} · verificada antes de iniciar",
-                                            port.value()
-                                        ))
-                                        .color(theme::MUTED)
-                                        .size(9.0),
-                                    );
-                                }
-                                if let Some(suggestion) = &failure_suggestion {
+                                } else if failure_reason.is_some() || failure_suggestion.is_some()
+                                {
                                     ui.add_space(4.0);
                                     Frame::new()
-                                        .fill(Color32::from_rgb(255, 205, 75).gamma_multiply(0.07))
-                                        .stroke(Stroke::new(
-                                            1.0,
-                                            Color32::from_rgb(255, 205, 75).gamma_multiply(0.3),
-                                        ))
+                                        .fill(theme::WARNING.gamma_multiply(0.07))
+                                        .stroke(Stroke::new(1.0, theme::WARNING.gamma_multiply(0.3)))
                                         .corner_radius(6)
                                         .inner_margin(Margin::same(8))
                                         .show(ui, |ui| {
-                                            ui.label(
-                                                RichText::new(format!("Sugestão: {suggestion}"))
-                                                    .color(Color32::from_rgb(255, 215, 112))
-                                                    .size(10.0),
-                                            );
+                                            ui.set_width(ui.available_width());
+                                            if let Some(reason) = &failure_reason {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(reason)
+                                                            .color(Color32::from_rgb(255, 215, 112))
+                                                            .size(theme::TEXT_DETAIL),
+                                                    )
+                                                    .wrap(),
+                                                );
+                                            }
+                                            if let Some(suggestion) = &failure_suggestion {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(format!(
+                                                            "Sugestão: {suggestion}"
+                                                        ))
+                                                        .color(Color32::from_rgb(255, 215, 112))
+                                                        .size(theme::TEXT_DETAIL),
+                                                    )
+                                                    .wrap(),
+                                                );
+                                            }
                                         });
                                 }
-                                if !matches!(
-                                    command.state,
-                                    ProcessState::Running | ProcessState::Starting
-                                ) && let Some(history) = &process_history
-                                    && history.updated_at > 0
-                                {
-                                    ui.add_space(3.0);
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "Última execução: {} · {}{}",
-                                            relative_time(history.updated_at),
-                                            service_history_status(&history.status),
-                                            history
-                                                .port
-                                                .map(|port| format!(" · porta {port}"))
-                                                .unwrap_or_default()
-                                        ))
-                                        .color(theme::MUTED)
-                                        .size(9.0),
-                                    );
+                                // A failed compilation shows its output without a click: it is
+                                // the reason the program did not start.
+                                let show_build = build_logs.is_some()
+                                    && (details_open || command.state == ProcessState::Failed);
+                                if !details_open && !show_build {
+                                    return;
                                 }
                                 ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new(command.command_line())
-                                        .color(theme::MUTED)
-                                        .monospace()
-                                        .size(10.0),
-                                );
-                                ui.horizontal(|ui| {
-                                    if command.working_directory != command.project_path
-                                        && let Ok(relative) = command
-                                            .working_directory
-                                            .strip_prefix(&command.project_path)
+                                if details_open {
+                                    if let Some(server_url) = &server_url {
+                                        let (message, color) = match &http_health {
+                                            Some(health) => http_health_display(&health.status),
+                                            None if http_health_checking => (
+                                                "Verificando resposta HTTP...".to_owned(),
+                                                theme::MUTED,
+                                            ),
+                                            None => (
+                                                "Aguardando verificação HTTP...".to_owned(),
+                                                theme::MUTED,
+                                            ),
+                                        };
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} · {message}",
+                                                server_url.address()
+                                            ))
+                                            .color(color)
+                                            .size(theme::TEXT_DETAIL),
+                                        );
+                                    }
+                                    if let (Some(preferred), Some(selected)) =
+                                        (command.expected_port, assigned_port)
+                                        && preferred != selected
                                     {
                                         ui.label(
-                                            RichText::new(format!("Pasta: {}", relative.display()))
-                                                .color(theme::MUTED)
-                                                .size(9.0),
+                                            RichText::new(format!(
+                                                "Porta {} · ajustada automaticamente (preferida: {})",
+                                                selected.value(),
+                                                preferred.value()
+                                            ))
+                                            .color(theme::SUCCESS)
+                                            .size(theme::TEXT_DETAIL),
+                                        );
+                                    } else if server_url.is_none()
+                                        && port_conflict.is_none()
+                                        && let Some(port) = command.expected_port
+                                    {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Porta prevista: {} · verificada antes de iniciar",
+                                                port.value()
+                                            ))
+                                            .color(theme::MUTED)
+                                            .size(theme::TEXT_DETAIL),
                                         );
                                     }
-                                    if let Some(process_id) = command.process_id {
+                                    if !matches!(
+                                        command.state,
+                                        ProcessState::Running | ProcessState::Starting
+                                    ) && let Some(history) = &process_history
+                                        && history.updated_at > 0
+                                    {
                                         ui.label(
-                                            RichText::new(format!("PID {process_id}"))
+                                            RichText::new(format!(
+                                                "Última execução: {} · {}{}",
+                                                relative_time(history.updated_at),
+                                                service_history_status(&history.status),
+                                                history
+                                                    .port
+                                                    .map(|port| format!(" · porta {port}"))
+                                                    .unwrap_or_default()
+                                            ))
+                                            .color(theme::MUTED)
+                                            .size(theme::TEXT_DETAIL),
+                                        );
+                                    }
+                                    ui.label(
+                                        RichText::new(command.command_line())
+                                            .color(theme::MUTED)
+                                            .monospace()
+                                            .size(theme::TEXT_DETAIL),
+                                    );
+                                    ui.horizontal_wrapped(|ui| {
+                                        if command.working_directory != command.project_path
+                                            && let Ok(relative) = command
+                                                .working_directory
+                                                .strip_prefix(&command.project_path)
+                                        {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "Pasta: {}",
+                                                    relative.display()
+                                                ))
+                                                .color(theme::MUTED)
+                                                .size(theme::TEXT_DETAIL),
+                                            );
+                                        }
+                                        if let Some(process_id) = command.process_id {
+                                            ui.label(
+                                                RichText::new(format!("PID {process_id}"))
+                                                    .color(theme::MUTED)
+                                                    .monospace()
+                                                    .size(theme::TEXT_DETAIL),
+                                            );
+                                        }
+                                        if let Some(exit_code) = command.exit_code {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "Código de saída: {exit_code}"
+                                                ))
                                                 .color(theme::MUTED)
                                                 .monospace()
-                                                .size(9.0),
-                                        );
-                                    }
-                                    if let Some(exit_code) = command.exit_code {
-                                        ui.label(
-                                            RichText::new(format!("Código de saída: {exit_code}"))
-                                                .color(theme::MUTED)
-                                                .monospace()
-                                                .size(9.0),
-                                        );
-                                    }
-                                });
-                                if !self.managed.running.contains_key(&command.id)
-                                    && let Some(logs) = self
-                                        .managed
-                                        .build_logs
-                                        .get(&command.id)
-                                        .or_else(|| self.managed.builds.get(&command.id).map(|job| &job.logs))
-                                    && !logs.is_empty()
-                                {
-                                    ui.add_space(4.0);
+                                                .size(theme::TEXT_DETAIL),
+                                            );
+                                        }
+                                    });
+                                }
+                                if show_build && let Some(logs) = build_logs {
                                     egui::CollapsingHeader::new(format!("Saída ({})", logs.len()))
                                         .id_salt(format!("build-logs-{}", command.id))
                                         .default_open(true)
@@ -4592,15 +4684,19 @@ impl LocalCodePilot {
                                                 .stick_to_bottom(true)
                                                 .show(ui, |ui| {
                                                     for line in logs {
-                                                        ui.label(RichText::new(line).monospace().size(10.0));
+                                                        ui.label(
+                                                            RichText::new(line)
+                                                                .monospace()
+                                                                .size(theme::TEXT_DETAIL),
+                                                        );
                                                     }
                                                 });
                                         });
                                 }
-                                if let Some(running) = self.managed.running.get(&command.id)
+                                if details_open
+                                    && let Some(running) = self.managed.running.get(&command.id)
                                     && !running.logs.is_empty()
                                 {
-                                    ui.add_space(4.0);
                                     egui::CollapsingHeader::new(format!(
                                         "Saída ({})",
                                         running.logs.len()
@@ -4623,14 +4719,14 @@ impl LocalCodePilot {
                                                         RichText::new(line)
                                                             .color(theme::MUTED)
                                                             .monospace()
-                                                            .size(9.0),
+                                                            .size(theme::TEXT_DETAIL),
                                                     );
                                                 }
                                             });
                                     });
                                 }
                             });
-                        ui.add_space(8.0);
+                        ui.add_space(4.0);
                     }
                 });
             ui.add_space(12.0);
@@ -4651,6 +4747,11 @@ impl LocalCodePilot {
                 self.dependency_terminal = Some(path);
             }
             Some(ProcessAction::ClearLogs(id)) => self.clear_process_logs(&id),
+            Some(ProcessAction::ToggleDetails(id)) => {
+                if !self.expanded_processes.remove(&id) {
+                    self.expanded_processes.insert(id);
+                }
+            }
             Some(ProcessAction::ViewLogs(id)) => self.managed.terminal = Some(id),
             Some(ProcessAction::OpenUrl(url)) => {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
@@ -6585,7 +6686,7 @@ fn process_error_suggestion(logs: &[String]) -> Option<String> {
     } else if details.contains("syntaxerror") || details.contains("syntax error") {
         "Existe um erro de sintaxe. Abra o primeiro arquivo e linha indicados nos logs, corrija-os e tente novamente."
     } else {
-        "Abra o terminal do processo e revise a primeira mensagem de erro antes do encerramento. Depois de corrigir a causa, use Tentar novamente."
+        "Use Ver logs para encontrar a primeira mensagem de erro antes do encerramento. Depois de corrigir a causa, use Tentar de novo."
     };
     Some(suggestion.into())
 }
