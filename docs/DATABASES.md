@@ -28,15 +28,19 @@ Quando o projeto usa PostgreSQL, MySQL ou MariaDB neste computador e nada respon
 
 No Windows, o PostgreSQL e o MySQL precisam do Microsoft Visual C++ Redistributable. Sem ele, nada é preparado, e a confirmação orienta a instalação.
 
+### PostgreSQL no macOS e no Linux
+
+A EDB não publica checksum do PostgreSQL para macOS nem binários atuais para Linux. Por isso, no macOS e no Linux, **Iniciar** prepara o PostgreSQL local em container, com o Docker ou o Podman, usando a imagem oficial do PostgreSQL (`docker.io/library/postgres:19.0-trixie`) fixada por digest. Depois do download, o app confere que a cópia do motor tem esse digest; se não tiver, nada é criado. A confirmação **Preparar PostgreSQL para este projeto?** mostra o download estimado (cerca de 160 MB), o espaço em disco (cerca de 550 MB), o banco e o usuário. A porta é publicada só em `127.0.0.1`, e os dados ficam num volume do motor (`localcodepilot-pg-<identificador>`), que permanece depois de fechar o app. A senha inicial do administrador passa por um arquivo temporário só do seu usuário e é trocada logo após o preparo pela senha guardada no cofre. O usuário do projeto é dono só do próprio banco, sem poderes no servidor. O andamento aparece no cartão: baixando a imagem, conferindo a imagem, criando o container, preparando o banco e o usuário, testando a conexão do projeto. Sem Docker nem Podman instalados, o cartão diz "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers." e oferece **Abrir Containers**. Com o motor instalado e parado, o app pede para ligá-lo e segue sozinho depois. Ao fechar o app, o container é parado, e a parada é confirmada pelo motor.
+
 ### Onde o preparo existe
 
 | Motor | Windows (x64) | macOS | Linux |
 |---|---|---|---|
-| PostgreSQL 19 | sim | ainda não | ainda não |
+| PostgreSQL 19 | sim (pacote nativo) | em container, com Docker ou Podman | em container, com Docker ou Podman |
 | MySQL 9.7 | sim | macOS 15 ou mais novo (Apple Silicon e Intel) | x86_64 com glibc 2.28 ou mais nova |
 | MariaDB 12.3 | sim | ainda não | x86_64 com glibc 2.28 ou mais nova |
 
-Cada pacote é o oficial do projeto, com SHA-256 conferido contra uma fonte independente (assinatura GPG da Oracle para o MySQL, `sha256sums.txt` assinado para o MariaDB). Onde ainda não há pacote verificável (a EDB não publica checksum do PostgreSQL para macOS nem binários atuais para Linux, e o MariaDB não publica binários para macOS), o cartão diz "O {motor} deste projeto não está rodando. O LocalCodePilot ainda não consegue prepará-lo neste sistema." e **Detalhes técnicos** traz o motivo. O app nunca troca o motor pedido por outro.
+Cada pacote é o oficial do projeto, com SHA-256 conferido contra uma fonte independente (assinatura GPG da Oracle para o MySQL, `sha256sums.txt` assinado para o MariaDB). Onde ainda não há pacote verificável (o MariaDB não publica binários para macOS, e o MySQL e o MariaDB não têm pacote enxuto para Linux ARM), o cartão diz "O {motor} deste projeto não está rodando. O LocalCodePilot ainda não consegue prepará-lo neste sistema." e **Detalhes técnicos** traz o motivo. O app nunca troca o motor pedido por outro.
 
 No Linux, o MySQL precisa da biblioteca `libaio` do sistema (pacote `libaio1` ou `libaio1t64`, presente na maioria das instalações). No Ubuntu 24.04 e mais novos, que só têm `libaio.so.1t64`, o app cria o link que o MySQL procura dentro da pasta do próprio pacote, sem mexer no sistema. Sem a biblioteca, ou com Alpine (sem glibc), o cartão diz que o preparo não está disponível e por quê.
 

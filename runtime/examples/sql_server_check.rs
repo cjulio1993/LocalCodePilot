@@ -114,16 +114,19 @@ fn main() -> ExitCode {
         println!("{} {name}{detail}", if passed { "ok:" } else { "FALHOU:" });
         ok &= passed;
     };
-    let server =
-        match sql_server_container::prepare(&root, kind, &engine, port, &vault, None, |step| {
-            println!("etapa: {step:?}")
-        }) {
-            Ok(server) => server,
-            Err(error) => {
-                println!("FALHOU: preparar: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let server = match sql_server_container::prepare(
+        &root,
+        sql_server_container::planned(kind, &engine, port).unwrap(),
+        &vault,
+        None,
+        |step| println!("etapa: {step:?}"),
+    ) {
+        Ok(server) => server,
+        Err(error) => {
+            println!("FALHOU: preparar: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if let Ok(output) = std::process::Command::new(&engine)
         .args(["image", "inspect", "--format", "{{.Size}}", kind.image()])
         .output()

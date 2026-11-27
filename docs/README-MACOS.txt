@@ -27,14 +27,16 @@ A substituição automática do aplicativo continua disponível somente no Windo
 Bancos de dados
 ---------------
 O LocalCodePilot testa a conexão com o banco de dados do projeto (PostgreSQL, MySQL,
-MariaDB e SQL Server) usando os dados de acesso do .env ou do wp-config.php. No macOS
-ele não prepara nem inicia servidores de banco: inicie o seu banco como de costume.
-O preparo do servidor existe só no Windows.
+MariaDB e SQL Server) usando os dados de acesso do .env ou do wp-config.php. No macOS,
+Iniciar prepara o MySQL (macOS 15 ou mais novo) com o pacote oficial, e o PostgreSQL em
+container com o Docker ou o Podman (imagem oficial fixada por digest), sempre após
+confirmação e só para este computador (127.0.0.1). MariaDB e SQL Server ainda não são
+preparados no macOS: o cartão explica o motivo.
 
 Containers
 ----------
-Docker Desktop ou Podman e um provedor Compose precisam estar instalados e em
-execução. O LocalCodePilot não instala nem inicia o motor.
+Docker Desktop ou Podman e um provedor Compose precisam estar instalados. O LocalCodePilot
+não instala o motor; se ele estiver parado, Iniciar pede confirmação para ligá-lo.
 
 Roteiro de validação
 ---------------------

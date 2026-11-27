@@ -45,6 +45,9 @@ pub(super) struct EngineStartState {
     pub failure: Option<EngineStartFailure>,
     /// The project action to resume once the containers are checked again.
     pub resume: Option<(ContainerEngine, ContainerCommand)>,
+    /// A project whose database runs in a container (T030): "Iniciar" goes on by itself once
+    /// the engine answers.
+    pub resume_project: Option<std::path::PathBuf>,
 }
 
 impl EngineStartState {
@@ -185,8 +188,14 @@ impl LocalCodePilot {
             .and_then(|diagnosis| diagnosis.start.clone())
     }
 
+    /// After the engine answers, "Iniciar" goes on for `project` (a database in a container,
+    /// T030). Cleared if the start is cancelled or fails.
+    pub(crate) fn resume_project_after_engine_start(&mut self, project: std::path::PathBuf) {
+        self.container_state.engine_start.resume_project = Some(project);
+    }
+
     /// Opens "Ligar o {motor}?" for `choices`, resuming `resume` once the engine answers.
-    pub(super) fn request_engine_start(
+    pub(crate) fn request_engine_start(
         &mut self,
         choices: Vec<ContainerEngine>,
         project: Option<String>,
@@ -297,6 +306,9 @@ impl LocalCodePilot {
         if confirm || cancel || !open {
             forget_first_focus(root_ui);
         }
+        if cancel || !open {
+            self.container_state.engine_start.resume_project = None;
+        }
         // Closed without starting: the focus goes back to the control that opened it.
         if (cancel || !open)
             && let Some(origin) = request.origin
@@ -367,6 +379,7 @@ impl LocalCodePilot {
                 self.refresh_containers(ctx.clone());
             }
             Err(failure) => {
+                self.container_state.engine_start.resume_project = None;
                 let reason = failure_reason(job.engine, &job.plan, &failure);
                 let mut technical = job.plan.commands();
                 if let StartFailure::Command(error) = &failure
@@ -387,6 +400,16 @@ impl LocalCodePilot {
     /// After the containers were checked again: the project action goes through the usual
     /// confirmation, which checks the Compose environment again before anything runs.
     pub(super) fn resume_after_engine_start(&mut self) {
+        // Only after a start that worked: no job running, no failure.
+        if self.container_state.engine_start.job.is_none()
+            && self.container_state.engine_start.failure.is_none()
+            && let Some(project) = self.container_state.engine_start.resume_project.take()
+            && self.container_state.engines.iter().any(|diagnosis| {
+                diagnosis.state == localcodepilot_core::containers::EngineState::Ready
+            })
+        {
+            self.start_project(&project);
+        }
         let Some((engine, command)) = self.container_state.engine_start.resume.take() else {
             return;
         };

@@ -640,25 +640,32 @@ fn image_matches(repo_digests: &str, image: &str) -> bool {
     repo_digests.contains(digest)
 }
 
-/// Creates the app's container of `kind` on `port` and leaves it running with the final
-/// administrator password. For SQL Server, the person accepted the license terms before this
-/// is called.
-pub fn prepare(
-    root: &Path,
-    kind: ContainerKind,
-    engine: &str,
-    port: u16,
-    vault: &dyn Vault,
-    path: Option<&OsStr>,
-    step: impl Fn(ContainerStep),
-) -> Result<SqlServerContainer, String> {
-    let server = SqlServerContainer {
+/// The container the app would create, with its identifier chosen now, so the confirmation can
+/// show the container's and the volume's real names (T030).
+pub fn planned(kind: ContainerKind, engine: &str, port: u16) -> Result<SqlServerContainer, String> {
+    Ok(SqlServerContainer {
         id: new_id()?,
         kind,
         engine: engine.to_owned(),
         port,
         stop_failed: false,
-    };
+    })
+}
+
+/// Creates the app's container of `kind` on `port` and leaves it running with the final
+/// administrator password. For SQL Server, the person accepted the license terms before this
+/// is called.
+pub fn prepare(
+    root: &Path,
+    server: SqlServerContainer,
+    vault: &dyn Vault,
+    path: Option<&OsStr>,
+    step: impl Fn(ContainerStep),
+) -> Result<SqlServerContainer, String> {
+    let kind = server.kind;
+    let engine = server.engine.clone();
+    let engine = engine.as_str();
+    let port = server.port;
     engine_command(engine, &["pull", kind.image()], path, COMMAND_TIMEOUT)?;
     // The engine pulls by digest; the app still confirms the copy it will run is that one.
     step(ContainerStep::Verifying);

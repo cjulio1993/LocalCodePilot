@@ -738,7 +738,7 @@ pub(super) struct ContainerState {
     projects: Vec<ContainerProject>,
     runtime_containers: Vec<RuntimeContainer>,
     last_refresh: Option<std::time::Instant>,
-    engines: Vec<EngineDiagnosis>,
+    pub(super) engines: Vec<EngineDiagnosis>,
     host: Option<ContainerHostFacts>,
     engine_runtime: Vec<EngineRuntime>,
     compose_names: ComposeNames,
