@@ -215,6 +215,10 @@ const SECTIONS: &[HelpSection] = &[
                 "Iniciar prepara um servidor só deste computador. Na primeira vez, a confirmação mostra o download, o espaço necessário, o banco e o usuário que serão criados; nada é baixado antes de Preparar e iniciar. O pacote é o oficial de cada banco, conferido pelo SHA-256 antes de ser usado. A senha de administração fica no Gerenciador de Credenciais do Windows (no macOS e no Linux, num arquivo que só o seu usuário lê), e o projeto só inicia depois que o banco aceita os dados de acesso dele.",
             ),
             Block::Item(
+                "Onde ver os bancos",
+                "encontre o banco no projeto ou em Serviços > Bancos de dados. Um servidor compartilhado aparece uma vez, com os projetos que o usam. Testar conexão não inicia nem altera um banco remoto.",
+            ),
+            Block::Item(
                 "Onde ficam os dados",
                 "na pasta do LocalCodePilot: %LOCALAPPDATA%\\LocalCodePilot\\bancos no Windows, ~/Library/Application Support/LocalCodePilot/bancos no macOS e ~/.local/share/localcodepilot/bancos no Linux. Ao fechar o aplicativo, o LocalCodePilot tenta encerrar os servidores que preparou, mesmo se o preparo ainda estiver em andamento. Os dados permanecem guardados. Se algum banco continuar rodando, você verá um aviso na próxima abertura.",
             ),
