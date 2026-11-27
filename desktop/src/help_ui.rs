@@ -148,7 +148,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Projeto sem comando para iniciar",
-                "Quando o projeto tiver uma entrada clara, use Iniciar: o LocalCodePilot mostra o que será executado antes da primeira vez. Em projetos C/C++ com CMake, Meson ou um projeto executável do Visual Studio, com um único programa, Iniciar compila e executa; se a compilação falhar, use Ver logs. Se houver várias entradas ou nenhuma for identificada, use Definir comando de início no cartão. Para conferir ou alterar um comando definido por você, abra Detalhes técnicos.",
+                "Quando o projeto tiver uma entrada clara, use Iniciar: o LocalCodePilot mostra o que será executado antes da primeira vez. Em projetos C/C++ com CMake, Meson ou um projeto executável do Visual Studio, com um único programa, Iniciar compila e executa; no macOS e no Linux, um Makefile com o alvo run também inicia (make run); se a compilação falhar, use Ver logs. Se houver várias entradas ou nenhuma for identificada, use Definir comando de início no cartão. Para conferir ou alterar um comando definido por você, abra Detalhes técnicos.",
             ),
             Block::Item(
                 "package.json inválido",

@@ -100,7 +100,8 @@ fn cabal_entry(folder: &Path) -> Entry {
     }
 }
 
-/// C/C++ with CMake or Meson: the only executable target (T028.02).
+/// C/C++ with CMake, Meson or Visual Studio: the only executable target (T028.02, T033.01);
+/// otherwise a Makefile's `run` target on macOS and Linux (T033.02).
 fn cpp_entry(folder: &Path) -> Entry {
     let targets = crate::build_languages::build_targets(folder);
     let names = targets
@@ -108,10 +109,36 @@ fn cpp_entry(folder: &Path) -> Entry {
         .map(|target| target.name().to_owned())
         .collect::<Vec<_>>();
     match names.as_slice() {
+        [] if makefile_runs(folder) => Entry::One("make run".into()),
         [] => Entry::None,
         [one] => Entry::One(one.clone()),
         _ => Entry::Many(names),
     }
+}
+
+/// A Makefile in the folder that declares a `run` target, on macOS and Linux (Windows has no
+/// make of its own: a task of its own, decided by the founder). Only an explicit `run:` counts:
+/// the app does not guess which of the Makefile's targets is the program.
+fn makefile_runs(folder: &Path) -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+    makefile_has_run_target(folder)
+}
+
+fn makefile_has_run_target(folder: &Path) -> bool {
+    ["GNUmakefile", "makefile", "Makefile"].iter().any(|name| {
+        fs::read_to_string(folder.join(name)).is_ok_and(|text| {
+            text.lines().any(|line| {
+                // A rule line: `run:` or `run :` at the start, not `run := value`.
+                let Some(rest) = line.strip_prefix("run") else {
+                    return false;
+                };
+                let rest = rest.trim_start();
+                rest.starts_with(':') && !rest.starts_with(":=")
+            })
+        })
+    })
 }
 
 /// Leiningen runs the namespace in `:main`.
@@ -273,9 +300,19 @@ pub(super) fn detect_entry_process(project: &Project, processes: &mut Vec<Projec
                 );
             }
             RuntimeKind::Cpp => {
-                let Ok([target]) =
-                    <[_; 1]>::try_from(crate::build_languages::build_targets(folder))
-                else {
+                let targets = crate::build_languages::build_targets(folder);
+                if targets.is_empty() && makefile_runs(folder) {
+                    push_process(
+                        processes,
+                        project,
+                        folder,
+                        "Executar (Makefile)",
+                        "make",
+                        &["run"],
+                    );
+                    continue;
+                }
+                let Ok([target]) = <[_; 1]>::try_from(targets) else {
                     continue;
                 };
                 let Some(build) = crate::build_languages::build_folder(folder) else {
@@ -501,6 +538,37 @@ mod tests {
         library.file("CMakeLists.txt", "add_library(util STATIC u.c)\n");
         assert!(commands(&library.project(&[RuntimeKind::Cpp])).is_empty());
         assert!(!has_ambiguous_entry(&library.project(&[RuntimeKind::Cpp])));
+    }
+
+    #[test]
+    fn only_an_explicit_run_target_of_a_makefile_starts() {
+        let make = Folder::new("make-run");
+        make.file(
+            "Makefile",
+            "CC=cc\nall: loja\nloja: main.c\n\t$(CC) -o loja main.c\nrun: loja\n\t./loja\n",
+        )
+        .file("main.c", "int main(){return 0;}")
+        .file("util.c", "");
+        assert!(makefile_has_run_target(&make.0));
+        let started = commands(&make.project(&[RuntimeKind::Cpp]));
+        if cfg!(windows) {
+            assert!(started.is_empty());
+        } else {
+            assert_eq!(started, vec!["make run"]);
+        }
+        // No run target, or only a variable named run: nothing is guessed.
+        let no_run = Folder::new("make-sem-run");
+        no_run
+            .file("Makefile", "run := ./loja\nall:\n\tcc -o loja main.c\n")
+            .file("main.c", "")
+            .file("util.c", "");
+        assert!(!makefile_has_run_target(&no_run.0));
+        assert!(commands(&no_run.project(&[RuntimeKind::Cpp])).is_empty());
+        // CMake wins over a Makefile beside it.
+        let both = Folder::new("make-e-cmake");
+        both.file("Makefile", "run:\n\t./x\n")
+            .file("CMakeLists.txt", "add_executable(loja main.c)\n");
+        assert!(!commands(&both.project(&[RuntimeKind::Cpp])).contains(&"make run".to_owned()));
     }
 
     #[test]
