@@ -311,12 +311,22 @@ impl SecretFile {
         use std::io::Write;
         let folder = root.join(TEMP_FOLDER);
         fs::create_dir_all(&folder).map_err(io("não foi possível criar a pasta temporária"))?;
+        // On macOS and Linux only this user may enter the folder and read the file, from the
+        // moment it exists (T029): the default rights would let other users read it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))
+                .map_err(io("não foi possível proteger a pasta temporária"))?;
+        }
         let pid = std::process::id();
         let started = ports::process_started_at(pid).unwrap_or_default();
         let path = folder.join(format!("{pid}-{started}-{}.tmp", new_id()?));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options
             .open(&path)
             .map_err(io("não foi possível criar o arquivo temporário"))?;
         let written = file
@@ -1652,6 +1662,22 @@ mod tests {
             secret.path.clone()
         };
         assert!(!path.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_secret_file_is_readable_only_by_this_user_while_it_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("lcp-secret-mode-{}", std::process::id()));
+        // A folder left with open rights by an earlier version is closed again.
+        fs::create_dir_all(root.join(TEMP_FOLDER)).unwrap();
+        fs::set_permissions(root.join(TEMP_FOLDER), fs::Permissions::from_mode(0o777)).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let secret = SecretFile::create(&root, "segredo").unwrap();
+        assert_eq!(mode(&secret.path), 0o600);
+        assert_eq!(mode(&root.join(TEMP_FOLDER)), 0o700);
+        drop(secret);
         let _ = fs::remove_dir_all(&root);
     }
 
