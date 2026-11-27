@@ -251,7 +251,12 @@ pub(super) struct PortChange {
 /// The steps shown under "Iniciando".
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum DatabaseStep {
-    Downloading { received: u64, total: u64 },
+    Downloading {
+        received: u64,
+        total: u64,
+    },
+    /// The download is complete and its SHA-256 is being checked against the pinned one.
+    Verifying,
     Preparing,
     StartingServer,
 }
@@ -266,6 +271,7 @@ impl DatabaseStep {
                 total / (1024 * 1024)
             ),
             Self::Downloading { .. } => format!("Baixando {engine}..."),
+            Self::Verifying => format!("Verificando o pacote de {engine}…"),
             Self::Preparing => "Preparando o banco de dados…".into(),
             Self::StartingServer => "Iniciando o banco de dados…".into(),
         }
@@ -1852,10 +1858,13 @@ fn run_start_job(request: &DatabaseRequest, sender: &Sender<JobEvent>) -> JobRes
     let package = request.package;
     if !package.is_prepared(&root) {
         let archive = match package.download(&root, |received, total| {
-            let _ = sender.send(JobEvent::Step(DatabaseStep::Downloading {
-                received,
-                total,
-            }));
+            // The last bytes are followed by the SHA-256 check of the whole file.
+            let step = if total > 0 && received >= total {
+                DatabaseStep::Verifying
+            } else {
+                DatabaseStep::Downloading { received, total }
+            };
+            let _ = sender.send(JobEvent::Step(step));
         }) {
             Ok(archive) => archive,
             Err(error) => return JobResult::Failed(JobFailure::text(error.to_string())),
@@ -2716,6 +2725,10 @@ mod tests {
             }
             .text("MySQL"),
             "Baixando MySQL..."
+        );
+        assert_eq!(
+            DatabaseStep::Verifying.text("MariaDB"),
+            "Verificando o pacote de MariaDB…"
         );
         assert_eq!(
             DatabaseStep::Preparing.text("MySQL"),
