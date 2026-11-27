@@ -414,6 +414,13 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             .iter()
             .find_map(DatabaseStatus::not_preparable_here)
             .filter(|_| !can_prepare)
+            .or_else(|| {
+                environment
+                    .databases
+                    .iter()
+                    .find_map(DatabaseStatus::container_start_note)
+                    .filter(|_| can_prepare)
+            })
             .unwrap_or_else(|| "O banco de dados deste projeto não está rodando.".into());
         return summary(
             ProjectState::Stopped,

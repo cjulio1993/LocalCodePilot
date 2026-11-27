@@ -18,7 +18,9 @@ use localcodepilot_runtime::{
     database_connection::{loopback_address, test_remote_connection},
     database_packages::{self, DatabasePackage},
     database_servers::{self, ManagedServer, Recognition, ServerError, SystemVault},
-    sql_server_container::{self, ContainerState, SqlServerContainer},
+    sql_server_container::{
+        self, ContainerKind, ContainerState, ContainerStep, SqlServerContainer,
+    },
 };
 use sha2::{Digest, Sha256};
 use std::sync::mpsc::{Receiver, Sender};
@@ -47,12 +49,42 @@ pub(super) fn database_root() -> Option<PathBuf> {
 }
 
 /// The app prepares the servers of `engine` on this computer: SQL Server as a container on
-/// Windows, the others from a pinned package for this system (T029).
+/// Windows, PostgreSQL as a container on macOS and Linux (T030), the others from a pinned
+/// package for this system (T029).
 fn engine_preparable_here(engine: DatabaseEngine) -> bool {
-    if engine == DatabaseEngine::SqlServer {
-        cfg!(windows)
-    } else {
-        database_packages::package_for_this_system(engine).is_some()
+    match container_kind_here(engine) {
+        Some(ContainerKind::SqlServer) => cfg!(windows),
+        Some(ContainerKind::PostgreSql) => true,
+        None => database_packages::package_for_this_system(engine).is_some(),
+    }
+}
+
+/// The databases the app runs in a container on this computer: SQL Server (the gate itself
+/// refuses it outside Windows) and, on macOS and Linux, PostgreSQL: the Docker Official Image
+/// pinned by digest, where no package can be verified (T030). Windows keeps the native
+/// PostgreSQL package.
+fn container_kind_here(engine: DatabaseEngine) -> Option<ContainerKind> {
+    match engine {
+        DatabaseEngine::SqlServer => Some(ContainerKind::SqlServer),
+        DatabaseEngine::PostgreSql if !cfg!(windows) => Some(ContainerKind::PostgreSql),
+        _ => None,
+    }
+}
+
+fn kind_name(kind: ContainerKind) -> &'static str {
+    match kind {
+        ContainerKind::SqlServer => "SQL Server",
+        ContainerKind::PostgreSql => "PostgreSQL",
+    }
+}
+
+/// The card's sentence when no container engine is ready for `kind`.
+fn no_container_engine(kind: ContainerKind) -> &'static str {
+    match kind {
+        ContainerKind::SqlServer => NO_CONTAINER_ENGINE,
+        ContainerKind::PostgreSql => {
+            "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers."
+        }
     }
 }
 
@@ -134,6 +166,8 @@ pub(super) enum DatabaseFix {
     /// No administrator password the app keeps logs in to its SQL Server: a new container and
     /// volume; the old ones are kept.
     NewSqlServer,
+    /// The same for the app's PostgreSQL container (macOS and Linux, T030).
+    NewPostgres,
 }
 
 impl DatabaseFix {
@@ -144,6 +178,7 @@ impl DatabaseFix {
             Self::NewData => "Criar banco novo",
             Self::OpenContainers => "Abrir Containers",
             Self::NewSqlServer => "Criar SQL Server novo",
+            Self::NewPostgres => "Criar PostgreSQL novo",
         }
     }
 }
@@ -197,9 +232,11 @@ impl DatabaseRequest {
     }
 }
 
-/// The SQL Server container the app would create for a project, waiting for the terms.
+/// The container the app would create for a project (SQL Server, waiting for the terms, or
+/// PostgreSQL on macOS and Linux), waiting for the person's confirmation.
 #[derive(Debug, Clone)]
 pub(super) struct SqlServerRequest {
+    pub kind: ContainerKind,
     pub project: PathBuf,
     pub requirement: DatabaseRequirement,
     /// `docker` or `podman`.
@@ -259,6 +296,13 @@ pub(super) enum DatabaseStep {
     Verifying,
     Preparing,
     StartingServer,
+    /// The app's containers (T030): the image download, its digest check, the container,
+    /// the project's database and user, the project's login.
+    PullingImage,
+    VerifyingImage,
+    CreatingContainer,
+    PreparingProject,
+    TestingLogin,
 }
 
 impl DatabaseStep {
@@ -274,6 +318,11 @@ impl DatabaseStep {
             Self::Verifying => format!("Verificando o pacote de {engine}…"),
             Self::Preparing => "Preparando o banco de dados…".into(),
             Self::StartingServer => "Iniciando o banco de dados…".into(),
+            Self::PullingImage => format!("Baixando a imagem do {engine}…"),
+            Self::VerifyingImage => format!("Conferindo a imagem do {engine}…"),
+            Self::CreatingContainer => format!("Criando o container do {engine}…"),
+            Self::PreparingProject => "Preparando o banco e o usuário…".into(),
+            Self::TestingLogin => "Testando a conexão do projeto…".into(),
         }
     }
 }
@@ -340,19 +389,22 @@ impl JobFailure {
         failure
     }
 
-    /// A SQL Server step failed: the sentence for the card, the rest in "Detalhes técnicos".
-    fn sql(error: String, server_id: Option<String>) -> Self {
-        let recovery = if error.starts_with(sql_server_container::STOP_NOT_CONFIRMED) {
+    /// A step of the app's container failed: the sentence for the card, the rest in
+    /// "Detalhes técnicos".
+    fn sql(kind: ContainerKind, error: String, server_id: Option<String>) -> Self {
+        let recovery = if error.starts_with(kind.stop_not_confirmed()) {
             Some(DatabaseFix::OpenContainers)
         } else if sql_server_container::needs_new_container(&error) {
-            Some(DatabaseFix::NewSqlServer)
+            Some(match kind {
+                ContainerKind::SqlServer => DatabaseFix::NewSqlServer,
+                ContainerKind::PostgreSql => DatabaseFix::NewPostgres,
+            })
         } else {
             None
         };
-        let (message, details) = match error.strip_prefix(sql_server_container::PREPARATION_FAILED)
-        {
+        let (message, details) = match error.strip_prefix(kind.preparation_failed()) {
             Some(rest) => (
-                sql_server_container::PREPARATION_FAILED.to_owned(),
+                kind.preparation_failed().to_owned(),
                 vec![
                     rest.trim()
                         .trim_start_matches('(')
@@ -501,8 +553,10 @@ impl LocalCodePilot {
     ) -> DatabaseGate {
         for status in &environment.databases {
             let requirement = &status.requirement;
-            if requirement.engine == DatabaseEngine::SqlServer && local_server(requirement) {
-                match self.sql_server_gate(project_path, status) {
+            if let Some(kind) = container_kind_here(requirement.engine)
+                && local_server(requirement)
+            {
+                match self.sql_server_gate(kind, project_path, status) {
                     Some(gate) => return gate,
                     None => continue,
                 }
@@ -650,10 +704,12 @@ impl LocalCodePilot {
         DatabaseGate::Ready
     }
 
-    /// SQL Server on this computer: `None` when the project's login is accepted. The app's
-    /// container starts after a click on "Iniciar"; a new one needs the terms accepted.
+    /// A database the app runs in a container (SQL Server; PostgreSQL on macOS and Linux):
+    /// `None` when the project's login is accepted. The app's container starts after a click
+    /// on "Iniciar"; a new one is confirmed first (SQL Server: with the terms accepted).
     fn sql_server_gate(
         &mut self,
+        kind: ContainerKind,
         project_path: &Path,
         status: &DatabaseStatus,
     ) -> Option<DatabaseGate> {
@@ -690,7 +746,11 @@ impl LocalCodePilot {
                 DatabaseFailure::plain(plain_reason()),
             ));
         };
-        if let Some(server) = sql_server_container::find(&root, port) {
+        // Only a container of this kind is the project's; another kind on the port is another
+        // program for this project.
+        if let Some(server) =
+            sql_server_container::find(&root, port).filter(|server| server.kind == kind)
+        {
             let credentials = read_credentials(requirement);
             let (Some(database), Some(user)) =
                 (credentials.database.clone(), credentials.user.clone())
@@ -702,7 +762,7 @@ impl LocalCodePilot {
             let requirement = requirement.clone();
             let password = credentials.password_for_setup();
             let path = self.environment_path.clone();
-            self.spawn_job(project_path, "SQL Server", true, move |sender| {
+            self.spawn_job(project_path, kind_name(kind), true, move |sender| {
                 run_sql_start_job(
                     &server,
                     &requirement,
@@ -747,10 +807,20 @@ impl LocalCodePilot {
                 DatabaseFailure::plain(plain_reason()),
             ));
         }
+        // An engine installed but stopped: "Ligar o {motor}?" (T026), then "Iniciar" again
+        // goes on by itself, without a command.
+        if ready_container_engine(self.environment_path.as_deref()).is_none()
+            && let Some(choices) = self.startable_engines()
+        {
+            self.request_engine_start(choices, Some(display_path(project_path)), vec![], None);
+            self.resume_project_after_engine_start(project_path.to_path_buf());
+            return Some(DatabaseGate::Waiting);
+        }
         Some(
-            match self.sql_server_request(project_path, requirement, None) {
+            match self.sql_server_request(kind, project_path, requirement, None) {
                 Ok(request) => {
-                    // A new container: the person reads and accepts the terms first.
+                    // A new container: the person confirms it first (and, for SQL Server,
+                    // reads and accepts the terms).
                     self.database.sql_confirmation = Some(request);
                     DatabaseGate::Waiting
                 }
@@ -759,9 +829,22 @@ impl LocalCodePilot {
         )
     }
 
-    /// What the SQL Server confirmation needs: the project's names and a ready engine.
+    /// Engines installed and stopped that the app knows how to turn on (T026).
+    fn startable_engines(&self) -> Option<Vec<localcodepilot_core::containers::ContainerEngine>> {
+        let choices: Vec<_> = self
+            .container_state
+            .engines
+            .iter()
+            .filter(|diagnosis| diagnosis.start.is_some())
+            .map(|diagnosis| diagnosis.engine)
+            .collect();
+        (!choices.is_empty()).then_some(choices)
+    }
+
+    /// What the container confirmation needs: the project's names and a ready engine.
     fn sql_server_request(
         &self,
+        kind: ContainerKind,
         project_path: &Path,
         requirement: &DatabaseRequirement,
         replaces: Option<SqlServerContainer>,
@@ -783,7 +866,7 @@ impl LocalCodePilot {
         let path = self.environment_path.clone();
         let Some(engine) = ready_container_engine(path.as_deref()) else {
             return Err(DatabaseFailure {
-                reason: NO_CONTAINER_ENGINE.into(),
+                reason: no_container_engine(kind).into(),
                 fix: Some(DatabaseFix::OpenContainers),
                 detail_fix: None,
                 retry: false,
@@ -791,6 +874,7 @@ impl LocalCodePilot {
             });
         };
         Ok(SqlServerRequest {
+            kind,
             project: project_path.to_path_buf(),
             requirement: requirement.clone(),
             engine,
@@ -966,13 +1050,13 @@ impl LocalCodePilot {
                 result.retry = false;
                 result.fix = Some(DatabaseFix::OpenContainers);
             }
-            Some(DatabaseFix::NewSqlServer) => {
+            Some(fix @ (DatabaseFix::NewSqlServer | DatabaseFix::NewPostgres)) => {
                 result.retry = false;
-                result.detail_fix = Some(DatabaseFix::NewSqlServer);
-                result.details.push(
-                    "Criar SQL Server novo cria outro container e outro volume; o volume atual é mantido, com os dados."
-                        .into(),
-                );
+                result.detail_fix = Some(fix);
+                result.details.push(format!(
+                    "{} cria outro container e outro volume; o volume atual é mantido, com os dados.",
+                    fix.label()
+                ));
             }
             _ => {}
         }
@@ -1100,10 +1184,11 @@ impl LocalCodePilot {
         let Some(port) = requirement.port else {
             return;
         };
-        let sql = requirement.engine == DatabaseEngine::SqlServer;
+        let kind = container_kind_here(requirement.engine);
         let sql_server = database_root()
-            .filter(|_| sql)
-            .and_then(|root| sql_server_container::find(&root, port));
+            .filter(|_| kind.is_some())
+            .and_then(|root| sql_server_container::find(&root, port))
+            .filter(|server| Some(server.kind) == kind);
         match fix {
             DatabaseFix::OpenContainers => {
                 self.touch_project(project_path);
@@ -1111,8 +1196,9 @@ impl LocalCodePilot {
                 self.page = Page::Containers;
                 return;
             }
-            DatabaseFix::NewSqlServer => {
-                match self.sql_server_request(project_path, &requirement, sql_server) {
+            DatabaseFix::NewSqlServer | DatabaseFix::NewPostgres => {
+                let kind = kind.unwrap_or_default();
+                match self.sql_server_request(kind, project_path, &requirement, sql_server) {
                     Ok(request) => self.database.sql_confirmation = Some(request),
                     Err(failure) => self.record_database_failure(project_path, failure),
                 }
@@ -1155,7 +1241,9 @@ impl LocalCodePilot {
                         requirement: requirement.clone(),
                     })
             }
-            DatabaseFix::OpenContainers | DatabaseFix::NewSqlServer => None,
+            DatabaseFix::OpenContainers | DatabaseFix::NewSqlServer | DatabaseFix::NewPostgres => {
+                None
+            }
         };
     }
 
@@ -1366,7 +1454,7 @@ impl LocalCodePilot {
             SqlChoice::Confirm => {
                 self.database.sql_confirmation = None;
                 let project = request.project.clone();
-                self.spawn_job(&project, "SQL Server", true, move |sender| {
+                self.spawn_job(&project, kind_name(request.kind), true, move |sender| {
                     run_sql_prepare_job(&request, sender)
                 });
             }
@@ -1539,9 +1627,10 @@ impl LocalCodePilot {
                 self.database
                     .session_servers
                     .push(format!("{SQL_PREFIX}{}", server.id));
-                self.notify(
-                    "O SQL Server não parou quando o aplicativo foi fechado e ainda está rodando.",
-                );
+                self.notify(format!(
+                    "O {} não parou quando o aplicativo foi fechado e ainda está rodando.",
+                    kind_name(server.kind)
+                ));
             } else {
                 let _ = sql_server_container::mark_stop_failed(&root, &server, false);
             }
@@ -1597,6 +1686,9 @@ fn sql_server_confirmation_window(
     root_ui: &mut egui::Ui,
     request: &mut SqlServerRequest,
 ) -> SqlChoice {
+    if request.kind == ContainerKind::PostgreSql {
+        return postgres_confirmation_window(root_ui, request);
+    }
     let engine_name = if request.engine == "podman" {
         "Podman"
     } else {
@@ -1698,6 +1790,98 @@ fn sql_server_confirmation_window(
         SqlChoice::Waiting
     }
 }
+/// "Preparar PostgreSQL para este projeto?" (T030): no license terms; the texts of the spec.
+fn postgres_confirmation_window(
+    root_ui: &mut egui::Ui,
+    request: &mut SqlServerRequest,
+) -> SqlChoice {
+    let engine_name = if request.engine == "podman" {
+        "Podman"
+    } else {
+        "Docker"
+    };
+    let mut open = true;
+    let mut cancel = false;
+    let mut confirm = false;
+    let shown = egui::Window::new("Preparar PostgreSQL para este projeto?")
+        .id(egui::Id::unique("postgres-container-confirmation"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .default_width(540.0)
+        .show(root_ui, |ui| {
+            ui.label(format!(
+                "O LocalCodePilot vai baixar a imagem oficial do PostgreSQL e criar um container com o {engine_name}. Os dados ficarão num volume do {engine_name} e permanecerão após fechar o aplicativo. O banco aceitará conexões deste computador, em 127.0.0.1. Ao fechar o aplicativo, o LocalCodePilot tentará parar o container."
+            ));
+            if let Some(old) = &request.replaces {
+                ui.add_space(6.0);
+                ui.label(format!(
+                    "O projeto passará a usar um banco vazio. Os dados anteriores continuam no volume {}.",
+                    old.volume()
+                ));
+            }
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "Download estimado: {}. Espaço em disco depois do preparo: {}. Banco {} e usuário {}, com acesso só a esse banco.",
+                    sql_server_container::POSTGRES_APPROXIMATE_DOWNLOAD,
+                    sql_server_container::POSTGRES_APPROXIMATE_SPACE,
+                    request.database,
+                    request.user
+                ))
+                .color(theme::MUTED),
+            );
+            egui::CollapsingHeader::new("Detalhes técnicos")
+                .id_salt("postgres-container-confirmation-details")
+                .show(ui, |ui| {
+                    for line in [
+                        format!("PostgreSQL em 127.0.0.1:{}.", request.port),
+                        format!("Imagem: {}.", sql_server_container::POSTGRES_IMAGE),
+                        "Container: localcodepilot-pg-<identificador>.".to_owned(),
+                        "Volume: localcodepilot-pg-<identificador>.".to_owned(),
+                        format!("Configuração: {}.", display_path(&request.requirement.source)),
+                        "Quem administra o motor de containers pode ver a senha inicial do administrador; o LocalCodePilot a troca logo após o preparo.".to_owned(),
+                    ] {
+                        ui.label(RichText::new(line).color(theme::MUTED).size(12.0));
+                    }
+                });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let not_now = ui.button("Agora não");
+                focus_safe_choice_once(ui, SQL_FOCUS, &not_now);
+                if not_now.clicked() {
+                    cancel = true;
+                }
+                if ui
+                    .add(egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY))
+                    .clicked()
+                {
+                    confirm = true;
+                }
+            });
+        });
+    if escape_pressed(root_ui) {
+        cancel = true;
+    }
+    if !(confirm || cancel || !open) {
+        super::notice::keep_focus_inside(
+            root_ui.ctx(),
+            shown.as_ref().map(|shown| &shown.response),
+        );
+    }
+    if confirm || cancel || !open {
+        forget_first_focus(root_ui, SQL_FOCUS);
+    }
+    if cancel || !open {
+        SqlChoice::Cancel
+    } else if confirm {
+        SqlChoice::Confirm
+    } else {
+        SqlChoice::Waiting
+    }
+}
+
 /// The first free port after `default` that no server of the app uses either.
 fn free_port_after(default: u16) -> Option<u16> {
     let registered: Vec<u16> = database_root()
@@ -1970,7 +2154,11 @@ fn run_fix_password_job(
         if let Err(error) =
             sql_server_container::set_project_password(&server, &SystemVault, user, &password)
         {
-            return JobResult::Failed(JobFailure::sql(error, Some(server_id.to_owned())));
+            return JobResult::Failed(JobFailure::sql(
+                server.kind,
+                error,
+                Some(server_id.to_owned()),
+            ));
         }
         let test = project_login(requirement);
         return match test.as_ref().map(|test| &test.outcome) {
@@ -2060,15 +2248,17 @@ fn run_new_data_job(
 
 /// The project's database and login on the app's container, then the project's own login.
 fn sql_project_ready(
+    sender: &Sender<JobEvent>,
     server: &SqlServerContainer,
     requirement: &DatabaseRequirement,
     database: &str,
     user: &str,
     password: &str,
-    mut actions: Vec<String>,
-    note: Option<String>,
+    // What was done before ("criado ...") and the note for the card.
+    (mut actions, note): (Vec<String>, Option<String>),
 ) -> JobResult {
     let server_id = format!("{SQL_PREFIX}{}", server.id);
+    let _ = sender.send(JobEvent::Step(DatabaseStep::PreparingProject));
     if let Err(error) = sql_server_container::ensure_project_database(
         server,
         &SystemVault,
@@ -2076,13 +2266,15 @@ fn sql_project_ready(
         user,
         password,
     ) {
-        return JobResult::Failed(JobFailure::sql(error, Some(server_id)));
+        return JobResult::Failed(JobFailure::sql(server.kind, error, Some(server_id)));
     }
+    let _ = sender.send(JobEvent::Step(DatabaseStep::TestingLogin));
     let test = project_login(requirement);
     match test.as_ref().map(|test| &test.outcome) {
         Some(ConnectionOutcome::Connected) => {
             actions.push(format!(
-                "banco {database} e login {user} conferidos no SQL Server; o login do projeto tem acesso só ao banco {database}"
+                "banco {database} e login {user} conferidos no {}; o login do projeto tem acesso só ao banco {database}",
+                kind_name(server.kind)
             ));
             JobResult::Ready {
                 server_id,
@@ -2108,11 +2300,20 @@ fn run_sql_start_job(
     let _ = sender.send(JobEvent::Step(DatabaseStep::StartingServer));
     if let Err(error) = sql_server_container::start(server, &SystemVault, path) {
         return JobResult::Failed(JobFailure::sql(
+            server.kind,
             error,
             Some(format!("{SQL_PREFIX}{}", server.id)),
         ));
     }
-    sql_project_ready(server, requirement, database, user, password, vec![], None)
+    sql_project_ready(
+        sender,
+        server,
+        requirement,
+        database,
+        user,
+        password,
+        (vec![], None),
+    )
 }
 
 /// After the terms were accepted: pull, create the container, change the initial password,
@@ -2129,36 +2330,36 @@ fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) ->
     let mut note = None;
     if let Some(old) = &request.replaces {
         if let Err(error) = sql_server_container::stop(old, path) {
-            return JobResult::Failed(JobFailure::sql(error, None));
+            return JobResult::Failed(JobFailure::sql(request.kind, error, None));
         }
         if let Err(error) = sql_server_container::release(&root, &old.id) {
             return JobResult::Failed(JobFailure::text(error));
         }
+        let name = kind_name(request.kind);
         actions.push(format!(
-            "SQL Server novo criado; os dados anteriores continuam no volume {} do {}",
+            "{name} novo criado; os dados anteriores continuam no volume {} do {}",
             old.volume(),
             old.engine
         ));
         note = Some(format!(
-            "O projeto está conectado a um SQL Server novo. Os dados anteriores continuam no volume {}.",
+            "O projeto está conectado a um {name} novo. Os dados anteriores continuam no volume {}.",
             old.volume()
         ));
     }
-    let _ = sender.send(JobEvent::Step(DatabaseStep::Downloading {
-        received: 0,
-        total: 0,
-    }));
+    let _ = sender.send(JobEvent::Step(DatabaseStep::PullingImage));
     let server = match sql_server_container::prepare(
         &root,
-        sql_server_container::ContainerKind::SqlServer,
+        request.kind,
         request.engine,
         request.port,
         &SystemVault,
         path,
         |step| {
-            if step == sql_server_container::ContainerStep::Creating {
-                let _ = sender.send(JobEvent::Step(DatabaseStep::StartingServer));
-            }
+            let step = match step {
+                ContainerStep::Verifying => DatabaseStep::VerifyingImage,
+                ContainerStep::Creating => DatabaseStep::CreatingContainer,
+            };
+            let _ = sender.send(JobEvent::Step(step));
         },
     ) {
         Ok(server) => server,
@@ -2166,7 +2367,7 @@ fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) ->
             // A container that was created stays registered: "Tentar de novo" resumes it.
             let created = sql_server_container::find(&root, request.port)
                 .map(|server| format!("{SQL_PREFIX}{}", server.id));
-            return JobResult::Failed(JobFailure::sql(error, created));
+            return JobResult::Failed(JobFailure::sql(request.kind, error, created));
         }
     };
     actions.insert(
@@ -2179,13 +2380,13 @@ fn run_sql_prepare_job(request: &SqlServerRequest, sender: &Sender<JobEvent>) ->
         ),
     );
     sql_project_ready(
+        sender,
         &server,
         &request.requirement,
         &request.database,
         &request.user,
         &request.password,
-        actions,
-        note,
+        (actions, note),
     )
 }
 
@@ -2236,6 +2437,18 @@ impl DatabaseStatus {
                 .as_deref()
                 .and_then(localcodepilot_runtime::database_connection::loopback_address)
                 .is_some()
+    }
+
+    /// PostgreSQL on macOS and Linux, stopped, that "Iniciar" can prepare in a container (T030):
+    /// the card says so in its own words.
+    pub(super) fn container_start_note(&self) -> Option<String> {
+        (self.not_running()
+            && self.local_server()
+            && container_kind_here(self.requirement.engine) == Some(ContainerKind::PostgreSql))
+        .then(|| {
+            "O PostgreSQL deste projeto não está rodando. Iniciar pode prepará-lo neste computador."
+                .into()
+        })
     }
 
     /// The app can prepare and start this database itself (a package for the engine on this
@@ -2369,10 +2582,11 @@ impl DatabaseStatus {
 
 /// The app's server for a local database, looked up during the project check.
 pub(super) fn managed_info(requirement: &DatabaseRequirement) -> Option<ManagedInfo> {
-    if requirement.engine == DatabaseEngine::SqlServer {
+    if let Some(kind) = container_kind_here(requirement.engine) {
         use localcodepilot_runtime::sql_server_container::{self, ContainerState};
         let root = database_ui::database_root()?;
-        let server = sql_server_container::find(&root, requirement.port?)?;
+        let server = sql_server_container::find(&root, requirement.port?)
+            .filter(|server| server.kind == kind)?;
         let state = sql_server_container::state(&server, None);
         let running = state == Ok(ContainerState::Running);
         let state_text = match &state {
@@ -2384,9 +2598,11 @@ pub(super) fn managed_info(requirement: &DatabaseRequirement) -> Option<ManagedI
         };
         return Some(ManagedInfo {
             summary: format!(
-                "SQL Server gerenciado pelo LocalCodePilot: {} em 127.0.0.1:{} ({state_text}); container {} e volume {} no {}",
-                sql_server_container::VERSION_LABEL,
+                "{} gerenciado pelo LocalCodePilot: {} em 127.0.0.1:{} ({state_text}); imagem {}; container {} e volume {} no {}",
+                kind_name(kind),
+                kind.version_label(),
                 server.port,
+                kind.image(),
                 server.container(),
                 server.volume(),
                 server.engine
@@ -2486,6 +2702,7 @@ mod tests {
     #[test]
     fn a_database_confirmation_starts_on_the_safe_choice_and_escape_cancels_it() {
         let mut request = SqlServerRequest {
+            kind: ContainerKind::SqlServer,
             project: PathBuf::from("loja"),
             requirement: DatabaseRequirement {
                 source: PathBuf::from("loja").join(".env"),
@@ -2518,6 +2735,122 @@ mod tests {
         assert_eq!(choice, SqlChoice::Cancel);
     }
 
+    fn postgres_request() -> SqlServerRequest {
+        SqlServerRequest {
+            kind: ContainerKind::PostgreSql,
+            project: PathBuf::from("loja"),
+            requirement: DatabaseRequirement {
+                source: PathBuf::from("loja").join(".env"),
+                engine: DatabaseEngine::PostgreSql,
+                host: Some("127.0.0.1".into()),
+                port: Some(5432),
+                compose_service: None,
+            },
+            engine: "docker",
+            port: 5432,
+            database: "loja".into(),
+            user: "app_loja".into(),
+            password: "x".into(),
+            replaces: None,
+            accepted: false,
+            path: None,
+        }
+    }
+
+    #[test]
+    fn the_postgres_confirmation_says_what_happens_and_needs_no_terms() {
+        let mut request = postgres_request();
+        let (choice, nodes, focused) = sql_confirmation_frames(&mut request, &[]);
+        assert_eq!(choice, SqlChoice::Waiting);
+        assert_eq!(focused.as_deref(), Some("Agora não"));
+        let names: Vec<&str> = nodes.iter().map(|(name, _)| name.as_str()).collect();
+        let text = names.join(" | ");
+        assert!(
+            text.contains("Preparar PostgreSQL para este projeto?"),
+            "{text}"
+        );
+        assert!(text.contains("O LocalCodePilot vai baixar a imagem oficial do PostgreSQL e criar um container com o Docker. Os dados ficarão num volume do Docker e permanecerão após fechar o aplicativo. O banco aceitará conexões deste computador, em 127.0.0.1. Ao fechar o aplicativo, o LocalCodePilot tentará parar o container."), "{text}");
+        assert!(text.contains("Download estimado: cerca de 160 MB. Espaço em disco depois do preparo: cerca de 550 MB. Banco loja e usuário app_loja, com acesso só a esse banco."), "{text}");
+        // No license terms for PostgreSQL, and "Preparar e iniciar" is enabled.
+        assert!(!text.contains("termos de licença"), "{text}");
+        assert!(
+            nodes
+                .iter()
+                .any(|(name, disabled)| name == "Preparar e iniciar" && !disabled)
+        );
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let (choice, _, _) = sql_confirmation_frames(&mut request, &[escape]);
+        assert_eq!(choice, SqlChoice::Cancel);
+    }
+
+    #[test]
+    fn postgres_runs_in_a_container_only_outside_windows() {
+        assert_eq!(
+            container_kind_here(DatabaseEngine::SqlServer),
+            Some(ContainerKind::SqlServer)
+        );
+        let postgres = container_kind_here(DatabaseEngine::PostgreSql);
+        assert_eq!(postgres.is_some(), !cfg!(windows));
+        assert_eq!(container_kind_here(DatabaseEngine::MySql), None);
+        assert!(engine_preparable_here(DatabaseEngine::PostgreSql));
+        assert_eq!(
+            no_container_engine(ContainerKind::PostgreSql),
+            "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers."
+        );
+        for (step, text) in [
+            (
+                DatabaseStep::PullingImage,
+                "Baixando a imagem do PostgreSQL…",
+            ),
+            (
+                DatabaseStep::VerifyingImage,
+                "Conferindo a imagem do PostgreSQL…",
+            ),
+            (
+                DatabaseStep::CreatingContainer,
+                "Criando o container do PostgreSQL…",
+            ),
+            (
+                DatabaseStep::PreparingProject,
+                "Preparando o banco e o usuário…",
+            ),
+            (DatabaseStep::TestingLogin, "Testando a conexão do projeto…"),
+        ] {
+            assert_eq!(step.text("PostgreSQL"), text);
+        }
+        let failure = JobFailure::sql(
+            ContainerKind::PostgreSql,
+            format!(
+                "{} (o PostgreSQL não ficou pronto: tempo esgotado)",
+                sql_server_container::POSTGRES_PREPARATION_FAILED
+            ),
+            Some("mssql:abc".into()),
+        );
+        assert_eq!(
+            failure.message,
+            sql_server_container::POSTGRES_PREPARATION_FAILED
+        );
+        let failure = JobFailure::sql(
+            ContainerKind::PostgreSql,
+            format!(
+                "{} (tempo esgotado)",
+                sql_server_container::POSTGRES_STOP_NOT_CONFIRMED
+            ),
+            None,
+        );
+        assert_eq!(failure.recovery, Some(DatabaseFix::OpenContainers));
+        assert_eq!(
+            failure.message,
+            sql_server_container::POSTGRES_STOP_NOT_CONFIRMED
+        );
+    }
+
     #[test]
     fn an_interrupted_job_becomes_a_failure_without_retry() {
         let payload: Box<dyn std::any::Any + Send> = Box::new("no process-level CryptoProvider");
@@ -2538,6 +2871,7 @@ mod tests {
     #[test]
     fn the_sql_server_terms_are_never_accepted_for_the_person() {
         let mut request = SqlServerRequest {
+            kind: ContainerKind::SqlServer,
             project: PathBuf::from("loja"),
             requirement: DatabaseRequirement {
                 source: PathBuf::from("loja").join(".env"),
@@ -2613,6 +2947,7 @@ mod tests {
         // The preparation failed after the container was created: the agreed sentence on the
         // card, the cause in "Detalhes técnicos", "Tentar de novo" resumes it.
         let failure = JobFailure::sql(
+            ContainerKind::SqlServer,
             format!(
                 "{} (o SQL Server não ficou pronto: tempo esgotado)",
                 sql_server_container::PREPARATION_FAILED
@@ -2627,6 +2962,7 @@ mod tests {
         assert_eq!(failure.recovery, None);
         // The stop was not confirmed: "Abrir Containers", never "Tentar de novo".
         let failure = JobFailure::sql(
+            ContainerKind::SqlServer,
             format!(
                 "{} (tempo esgotado)",
                 sql_server_container::STOP_NOT_CONFIRMED
@@ -2637,6 +2973,7 @@ mod tests {
         assert_eq!(failure.recovery, Some(DatabaseFix::OpenContainers));
         // No kept password logs in: "Criar SQL Server novo" in "Detalhes técnicos".
         let failure = JobFailure::sql(
+            ContainerKind::SqlServer,
             "Nenhuma senha de administração guardada pelo LocalCodePilot entra neste SQL Server."
                 .into(),
             Some("mssql:abc".into()),
