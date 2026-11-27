@@ -16,8 +16,8 @@ const SHINY_PORT: u16 = 3838;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     One(String),
-    /// More than one plausible file: the app does not pick one.
-    Many,
+    /// More than one plausible file: the app does not pick one. Holds the candidates.
+    Many(Vec<String>),
     None,
 }
 
@@ -31,7 +31,7 @@ pub fn entry_file(folder: &Path, extensions: &[&str], preferred: &[&str]) -> Ent
         .collect::<Vec<_>>();
     match found.as_slice() {
         [one] => return Entry::One((**one).to_owned()),
-        [_, _, ..] => return Entry::Many,
+        [_, _, ..] => return Entry::Many(found.iter().map(|name| (**name).to_owned()).collect()),
         [] => {}
     }
     let candidates = files
@@ -47,7 +47,7 @@ pub fn entry_file(folder: &Path, extensions: &[&str], preferred: &[&str]) -> Ent
     match candidates.as_slice() {
         [one] => Entry::One((*one).clone()),
         [] => Entry::None,
-        _ => Entry::Many,
+        _ => Entry::Many(candidates.into_iter().cloned().collect()),
     }
 }
 
@@ -78,7 +78,7 @@ fn cabal_entry(folder: &Path) -> Entry {
         return if cabal_files.is_empty() {
             Entry::None
         } else {
-            Entry::Many
+            Entry::Many(cabal_files)
         };
     };
     let Ok(contents) = fs::read_to_string(folder.join(cabal)) else {
@@ -86,16 +86,17 @@ fn cabal_entry(folder: &Path) -> Entry {
     };
     let executables = contents
         .lines()
-        .filter(|line| {
-            line.to_ascii_lowercase()
-                .strip_prefix("executable")
-                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+        .filter_map(|line| {
+            let rest = line.to_ascii_lowercase();
+            rest.strip_prefix("executable")
+                .filter(|rest| rest.starts_with(char::is_whitespace))
+                .map(|rest| format!("executable {}", rest.trim()))
         })
-        .count();
-    match executables {
+        .collect::<Vec<_>>();
+    match executables.len() {
         0 => Entry::None,
         1 => Entry::One("cabal run".into()),
-        _ => Entry::Many,
+        _ => Entry::Many(executables),
     }
 }
 
@@ -147,9 +148,19 @@ fn entries(project: &Project) -> Vec<(RuntimeKind, Entry)> {
 /// Several plausible entries for a language of the project: the card says so instead of
 /// picking one.
 pub fn has_ambiguous_entry(project: &Project) -> bool {
-    entries(project)
-        .iter()
-        .any(|(_, entry)| *entry == Entry::Many)
+    ambiguous_entries(project).is_some()
+}
+
+/// The candidates of each ambiguous language, for "Detalhes técnicos": "Perl: a.pl, b.pl".
+pub fn ambiguous_entries(project: &Project) -> Option<String> {
+    let lines = entries(project)
+        .into_iter()
+        .filter_map(|(runtime, entry)| match entry {
+            Entry::Many(candidates) => Some(format!("{runtime}: {}", candidates.join(", "))),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then(|| lines.join("; "))
 }
 
 /// Adds the process of the first language with an unequivocal entry. Called only when no
@@ -320,6 +331,10 @@ mod tests {
         let project = many.project(&[RuntimeKind::Lua]);
         assert!(commands(&project).is_empty());
         assert!(has_ambiguous_entry(&project));
+        assert_eq!(
+            ambiguous_entries(&project).as_deref(),
+            Some("Lua: a.lua, b.lua")
+        );
 
         let two_preferred = Folder::new("perl-dois");
         two_preferred.file("main.pl", "").file("app.pl", "");

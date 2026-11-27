@@ -358,7 +358,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             ProjectState::Stopped,
             Some(no_command_reason(
                 facts.languages,
-                environment.ambiguous_entry,
+                environment.ambiguous_entry.is_some(),
             )),
             PrimaryAction::DefineCommand,
         );
@@ -1749,6 +1749,20 @@ impl ProjectCard<'_> {
                 .saturating_sub(self.custom_commands.len());
             if detected > 0 {
                 detail(ui, &format!("Comandos detectados: {detected}"));
+                // What runs and where: the format (in the name), the entry and the folder.
+                for (name, command, folder) in &environment.detected_commands {
+                    if self
+                        .custom_commands
+                        .iter()
+                        .any(|custom| custom.name == *name)
+                    {
+                        continue;
+                    }
+                    detail(ui, &format!("{name}: {command} (em {folder})"));
+                }
+            }
+            if let Some(candidates) = &environment.ambiguous_entry {
+                detail(ui, &format!("Entradas possíveis: {candidates}"));
             }
             if let Some(problem) = environment.problem_details() {
                 detail(ui, &problem);
@@ -2319,7 +2333,7 @@ mod tests {
         assert_eq!(summary.primary, PrimaryAction::DefineCommand);
         // Several plausible entries: the card says so instead of picking one (T028.01).
         let ambiguous = ProjectEnvironment {
-            ambiguous_entry: true,
+            ambiguous_entry: Some("Perl: a.pl, b.pl".into()),
             ..ProjectEnvironment::default()
         };
         let summary = summarize_project(&facts(&ambiguous));
