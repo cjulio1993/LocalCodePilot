@@ -100,6 +100,23 @@ fn cabal_entry(folder: &Path) -> Entry {
     }
 }
 
+/// C/C++ with CMake or Meson: the only executable target (T028.02).
+fn cpp_entry(folder: &Path) -> Entry {
+    let targets = crate::build_languages::build_targets(folder);
+    let names = targets
+        .iter()
+        .map(|target| match target {
+            crate::build_languages::BuildTarget::CMake(name)
+            | crate::build_languages::BuildTarget::Meson(name) => name.clone(),
+        })
+        .collect::<Vec<_>>();
+    match names.as_slice() {
+        [] => Entry::None,
+        [one] => Entry::One(one.clone()),
+        _ => Entry::Many(names),
+    }
+}
+
 /// Leiningen runs the namespace in `:main`.
 fn leiningen_entry(folder: &Path) -> Entry {
     match fs::read_to_string(folder.join("project.clj")) {
@@ -138,6 +155,7 @@ fn entries(project: &Project) -> Vec<(RuntimeKind, Entry)> {
                 RuntimeKind::Julia => julia_entry(folder),
                 RuntimeKind::Haskell => cabal_entry(folder),
                 RuntimeKind::Clojure => leiningen_entry(folder),
+                RuntimeKind::Cpp => cpp_entry(folder),
                 _ => return None,
             };
             Some((*runtime, entry))
@@ -256,6 +274,32 @@ pub(super) fn detect_entry_process(project: &Project, processes: &mut Vec<Projec
                     "cabal",
                     &["run"],
                 );
+            }
+            RuntimeKind::Cpp => {
+                let Ok([target]) =
+                    <[_; 1]>::try_from(crate::build_languages::build_targets(folder))
+                else {
+                    continue;
+                };
+                let Some(build) = crate::build_languages::build_folder(folder) else {
+                    continue;
+                };
+                let (steps, program) = crate::build_languages::build_plan(folder, &target, &build);
+                let name = match target {
+                    crate::build_languages::BuildTarget::CMake(_) => "Compilar e executar (CMake)",
+                    crate::build_languages::BuildTarget::Meson(_) => "Compilar e executar (Meson)",
+                };
+                push_process(
+                    processes,
+                    project,
+                    folder,
+                    name,
+                    &program.to_string_lossy(),
+                    &[],
+                );
+                if let Some(process) = processes.last_mut() {
+                    process.prepare = steps;
+                }
             }
             RuntimeKind::Clojure => {
                 push_process(
@@ -423,6 +467,40 @@ mod tests {
         let no_main = Folder::new("lein-sem-main");
         no_main.file("project.clj", "(defproject app \"0.1.0\")");
         assert!(commands(&no_main.project(&[RuntimeKind::Clojure])).is_empty());
+    }
+
+    #[test]
+    fn a_cmake_or_meson_project_with_one_executable_compiles_then_runs() {
+        let cmake = Folder::new("cmake");
+        cmake.file(
+            "CMakeLists.txt",
+            "project(loja C)\nadd_executable(loja main.c)\n",
+        );
+        let project = cmake.project(&[RuntimeKind::Cpp]);
+        let mut processes = Vec::new();
+        detect_entry_process(&project, &mut processes);
+        if crate::build_languages::build_folder(&cmake.0).is_some() {
+            assert_eq!(processes.len(), 1);
+            let process = &processes[0];
+            assert_eq!(process.name, "Compilar e executar (CMake)");
+            assert_eq!(process.prepare.len(), 2);
+            assert_eq!(process.prepare[0].program, "cmake");
+            // The build folder is never inside the project.
+            assert!(!Path::new(&process.program).starts_with(&cmake.0));
+        }
+
+        let two = Folder::new("cmake-dois");
+        two.file(
+            "CMakeLists.txt",
+            "add_executable(servidor s.c)\nadd_executable(cliente c.c)\n",
+        );
+        assert!(has_ambiguous_entry(&two.project(&[RuntimeKind::Cpp])));
+        assert!(commands(&two.project(&[RuntimeKind::Cpp])).is_empty());
+
+        let library = Folder::new("cmake-lib");
+        library.file("CMakeLists.txt", "add_library(util STATIC u.c)\n");
+        assert!(commands(&library.project(&[RuntimeKind::Cpp])).is_empty());
+        assert!(!has_ambiguous_entry(&library.project(&[RuntimeKind::Cpp])));
     }
 
     #[test]

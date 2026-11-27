@@ -15,6 +15,22 @@ pub(super) struct LanguageState {
 }
 
 /// The first line a program printed for its version, short enough for a row.
+/// When the app starts projects of a language only in some cases, the card says which (T028).
+fn start_note(kind: RuntimeKind, starts: bool) -> Option<&'static str> {
+    match kind {
+        RuntimeKind::Cpp => Some(
+            "O LocalCodePilot inicia projetos CMake e Meson com um único executável: compila e executa.",
+        ),
+        RuntimeKind::Perl | RuntimeKind::Lua | RuntimeKind::R | RuntimeKind::Julia => Some(
+            "O LocalCodePilot inicia projetos desta linguagem com um único arquivo de entrada.",
+        ),
+        _ if !starts => {
+            Some("O LocalCodePilot reconhece projetos desta linguagem, mas ainda não os inicia.")
+        }
+        _ => None,
+    }
+}
+
 fn short_version(version: &str) -> String {
     let version = version.trim();
     if version.chars().count() > 60 {
@@ -304,14 +320,8 @@ impl LocalCodePilot {
                             )
                         })
                         .inner;
-                    if !language.starts {
-                        ui.label(
-                            RichText::new(
-                                "O LocalCodePilot reconhece projetos desta linguagem, mas ainda não os inicia.",
-                            )
-                            .color(theme::MUTED)
-                            .size(12.0),
-                        );
+                    if let Some(note) = start_note(language.kind, language.starts) {
+                        ui.label(RichText::new(note).color(theme::MUTED).size(12.0));
                     }
                     if !used_by.is_empty() {
                         ui.label(

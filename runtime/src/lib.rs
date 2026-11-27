@@ -11,6 +11,7 @@ use localcodepilot_core::{
 use semver::{Version, VersionReq};
 use std::{collections::VecDeque, fs, path::Path};
 
+pub mod build_languages;
 pub mod database_connection;
 pub mod database_packages;
 pub mod database_servers;
@@ -2040,6 +2041,7 @@ fn push_process_with_source(
         exit_code: None,
         expected_port,
         port_override,
+        prepare: Vec::new(),
     });
 }
 

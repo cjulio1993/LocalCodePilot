@@ -131,6 +131,8 @@ pub(super) struct ProjectSummary {
     /// "Tentar de novo" next to the main action: a start that stopped at the database for a
     /// reason that may pass (the server did not start).
     pub retry: bool,
+    /// "Parar" while the project is not running yet: it is compiling (T028.02).
+    pub stoppable: bool,
 }
 
 /// A process of the project that failed, with what the app knows about why.
@@ -148,6 +150,8 @@ pub(super) struct ProjectFacts<'a> {
     pub resolving_plan: bool,
     pub dependency_install: Option<&'a DependencyInstallStatus>,
     pub starting: bool,
+    /// Steps before the program are running (compile before run, T028.02).
+    pub building: bool,
     pub running: bool,
     pub failed_process: Option<FailedProcess<'a>>,
     pub application_url: Option<&'a str>,
@@ -211,6 +215,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
         stops_containers_here: false,
         technical: vec![],
         retry: false,
+        stoppable: false,
     };
     if facts.running || facts.container_running {
         let url = facts
@@ -247,6 +252,7 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             stops_containers_here: !facts.running && facts.container_stop_here,
             technical: vec![],
             retry: false,
+            stoppable: false,
         };
     }
     match facts.dependency_install {
@@ -272,6 +278,16 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
             Some(step.clone()),
             PrimaryAction::Wait,
         );
+    }
+    if facts.building {
+        return ProjectSummary {
+            stoppable: true,
+            ..summary(
+                ProjectState::Starting,
+                Some(build_steps::BUILDING.into()),
+                PrimaryAction::ViewLogs,
+            )
+        };
     }
     if facts.starting {
         return summary(
@@ -598,6 +614,9 @@ impl LocalCodePilot {
             starting: processes
                 .iter()
                 .any(|process| process.state == ProcessState::Starting),
+            building: processes
+                .iter()
+                .any(|process| self.managed.builds.contains_key(&process.id)),
             running: processes
                 .iter()
                 .any(|process| process.state == ProcessState::Running),
@@ -1303,6 +1322,8 @@ fn project_row(
                     if stop_button(ui, summary) {
                         action = Some(stop_action(project, summary));
                     }
+                } else if summary.stoppable && stop_button(ui, summary) {
+                    action = Some(stop_action(project, summary));
                 }
                 // Opens the project's card with its details expanded.
                 if details == RowDetails::Offer
@@ -1626,6 +1647,8 @@ impl ProjectCard<'_> {
                 if stop_button(ui, summary) {
                     *action = Some(stop_action(project, summary));
                 }
+            } else if summary.stoppable && stop_button(ui, summary) {
+                *action = Some(stop_action(project, summary));
             }
             let details = if self.expanded {
                 "Ocultar detalhes técnicos"
@@ -1852,6 +1875,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_project_that_is_compiling_says_so_and_can_be_stopped() {
+        let environment = ready();
+        let mut building = facts(&environment);
+        building.building = true;
+        building.starting = true;
+        let summary = summarize_project(&building);
+        assert_eq!(summary.state, ProjectState::Starting);
+        assert_eq!(summary.reason.as_deref(), Some("Compilando o projeto…"));
+        assert_eq!(summary.primary, PrimaryAction::ViewLogs);
+        assert!(summary.stoppable);
+        assert!(!summarize_project(&facts(&environment)).stoppable);
+    }
+
+    #[test]
     fn badges_that_do_not_fit_leave_room_for_the_count() {
         let more = |_: usize| 30.0;
         // Everything fits: no "+N".
@@ -1898,6 +1935,7 @@ mod tests {
             resolving_plan: false,
             dependency_install: None,
             starting: false,
+            building: false,
             running: false,
             failed_process: None,
             application_url: None,

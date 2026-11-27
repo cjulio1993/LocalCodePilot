@@ -459,7 +459,7 @@ impl LocalCodePilot {
         let mut open = true;
         let mut cancel = false;
         let mut confirm = false;
-        egui::Window::new(TITLE)
+        let shown = egui::Window::new(TITLE)
             .id(egui::Id::unique(CONFIRM_FOCUS))
             .open(&mut open)
             .collapsible(false)
@@ -518,6 +518,13 @@ impl LocalCodePilot {
             });
         if escape_pressed(root_ui) {
             cancel = true;
+        }
+        // Modal only while it stays open: on the closing frame the focus may go back behind it.
+        if !(confirm || cancel || !open) {
+            super::notice::keep_focus_inside(
+                root_ui.ctx(),
+                shown.as_ref().map(|shown| &shown.response),
+            );
         }
         if confirm || cancel || !open {
             forget_focus(root_ui);

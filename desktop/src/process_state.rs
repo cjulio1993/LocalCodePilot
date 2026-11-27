@@ -15,6 +15,12 @@ pub(super) struct ManagedProcesses {
     pub port_termination: Option<PortTerminationRequest>,
     /// The process whose output the terminal panel shows.
     pub terminal: Option<String>,
+    /// Steps running before a process starts (compile before run, T028.02).
+    pub builds: HashMap<String, super::build_steps::BuildJob>,
+    /// Output of the last steps of a process whose program did not start.
+    pub build_logs: HashMap<String, VecDeque<String>>,
+    /// Steps finished for the start in progress: the next pass starts the program.
+    pub built: HashSet<String>,
 }
 
 impl ManagedProcesses {
@@ -136,6 +142,8 @@ pub(super) enum ProcessFailure {
     Exited,
     SpawnFailed(String),
     WaitFailed(String),
+    /// A step before the program (configure, compile) failed (T028.02).
+    BuildFailed(String),
 }
 
 impl ProcessFailure {
@@ -163,6 +171,7 @@ impl ProcessFailure {
             Self::Exited => "O processo fechou inesperadamente.".into(),
             Self::SpawnFailed(_) => "Não foi possível iniciar o processo.".into(),
             Self::WaitFailed(_) => "Não foi possível acompanhar o processo.".into(),
+            Self::BuildFailed(_) => "Não foi possível compilar o projeto. Veja os logs.".into(),
         }
     }
 
@@ -188,7 +197,9 @@ impl ProcessFailure {
                 PROCESS_PORT_LOSS_GRACE.as_secs()
             )],
             Self::ClosedBeforeReady | Self::Exited => vec![],
-            Self::SpawnFailed(error) | Self::WaitFailed(error) => vec![error.clone()],
+            Self::SpawnFailed(error) | Self::WaitFailed(error) | Self::BuildFailed(error) => {
+                vec![error.clone()]
+            }
         }
     }
 }

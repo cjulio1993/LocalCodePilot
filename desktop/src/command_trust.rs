@@ -40,6 +40,8 @@ pub(super) struct CommandConfirmation {
     pub details_open: bool,
     /// The keyboard focus moved into the window when it opened.
     pub focused: bool,
+    /// The control that had the focus when the window opened, focused again on Cancel.
+    pub origin: Option<egui::Id>,
 }
 
 pub(super) enum Decision {
@@ -49,7 +51,20 @@ pub(super) enum Decision {
 
 /// The command as the person would type it, plus the script it resolves to.
 pub(super) fn pending_command(process: &ProjectProcess) -> PendingCommand {
-    let script = resolved_script(&process.program, &process.args, &process.working_directory);
+    // Steps before the program (configure, compile) are part of what runs: shown and bound.
+    let script = if process.prepare.is_empty() {
+        resolved_script(&process.program, &process.args, &process.working_directory)
+    } else {
+        Some(
+            process
+                .prepare
+                .iter()
+                .map(localcodepilot_core::processes::PrepareStep::command_line)
+                .chain(std::iter::once(process.command_line()))
+                .collect::<Vec<_>>()
+                .join(" → "),
+        )
+    };
     PendingCommand {
         name: process.name.clone(),
         working_directory: process.working_directory.clone(),
@@ -169,7 +184,7 @@ pub(super) fn show(
     let mut decision = None;
     let mut open = true;
     let window_height = (root_ui.max_rect().height() - 64.0).max(160.0);
-    egui::Window::new("Iniciar este projeto?")
+    let shown = egui::Window::new("Iniciar este projeto?")
         .id(egui::Id::unique((
             "command-confirmation",
             &confirmation.project_path,
@@ -234,6 +249,21 @@ pub(super) fn show(
         });
     if !open || root_ui.input(|input| input.key_pressed(egui::Key::Escape)) {
         decision = Some(Decision::Cancel);
+    }
+    // Modal only while it stays open: on the closing frame the focus may go back behind it.
+    if decision.is_none() {
+        super::notice::keep_focus_inside(
+            root_ui.ctx(),
+            shown.as_ref().map(|shown| &shown.response),
+        );
+    }
+    // Closed without starting: the focus goes back to the control that opened the window.
+    if matches!(decision, Some(Decision::Cancel))
+        && let Some(origin) = confirmation.origin
+    {
+        root_ui
+            .ctx()
+            .memory_mut(|memory| memory.request_focus(origin));
     }
     decision
 }
@@ -329,6 +359,7 @@ mod tests {
             exit_code: None,
             expected_port: None,
             port_override: None,
+            prepare: Vec::new(),
         }
     }
 
@@ -380,6 +411,34 @@ mod tests {
         }
         fs::remove_dir_all(first).unwrap();
         fs::remove_dir_all(second).unwrap();
+    }
+
+    #[test]
+    fn compile_steps_are_shown_and_a_new_target_asks_again() {
+        use localcodepilot_core::processes::PrepareStep;
+        let directory = folder("cmake");
+        let with_target = |target: &str| {
+            let mut compiled = process(&directory, &format!("B/bin/{target}.exe"), &[]);
+            compiled.prepare = vec![PrepareStep {
+                program: "cmake".into(),
+                args: vec![
+                    "--build".into(),
+                    "B".into(),
+                    "--target".into(),
+                    target.into(),
+                ],
+                skip_if_exists: None,
+            }];
+            pending_command(&compiled)
+        };
+        let loja = with_target("loja");
+        assert_eq!(
+            loja.script.as_deref(),
+            Some("cmake --build B --target loja → B/bin/loja.exe")
+        );
+        assert_eq!(loja.identity, with_target("loja").identity);
+        assert_ne!(loja.identity, with_target("outra").identity);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
