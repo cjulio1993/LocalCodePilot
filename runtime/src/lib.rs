@@ -15,6 +15,7 @@ pub mod database_connection;
 pub mod database_packages;
 pub mod database_servers;
 pub mod databases;
+pub mod entry_languages;
 pub mod sql_server_container;
 
 /// Picks ring as the process-wide rustls backend, once. The dependencies turn on two
@@ -778,7 +779,11 @@ pub fn detect_processes(project: &Project) -> Vec<ProjectProcess> {
     // A project with containers starts through them (a PHP site served by Compose, for
     // example), so it gets no local fallback.
     if processes.is_empty() && containers::detect_container_projects(&project.path).is_empty() {
-        detect_fallback_process(project, &mut processes);
+        // Languages that run one file or one standard command (T028.01), then the plain way.
+        entry_languages::detect_entry_process(project, &mut processes);
+        if processes.is_empty() {
+            detect_fallback_process(project, &mut processes);
+        }
     }
     processes
 }

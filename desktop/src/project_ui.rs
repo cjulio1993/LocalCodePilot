@@ -171,7 +171,11 @@ pub(super) struct ProjectFacts<'a> {
 
 /// Why there is nothing to start: a language the app does not start yet is named, so the
 /// card does not suggest a command is missing from the project.
-fn no_command_reason(languages: &[RuntimeKind]) -> String {
+fn no_command_reason(languages: &[RuntimeKind], ambiguous: bool) -> String {
+    if ambiguous {
+        return "Encontramos mais de uma forma de iniciar este projeto. Defina qual comando usar."
+            .into();
+    }
     match languages {
         [] => "Nenhum comando para iniciar foi encontrado".into(),
         languages => {
@@ -180,7 +184,9 @@ fn no_command_reason(languages: &[RuntimeKind]) -> String {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("Reconhecemos {names}, mas precisamos do comando para iniciar este projeto")
+            format!(
+                "Reconhecemos {names}, mas não encontramos um arquivo ou alvo de entrada. Defina o comando de início."
+            )
         }
     }
 }
@@ -350,7 +356,10 @@ pub(super) fn summarize_project(facts: &ProjectFacts<'_>) -> ProjectSummary {
     if environment.command_count == 0 {
         return summary(
             ProjectState::Stopped,
-            Some(no_command_reason(facts.languages)),
+            Some(no_command_reason(
+                facts.languages,
+                environment.ambiguous_entry,
+            )),
             PrimaryAction::DefineCommand,
         );
     }
@@ -2303,7 +2312,22 @@ mod tests {
         let summary = summarize_project(&ruby);
         assert_eq!(
             summary.reason.as_deref(),
-            Some("Reconhecemos Ruby, Lua, mas precisamos do comando para iniciar este projeto")
+            Some(
+                "Reconhecemos Ruby, Lua, mas não encontramos um arquivo ou alvo de entrada. Defina o comando de início."
+            )
+        );
+        assert_eq!(summary.primary, PrimaryAction::DefineCommand);
+        // Several plausible entries: the card says so instead of picking one (T028.01).
+        let ambiguous = ProjectEnvironment {
+            ambiguous_entry: true,
+            ..ProjectEnvironment::default()
+        };
+        let summary = summarize_project(&facts(&ambiguous));
+        assert_eq!(
+            summary.reason.as_deref(),
+            Some(
+                "Encontramos mais de uma forma de iniciar este projeto. Defina qual comando usar."
+            )
         );
         assert_eq!(summary.primary, PrimaryAction::DefineCommand);
     }

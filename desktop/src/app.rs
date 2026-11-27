@@ -236,6 +236,9 @@ struct ProjectEnvironment {
     databases: Vec<DatabaseStatus>,
     /// Manifests that exist but cannot be read, such as an invalid `package.json`.
     manifest_errors: Vec<String>,
+    /// Several plausible entries (two `.pl` files, two Cabal executables): the card asks for
+    /// the command and says why (T028.01).
+    ambiguous_entry: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7244,6 +7247,7 @@ fn inspect_project_environment_with_inventory(
         laravel_constraint,
         databases,
         manifest_errors: manifest_errors(&project.path),
+        ambiguous_entry: localcodepilot_runtime::entry_languages::has_ambiguous_entry(project),
     }
 }
 

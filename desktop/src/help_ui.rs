@@ -148,7 +148,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Projeto sem comando para iniciar",
-                "use Definir comando de início no cartão: informe o programa e os argumentos. O comando roda sem terminal; se precisar de && ou |, coloque-o num script do projeto e informe o script. Para editar ou remover, abra Detalhes técnicos.",
+                "Quando o projeto tiver uma entrada clara, use Iniciar: o LocalCodePilot mostra o que será executado antes da primeira vez. Se houver várias entradas ou nenhuma for identificada, use Definir comando de início no cartão. Para conferir ou alterar um comando definido por você, abra Detalhes técnicos.",
             ),
             Block::Item(
                 "package.json inválido",

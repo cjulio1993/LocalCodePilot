@@ -86,10 +86,13 @@ O que acontece ao clicar em **Iniciar**, validado no Windows 11:
 | Scala (sbt, Play) | `sbt run` | o sbt baixa as dependências |
 | Clojure (`deps.edn`) | `bb clojure -M:run` | **instala o Babashka** se faltar |
 | Haskell (Stack) | `stack run` | **instala o Stack**, baixa o compilador e compila |
+| Haskell (só Cabal, com um executável) | `cabal run` | o Cabal baixa as dependências e compila |
+| Clojure com Leiningen (`project.clj` com `:main`) | `lein run` | o Leiningen baixa as dependências |
+| Perl, Lua, R, Julia | o arquivo de entrada (`main.pl`, `main.lua`, `main.R`, `main.jl`… ou o único arquivo da linguagem na pasta); um `app.R` com Shiny abre como site | — |
 | Zig | `zig build run` | **instala o Zig** se faltar |
 | Sites HTML e projetos sem framework | um servidor local (ou `java Main.java`, ou o servidor do PHP) | — |
 | Containers (Docker, Podman, Compose) | `compose up`, escolhendo o motor | não instala Docker/Podman; pode ligar o motor instalado após confirmação |
-| Outras linguagens (C/C++, Perl, Lua, R, Julia…) | o comando que você definir uma vez | — |
+| Outras linguagens (C/C++…) e projetos com mais de uma entrada possível | o comando que você definir uma vez; o cartão diz por que precisa dele | — |
 
 Quando uma linguagem não está instalada, **Preparar ambiente** usa o `winget` do Windows. Nas linhas em negrito, a instalação foi validada de ponta a ponta. Para Python, Java, PHP, Node.js, Go e Dart, a instalação pelo app ainda está em validação.
 
@@ -118,7 +121,7 @@ Mais detalhes em [docs/DATABASES.md](docs/DATABASES.md).
 - **Plataforma:** a validação de ponta a ponta foi feita no Windows 11. No macOS o pacote é experimental, e no Linux há só testes automáticos.
 - **Assinatura:** os downloads ainda não têm assinatura digital (veja [Baixar e instalar](#baixar-e-instalar)).
 - **Bancos de dados:** o preparo do servidor existe só no Windows; no macOS e no Linux, o app testa o login, mas você inicia o banco. O SQL Server não é instalado direto no Windows (só em container), e a imagem funciona só em computadores x64. Para os formatos de migration reconhecidos (por enquanto, Laravel com banco neste computador ou SQLite dentro do projeto), **Iniciar** pede confirmação, mostra o progresso e só inicia o projeto após a conclusão. Falhas aparecem no cartão e em **Ver logs**. Migrations de Rails (`db:migrate`), Phoenix (`ecto.migrate`) e Django ainda não são reconhecidas. Bancos configurados só por `DATABASE_URL` ou por arquivos de Spring, Django e .NET ainda não são reconhecidos.
-- **Formatos não cobertos:** Leiningen (`project.clj`) e Haskell só com Cabal ainda pedem o comando de início.
+- **Formatos não cobertos:** C/C++ ainda pede o comando de início. Projetos Perl, Lua, R, Julia, Cabal ou Leiningen com mais de uma entrada possível (dois arquivos `.pl`, dois executáveis no `.cabal`) ou sem entrada também pedem, e o cartão explica o motivo.
 - **Containers:** o app não instala o Docker nem o Podman. Quando um deles está instalado e parado, **Iniciar** pergunta antes e liga o motor (no Linux, só o serviço do seu usuário; o serviço do sistema pede senha e continua com você).
 - **Atualização pelo app:** é experimental até ser testada com uma versão mais nova. Durante a atualização, o app mostra as etapas Baixar, Verificar, Instalar e Reiniciar e a barra do download. Enquanto o app está fechado para atualizar, uma janela pequena, **Atualizando o LocalCodePilot**, acompanha a instalação e o reinício; fechar essa janela não interrompe a atualização, e o resultado aparece no app que reabre. Antes de baixar, ele confere a assinatura do projeto nos checksums da release e recusa a atualização se ela não conferir. Se algo falhar, o aviso diz o que aconteceu em linguagem simples, oferece **Tentar de novo** ou a página oficial da versão e guarda o erro original em **Detalhes técnicos**. Se houver projetos em execução, o app pergunta antes de fechar e encerrar os processos deles; **Agora não** mantém tudo rodando. O aviso também resume a novidade da versão numa linha ("O que há de novo: ..."), tirada das notas oficiais.
 
@@ -215,10 +218,13 @@ What happens when you click **Start**, validated on Windows 11:
 | Scala (sbt, Play) | `sbt run` | sbt downloads the dependencies |
 | Clojure (`deps.edn`) | `bb clojure -M:run` | **installs Babashka** if missing |
 | Haskell (Stack) | `stack run` | **installs Stack**, downloads the compiler, and builds |
+| Haskell (Cabal only, one executable) | `cabal run` | Cabal downloads the dependencies and builds |
+| Clojure with Leiningen (`project.clj` with `:main`) | `lein run` | Leiningen downloads the dependencies |
+| Perl, Lua, R, Julia | the entry file (`main.pl`, `main.lua`, `main.R`, `main.jl`… or the only file of that language in the folder); a Shiny `app.R` opens as a site | — |
 | Zig | `zig build run` | **installs Zig** if missing |
 | HTML sites and projects without a framework | a local server (or `java Main.java`, or PHP's server) | — |
 | Containers (Docker, Podman, Compose) | `compose up`, with your choice of engine | does not install Docker/Podman; can turn on an installed engine after you confirm |
-| Other languages (C/C++, Perl, Lua, R, Julia…) | the command you define once | — |
+| Other languages (C/C++…) and projects with more than one possible entry | the command you define once; the card says why it is needed | — |
 
 When a language is not installed, **Prepare environment** uses Windows' `winget`. Installation was validated end to end for the rows in bold. For Python, Java, PHP, Node.js, Go, and Dart, installation by the app is still being validated.
 
@@ -247,7 +253,7 @@ More in [docs/DATABASES.md](docs/DATABASES.md).
 - **Platform:** end-to-end validation was done on Windows 11. The macOS package is experimental, and Linux has automated tests only.
 - **Signing:** downloads are not digitally signed yet (see [Download and install](#download-and-install)).
 - **Databases:** preparing the server is Windows-only; on macOS and Linux the app tests the login, but you start the database. SQL Server is not installed directly on Windows (container only), and its image runs only on x64 computers. For the migration formats it recognizes (for now, Laravel with a database on this computer or SQLite inside the project), **Iniciar** (Start) asks first, shows the progress and starts the project only after they finish. Failures show on the card and in **Ver logs** (View logs). Rails (`db:migrate`), Phoenix (`ecto.migrate`) and Django migrations are not recognized yet. Databases configured only through `DATABASE_URL` or Spring, Django and .NET files are not recognized yet.
-- **Formats not covered:** Leiningen (`project.clj`) and Cabal-only Haskell projects still ask for the start command.
+- **Formats not covered:** C/C++ still asks for the start command. Perl, Lua, R, Julia, Cabal or Leiningen projects with more than one possible entry (two `.pl` files, two executables in the `.cabal`) or with none also ask, and the card says why.
 - **Containers:** the app does not install Docker or Podman. When one of them is installed and stopped, **Iniciar** (Start) asks first and turns the engine on (on Linux, only your user's service; the system service asks for a password and stays with you).
 - **In-app update:** experimental until tested against a newer release. While updating, the app shows the download, verify, install, and restart steps and a download progress bar. While the app is closed for the update, a small **Atualizando o LocalCodePilot** ("updating LocalCodePilot") window follows the installation and the restart; closing it does not stop the update, and the outcome shows in the app when it reopens. Before downloading, it checks the project's signature on the release checksums and refuses the update if it does not match. If something fails, the notice says what happened in plain language, offers **Tentar de novo** (try again) or the official release page, and keeps the original error under **Detalhes técnicos** (technical details). If projects are running, the app asks before closing and ending their processes; **Agora não** (not now) keeps everything running. The notice also sums up what is new in one line ("O que há de novo: ..."), taken from the official release notes.
 
