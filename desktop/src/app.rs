@@ -2983,7 +2983,15 @@ impl LocalCodePilot {
                 ui.separator();
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancelar").clicked() {
+                    let cancel_button = ui.button("Cancelar");
+                    // The keyboard focus moves into the window when it opens, on the safe
+                    // choice, as in the command confirmation (T033.03, CA-9).
+                    let focus_key = egui::Id::unique(("environment-plan-focus", &plan.project_path));
+                    if !ui.data(|data| data.get_temp::<bool>(focus_key).unwrap_or(false)) {
+                        cancel_button.request_focus();
+                        ui.data_mut(|data| data.insert_temp(focus_key, true));
+                    }
+                    if cancel_button.clicked() {
                         cancel = true;
                     }
                     if ui
@@ -2997,6 +3005,15 @@ impl LocalCodePilot {
                     }
                 });
             });
+        if confirm || cancel || !open || root_ui.input(|input| input.key_pressed(egui::Key::Escape))
+        {
+            root_ui.data_mut(|data| {
+                data.remove::<bool>(egui::Id::unique((
+                    "environment-plan-focus",
+                    &plan.project_path,
+                )));
+            });
+        }
 
         let escape = root_ui.input(|input| input.key_pressed(egui::Key::Escape));
         if confirm {
@@ -5911,10 +5928,10 @@ fn run_installation_plan(
                     .take()
                     .map(|stderr| spawn_dependency_output_reader(stderr, sender.clone()));
                 let step_started = Instant::now();
-                let step_timeout = if args
-                    .iter()
-                    .any(|arg| arg == localcodepilot_runtime::build_languages::BUILD_TOOLS_PACKAGE)
-                {
+                let step_timeout = if args.iter().any(|arg| {
+                    arg == localcodepilot_runtime::build_languages::BUILD_TOOLS_PACKAGE
+                        || arg == localcodepilot_runtime::build_languages::BUILD_TOOLS_WORKLOAD
+                }) {
                     COMPILER_STEP_TIMEOUT
                 } else {
                     INSTALLATION_STEP_TIMEOUT
@@ -6606,6 +6623,41 @@ fn compiler_steps(project_path: &Path) -> Vec<InstallationStep> {
         // Linux: the card explains the package; the app does not install with sudo.
         return Vec::new();
     }
+    let verify = InstallationStep {
+        label: "Verificar compilador".into(),
+        detail: "Confirmar o compilador C/C++ instalado".into(),
+        source: None,
+        requires_elevation: false,
+        kind: InstallationStepKind::VerifyCppCompiler { wait: false },
+    };
+    // A Build Tools 2022 without C++: its own installer adds the workload.
+    if let (Some(installation), Some(installer)) = (
+        localcodepilot_runtime::build_languages::build_tools_without_cpp(),
+        localcodepilot_runtime::build_languages::visual_studio_installer(),
+    ) {
+        return vec![
+            InstallationStep {
+                label: "Instalar ferramentas C/C++".into(),
+                detail: "Adicionar o compilador C/C++ da Microsoft (MSVC) e o SDK do Windows ao Visual Studio Build Tools 2022 já instalado".into(),
+                source: Some("Microsoft · Visual Studio Installer".into()),
+                requires_elevation: true,
+                // The Visual Studio Installer does not ask for elevation itself (it answers
+                // 5007): Windows asks for it through Start-Process -Verb RunAs, and the exit
+                // code of the installer is the step's.
+                kind: InstallationStepKind::Command {
+                    program: "powershell".into(),
+                    args: vec![
+                        "-NoProfile".into(),
+                        "-NonInteractive".into(),
+                        "-Command".into(),
+                        elevated_installer_command(&installer, &installation),
+                    ],
+                    working_directory: project_path.to_path_buf(),
+                },
+            },
+            verify,
+        ];
+    }
     vec![
         InstallationStep {
             label: "Instalar ferramentas C/C++".into(),
@@ -6632,14 +6684,21 @@ fn compiler_steps(project_path: &Path) -> Vec<InstallationStep> {
                 working_directory: project_path.to_path_buf(),
             },
         },
-        InstallationStep {
-            label: "Verificar compilador".into(),
-            detail: "Confirmar o compilador C/C++ instalado".into(),
-            source: None,
-            requires_elevation: false,
-            kind: InstallationStepKind::VerifyCppCompiler { wait: false },
-        },
+        verify,
     ]
+}
+
+/// PowerShell that runs the Visual Studio Installer as administrator to add the C++ workload
+/// to an installation, and exits with the installer's code.
+fn elevated_installer_command(installer: &Path, installation: &Path) -> String {
+    use localcodepilot_runtime::build_languages::BUILD_TOOLS_WORKLOAD;
+    // Single-quoted PowerShell strings: a quote inside a path is doubled.
+    let quote = |path: &Path| path.to_string_lossy().replace('\'', "''");
+    format!(
+        "$p = Start-Process -Verb RunAs -Wait -PassThru -FilePath '{}' -ArgumentList 'modify --installPath \"{}\" --add {BUILD_TOOLS_WORKLOAD} --includeRecommended --passive --norestart'; exit $p.ExitCode",
+        quote(installer),
+        quote(installation)
+    )
 }
 
 /// The plan installs the C/C++ compiler.
@@ -6660,7 +6719,7 @@ fn compiler_notice(plan: &InstallationPlan) -> Option<&'static str> {
     })
 }
 
-const COMPILER_NOTICE_WINDOWS: &str = "Instalar as ferramentas C/C++ da Microsoft? O download e a instalação ocupam alguns gigabytes, e o instalador da Microsoft mostra o andamento. O Windows pode pedir permissão de administrador. Depois, o LocalCodePilot verificará o compilador.";
+const COMPILER_NOTICE_WINDOWS: &str = "Instalar as ferramentas C/C++ da Microsoft? A instalação ocupa cerca de 5 GB (medido numa instalação de teste; o tamanho do download depende do que já está instalado), e o instalador da Microsoft mostra o andamento. O Windows pode pedir permissão de administrador. Depois, o LocalCodePilot verificará o compilador.";
 
 /// A plan that installs the compiler failed or was not concluded.
 pub(super) const COMPILER_FAILED: &str =
@@ -8684,12 +8743,22 @@ mod tests {
                     .contains("instalador do macOS")
             );
         } else {
-            assert!(commands[0].starts_with(
-                "winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget"
-            ));
-            assert!(commands[0].ends_with(
-                "--override \"--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\""
-            ));
+            // A Build Tools 2022 without C++ gets the workload from its own installer;
+            // otherwise winget installs it with the workload.
+            if localcodepilot_runtime::build_languages::build_tools_without_cpp().is_some() {
+                assert!(commands[0].starts_with("powershell -NoProfile -NonInteractive -Command"));
+                assert!(commands[0].contains("Start-Process -Verb RunAs"));
+                assert!(commands[0].contains(
+                    "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart"
+                ));
+            } else {
+                assert!(commands[0].starts_with(
+                    "winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget"
+                ));
+                assert!(commands[0].ends_with(
+                    "--override \"--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\""
+                ));
+            }
             assert!(plan.requires_elevation());
             assert_eq!(plan.steps[0].label, "Instalar ferramentas C/C++");
             assert_eq!(plan.steps[1].label, "Verificar compilador");
@@ -8702,6 +8771,18 @@ mod tests {
                 Some(super::COMPILER_NOTICE_WINDOWS)
             );
         }
+    }
+
+    #[test]
+    fn the_workload_is_added_by_the_installer_running_as_administrator() {
+        let command = super::elevated_installer_command(
+            std::path::Path::new(r"C:\VS\Installer\setup.exe"),
+            std::path::Path::new(r"C:\Program Files (x86)\Equipe d'Ana\BuildTools"),
+        );
+        assert_eq!(
+            command,
+            r#"$p = Start-Process -Verb RunAs -Wait -PassThru -FilePath 'C:\VS\Installer\setup.exe' -ArgumentList 'modify --installPath "C:\Program Files (x86)\Equipe d''Ana\BuildTools" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart'; exit $p.ExitCode"#
+        );
     }
 
     #[test]

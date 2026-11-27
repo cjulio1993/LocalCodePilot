@@ -235,15 +235,19 @@ pub const BUILD_TOOLS_WORKLOAD: &str = "Microsoft.VisualStudio.Workload.VCTools"
 pub fn cpp_compiler_available(path: Option<&std::ffi::OsStr>) -> bool {
     static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     // Debug builds only: lets the isolated test instance show the card of a machine without
-    // a compiler, on a machine that has one.
-    if cfg!(debug_assertions) && env::var_os("LCP_TESTE_SEM_COMPILADOR").is_some() {
+    // a compiler, on a machine that has one. "1": never found; a Visual Studio version
+    // ("17"): only an MSVC of that version or newer counts, so a real installation of the
+    // Build Tools 2022 is what the verification finds.
+    let minimum = test_minimum_visual_studio();
+    if minimum.as_deref() == Some("1") {
         return false;
     }
-    if FOUND.load(std::sync::atomic::Ordering::Relaxed) {
+    if minimum.is_none() && FOUND.load(std::sync::atomic::Ordering::Relaxed) {
         return true;
     }
     let found = if cfg!(windows) {
-        vswhere(&[
+        let version = minimum.map(|major| format!("[{major}.0,)"));
+        let mut args = vec![
             "-latest",
             "-products",
             "*",
@@ -251,8 +255,11 @@ pub fn cpp_compiler_available(path: Option<&std::ffi::OsStr>) -> bool {
             MSVC_COMPONENT,
             "-property",
             "installationPath",
-        ])
-        .is_some()
+        ];
+        if let Some(version) = &version {
+            args.extend(["-version", version.as_str()]);
+        }
+        vswhere(&args).is_some()
     } else if cfg!(target_os = "macos") {
         apple_developer_tools()
     } else {
@@ -264,6 +271,52 @@ pub fn cpp_compiler_available(path: Option<&std::ffi::OsStr>) -> bool {
         FOUND.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     found
+}
+
+fn test_minimum_visual_studio() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    env::var("LCP_TESTE_SEM_COMPILADOR").ok()
+}
+
+/// A Build Tools 2022 already installed without the C++ workload: winget would answer
+/// "already installed", so the workload is added through the Visual Studio Installer of this
+/// installation instead (T033.03). Windows only.
+pub fn build_tools_without_cpp() -> Option<PathBuf> {
+    let path = vswhere(&[
+        "-latest",
+        "-products",
+        "Microsoft.VisualStudio.Product.BuildTools",
+        "-version",
+        "[17.0,18.0)",
+        "-property",
+        "installationPath",
+    ])?;
+    let with_cpp = vswhere(&[
+        "-latest",
+        "-products",
+        "Microsoft.VisualStudio.Product.BuildTools",
+        "-version",
+        "[17.0,18.0)",
+        "-requires",
+        MSVC_COMPONENT,
+        "-property",
+        "installationPath",
+    ]);
+    (with_cpp.as_deref() != Some(path.as_str())).then(|| PathBuf::from(path))
+}
+
+/// The Visual Studio Installer, which adds workloads to an installation.
+pub fn visual_studio_installer() -> Option<PathBuf> {
+    Some(
+        env::var_os("ProgramFiles(x86)")
+            .map(PathBuf::from)?
+            .join("Microsoft Visual Studio")
+            .join("Installer")
+            .join("setup.exe"),
+    )
+    .filter(|path| path.is_file())
 }
 
 /// `xcode-select -p` names an existing developer folder (command line tools or Xcode).
