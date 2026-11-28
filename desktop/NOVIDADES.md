@@ -14,7 +14,7 @@ O CI falha se a versão do app não tiver a sua seção válida aqui.
 
 - Encontre seus projetos em uma lista, com busca, estado e próxima ação.
 - Abra um projeto para ver o que roda, banco de dados, logs e detalhes técnicos.
-- Exporte um diagnóstico sem senhas para pedir ajuda, em Detalhes técnicos.
+- Exporte um diagnóstico para pedir ajuda. Confira o arquivo antes de compartilhar.
 
 ## 0.4.0-alpha.10
 
