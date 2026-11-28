@@ -8,6 +8,7 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- **Alterar dados de conexão:** na seção **Banco de dados** da página do projeto, e no aviso quando o banco recusa o acesso, não encontra o banco ou faltam dados, um formulário com **Nome do banco**, **Usuário** e **Nova senha** ("Deixe em branco para manter a senha atual.") grava no arquivo do próprio projeto (`.env`, `.env.local` ou `wp-config.php`) só as chaves alteradas, preservando o resto do arquivo. A confirmação **Alterar a conexão do banco?** diz o arquivo e as chaves; o app guarda uma cópia protegida fora do projeto, testa a conexão de novo e diz o resultado ("Dados salvos. A conexão com o banco funcionou." ou "Dados salvos, mas o banco ainda recusou a conexão."). **Desfazer a alteração** devolve a configuração anterior se o arquivo não mudou depois. A senha nunca aparece; num arquivo rastreado pelo Git a senha não é gravada; valores que vêm de variável, definidos duas vezes ou dentro de condição no `wp-config.php` ficam para edição manual.
 - **Ajuda mais direta:** o atalho **Projeto com problema** leva à resposta, e a página de um projeto com problema tem o link **Ajuda: o que fazer com um projeto com problema**, que abre a Ajuda nesse trecho. **Primeiros passos** ficou em três etapas curtas: encontre o projeto, confira o estado, escolha a ação.
 - Em janela estreita ou com zoom, as ações das linhas de motores e de bancos em **Ambiente** descem para baixo do estado, sem cobrir nada nem sair da janela.
 - Ao navegar com Tab, a página rola até o item focado quando ele está fora da vista, então o foco sempre aparece.
@@ -16,6 +17,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Corrigido
 
+- Um `$` sozinho num valor do `.env` (por exemplo, numa senha) não faz mais o app achar que o valor é uma variável: só `${…}` é variável, como no próprio carregador do Laravel. Valores entre aspas com escapes (`\"` no `.env`, `\'` no `wp-config.php`) são lidos como o projeto os lê.
+- O botão de confirmar das confirmações compartilhadas (por exemplo, "Parar o banco de dados?") ganhou o mesmo contraste dos outros botões azuis.
 - **Parar o banco de dados** aparecia mesmo com um projeto que usa o banco rodando, e o aviso "Para parar o banco de dados, pare primeiro: …" nunca aparecia: a verificação de projeto rodando sempre respondia que não. Agora o banco de um projeto que roda não é oferecido para parar. O defeito existia desde a 0.4.0-alpha.10; a confirmação antes de parar continuava aparecendo.
 
 ## [1.0.0-alpha.1] - 2026-11-28

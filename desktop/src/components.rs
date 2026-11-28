@@ -178,7 +178,7 @@ impl Confirmation<'_> {
                 let fill = if self.destructive {
                     theme::DANGER.gamma_multiply(0.22)
                 } else {
-                    theme::PRIMARY
+                    theme::PRIMARY_FILL
                 };
                 if ui.add(egui::Button::new(self.confirm).fill(fill)).clicked() {
                     choice = Some(Choice::Confirm);

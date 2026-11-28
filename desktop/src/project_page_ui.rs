@@ -346,6 +346,13 @@ impl LocalCodePilot {
                         {
                             requests.retest = true;
                         }
+                        // Only for the failures new access data can fix (T040, CA-1).
+                        if self.connection_form_fits_failure(&project.path)
+                            && self.connection_form_target(&project.path).is_some()
+                            && ui.button("Alterar dados de conexão").clicked()
+                        {
+                            *action = Some(ProjectCardAction::EditConnection(project.path.clone()));
+                        }
                     } else if primary_button(ui, &summary.primary, 140.0, None) {
                         *action = Some(primary_to_card_action(project, summary));
                     }
@@ -470,7 +477,25 @@ impl LocalCodePilot {
             if extras.remote && ui.button("Testar conexão").clicked() {
                 *action = Some(ProjectCardAction::TestRemoteDatabase(project.path.clone()));
             }
+            // The access data in the project's own file (T040, CA-1).
+            if self.connection_form_target(&project.path).is_some()
+                && ui.button("Alterar dados de conexão").clicked()
+            {
+                *action = Some(ProjectCardAction::EditConnection(project.path.clone()));
+            }
         });
+        if let Some(file) = self.credential_change_file(&project.path) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!("Dados de conexão alterados em {file}."))
+                        .color(theme::MUTED)
+                        .size(theme::TEXT_DETAIL),
+                );
+                if ui.button("Desfazer a alteração").clicked() {
+                    *action = Some(ProjectCardAction::UndoConnection(project.path.clone()));
+                }
+            });
+        }
         // Stopping the project leaves a shared server on (T038, CA-9): say so where it is.
         if database_keeps_running(summary.state, &environment.databases) {
             ui.label(

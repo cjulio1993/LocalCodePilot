@@ -6,6 +6,8 @@ mod command_trust;
 mod command_ui;
 #[path = "components.rs"]
 mod components;
+#[path = "connection_form_ui.rs"]
+mod connection_form_ui;
 #[path = "container_ui.rs"]
 mod container_ui;
 #[path = "database_ui.rs"]
@@ -488,6 +490,10 @@ enum ProjectCardAction {
     DatabaseFix(PathBuf, database_ui::DatabaseFix),
     /// "Parar o banco de dados", in "Detalhes técnicos".
     StopDatabase(PathBuf),
+    /// "Alterar dados de conexão" (T040).
+    EditConnection(PathBuf),
+    /// "Desfazer a alteração" of the access data (T040).
+    UndoConnection(PathBuf),
     /// "Testar conexão" of a remote database, in "Detalhes técnicos".
     TestRemoteDatabase(PathBuf),
 }
@@ -511,6 +517,12 @@ pub struct LocalCodePilot {
     sidebar_narrow: bool,
     /// "Parar" of the databases of Ambiente, waiting for the confirmation (T037.06).
     database_stop_request: Option<databases_tab_ui::DatabaseStopRequest>,
+    /// "Alterar dados de conexão" while open (T040).
+    connection_form: Option<connection_form_ui::ConnectionForm>,
+    /// The last saved change of each project's access data, for "Desfazer a alteração".
+    credential_changes: HashMap<PathBuf, connection_form_ui::CredentialChange>,
+    /// Projects whose access data was just saved: the next test result is said in words.
+    credential_retest: HashSet<PathBuf>,
     projects: Vec<Project>,
     /// The managed processes and their ports (T025).
     managed: ManagedProcesses,
@@ -661,6 +673,9 @@ impl LocalCodePilot {
             last_focus: None,
             sidebar_narrow: false,
             database_stop_request: None,
+            connection_form: None,
+            credential_changes: HashMap::new(),
+            credential_retest: HashSet::new(),
             managed: ManagedProcesses::default(),
             migrations: migration_ui::MigrationState::default(),
             migration_targets: HashMap::new(),
@@ -4673,6 +4688,7 @@ impl LocalCodePilot {
             });
         // Cards and Containers both ask to confirm container actions.
         self.container_confirmation(&ctx);
+        self.show_connection_form(&ctx);
         self.command_dialog(&ctx);
         self.migration_log_window(&ctx);
     }
