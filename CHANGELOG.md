@@ -6,6 +6,15 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+### Adicionado
+
+- Quando **Adicionar pasta** e **Atualizar** estão bloqueados, o aviso diz quais projetos estão rodando (até três, e quantos mais) e oferece **Ver** em cada um; com mais de três, **Ver os projetos rodando**. A proteção continua.
+- **Ambiente** ganha um resumo no topo (estado de cada motor, bancos com problema ou não verificados e outros containers), e os bancos ficam agrupados em **Conexões com problema**, **Conexões não verificadas** ("Ainda sem teste de conexão: isso não quer dizer que há uma falha.") e **Outros bancos**.
+
+### Corrigido
+
+- **Parar o banco de dados** aparecia mesmo com um projeto que usa o banco rodando, e o aviso "Para parar o banco de dados, pare primeiro: …" nunca aparecia: a verificação de projeto rodando sempre respondia que não. Agora o banco de um projeto que roda não é oferecido para parar. O defeito existia desde a 0.4.0-alpha.10; a confirmação antes de parar continuava aparecendo.
+
 ## [1.0.0-alpha.1] - 2026-11-28
 
 ### Adicionado
