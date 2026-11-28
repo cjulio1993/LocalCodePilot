@@ -10,6 +10,12 @@ O app mostra esta lista uma vez depois de atualizar, em "LocalCodePilot atualiza
 
 O CI falha se a versão do app não tiver a sua seção válida aqui.
 
+## 1.0.0-alpha.1
+
+- Encontre seus projetos em uma lista, com busca, estado e próxima ação.
+- Abra um projeto para ver o que roda, banco de dados, logs e detalhes técnicos.
+- Exporte um diagnóstico sem senhas para pedir ajuda, em Detalhes técnicos.
+
 ## 0.4.0-alpha.10
 
 - Banco de dados conectado de verdade: o app testa o login com os dados de acesso do próprio projeto.

@@ -255,7 +255,9 @@ function Get-ProcessoDoProjeto {
 function Start-ProjetoDeTeste([int]$ProcessId) {
     $janela = Get-Janela $ProcessId
     $porNome = New-Object System.Windows.Automation.PropertyCondition($uia::NameProperty, 'Iniciar')
-    $iniciar = Wait-Ate { @($janela.FindAll([System.Windows.Automation.TreeScope]::Descendants, $porNome)) | Select-Object -First 1 } 30
+    # Na lista de Projetos o botão diz o projeto ("Iniciar loja", T038.02); a confirmação diz só "Iniciar".
+    $todos = [System.Windows.Automation.Condition]::TrueCondition
+    $iniciar = Wait-Ate { @($janela.FindAll([System.Windows.Automation.TreeScope]::Descendants, $todos)) | Where-Object { $_.Current.Name -like 'Iniciar *' } | Select-Object -First 1 } 30
     Invoke-Botao $iniciar
     Start-Sleep -Milliseconds 1500
     $confirmar = @($janela.FindAll([System.Windows.Automation.TreeScope]::Descendants, $porNome)) | Select-Object -Last 1
