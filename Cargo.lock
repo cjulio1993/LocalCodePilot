@@ -2243,7 +2243,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "localcodepilot-cli"
-version = "0.4.0-alpha.10"
+version = "1.0.0-alpha.1"
 dependencies = [
  "localcodepilot-core",
  "localcodepilot-platform",
@@ -2252,14 +2252,14 @@ dependencies = [
 
 [[package]]
 name = "localcodepilot-core"
-version = "0.4.0-alpha.10"
+version = "1.0.0-alpha.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "localcodepilot-desktop"
-version = "0.4.0-alpha.10"
+version = "1.0.0-alpha.1"
 dependencies = [
  "eframe",
  "egui-phosphor",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "localcodepilot-platform"
-version = "0.4.0-alpha.10"
+version = "1.0.0-alpha.1"
 dependencies = [
  "localcodepilot-core",
  "serde_json",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "localcodepilot-runtime"
-version = "0.4.0-alpha.10"
+version = "1.0.0-alpha.1"
 dependencies = [
  "flate2",
  "libc",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "localcodepilot-services"
-version = "0.4.0-alpha.10"
+version = "1.0.0-alpha.1"
 dependencies = [
  "localcodepilot-core",
 ]

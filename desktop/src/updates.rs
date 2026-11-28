@@ -2033,6 +2033,41 @@ mod tests {
     }
 
     #[test]
+    fn the_alpha_10_sees_the_first_1_0_alpha() {
+        // The jump from 0.4 to 1.0 (versioning decided on 2026-11-25): a prerelease client
+        // takes any newer version, prerelease or not, with the same asset names.
+        let assets = [
+            "LocalCodePilot-1.0.0-alpha.1-macos-universal.dmg",
+            "LocalCodePilot-1.0.0-alpha.1-windows-x64.exe",
+            "LocalCodePilot-1.0.0-alpha.1-windows-x64.zip",
+            "LocalCodePilotSetup-1.0.0-alpha.1-windows-x64.exe",
+            "SHA256SUMS.txt",
+            "SHA256SUMS.txt.sig",
+        ];
+        let update = select_update_for_os(
+            release_with_assets("1.0.0-alpha.1", &assets),
+            &Version::parse("0.4.0-alpha.10").unwrap(),
+            "windows",
+        )
+        .unwrap();
+        assert_eq!(update.version, "1.0.0-alpha.1");
+        assert!(
+            update
+                .executable_url
+                .as_deref()
+                .unwrap()
+                .ends_with("/LocalCodePilot-1.0.0-alpha.1-windows-x64.exe")
+        );
+        assert!(
+            update
+                .installer_url
+                .as_deref()
+                .unwrap()
+                .ends_with("/LocalCodePilotSetup-1.0.0-alpha.1-windows-x64.exe")
+        );
+    }
+
+    #[test]
     fn picks_the_update_executable_from_the_real_alpha_8_asset_list() {
         // Asset order as returned by the GitHub API for v0.4.0-alpha.8 (#97):
         // the installer comes before the update executable.
