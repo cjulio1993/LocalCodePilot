@@ -240,6 +240,10 @@ const SECTIONS: &[HelpSection] = &[
                 "Iniciar prepara o banco do projeto quando necessário. Se houver migrations pendentes que o LocalCodePilot reconhece, ele mostra o que será executado e pede sua confirmação antes de aplicá-las. O projeto só inicia depois que essa etapa termina com sucesso. O comando exato fica em Detalhes técnicos; em caso de falha, use Ver logs. Por enquanto, o LocalCodePilot reconhece as migrations de projetos Laravel com banco neste computador ou SQLite dentro do projeto.",
             ),
             Block::Item(
+                "Alterar dados de conexão",
+                "Em Banco de dados, use Alterar dados de conexão para corrigir o nome do banco, o usuário ou a senha no arquivo do projeto. A senha atual não aparece; deixe Nova senha em branco para mantê-la. Antes de alterar, o LocalCodePilot mostra o arquivo e as chaves, guarda uma cópia fora do projeto e testa a conexão novamente. Se um valor vier de variável ou não puder ser alterado com segurança, edite o arquivo manualmente. Num arquivo que está no Git, a senha não é gravada. Desfazer a alteração devolve a configuração anterior, se o arquivo não mudou depois.",
+            ),
+            Block::Item(
                 "Correções",
                 "quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: Usar outra porta (muda só DB_PORT e guarda uma cópia do .env na pasta do LocalCodePilot, fora do projeto), Corrigir conexão (só no servidor do LocalCodePilot) ou Criar banco novo (os dados anteriores ficam guardados).",
             ),

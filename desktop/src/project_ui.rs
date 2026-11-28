@@ -1192,6 +1192,8 @@ impl LocalCodePilot {
             }
             ProjectCardAction::DatabaseFix(path, fix) => self.ask_database_fix(&path, fix),
             ProjectCardAction::StopDatabase(path) => self.stop_project_database(&path),
+            ProjectCardAction::EditConnection(path) => self.open_connection_form(&path),
+            ProjectCardAction::UndoConnection(path) => self.undo_connection_change(&path),
             ProjectCardAction::TestRemoteDatabase(path) => self.test_remote_database(&path),
             ProjectCardAction::Stop(path) => {
                 // The database server may serve other projects: it keeps running (T038, CA-9).

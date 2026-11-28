@@ -69,8 +69,10 @@ impl DatabaseCredentials {
     }
 }
 
+/// A value the app cannot resolve: a `${VAR}` reference, which the project's own loader
+/// replaces (a lone `$` is plain text), or the marker of a PHP expression.
 fn unresolved_value(value: &str) -> bool {
-    value.contains(['$', '{', '}'])
+    value.contains("${")
 }
 
 /// Reads database, user and password from the requirement's own file (`.env`,
@@ -128,7 +130,7 @@ pub fn read_credentials(requirement: &DatabaseRequirement) -> DatabaseCredential
     credentials
 }
 
-fn dotenv_value(contents: &str, key: &str) -> Option<String> {
+pub(crate) fn dotenv_value(contents: &str, key: &str) -> Option<String> {
     contents.lines().rev().find_map(|line| {
         let line = line.trim();
         if line.starts_with('#') {
@@ -144,7 +146,8 @@ fn dotenv_value(contents: &str, key: &str) -> Option<String> {
             .strip_prefix('"')
             .and_then(|rest| rest.strip_suffix('"'))
         {
-            inner
+            // Double quotes: \" and \\ are escapes, as in the project's own loader (T040).
+            return Some(unescape(inner, '"'));
         } else if let Some(inner) = raw
             .strip_prefix('\'')
             .and_then(|rest| rest.strip_suffix('\''))
@@ -158,7 +161,25 @@ fn dotenv_value(contents: &str, key: &str) -> Option<String> {
     })
 }
 
-fn wordpress_define(contents: &str, key: &str) -> Option<String> {
+/// `text` with `\\` and `\{quote}` turned into the character they stand for.
+fn unescape(text: &str, quote: char) -> String {
+    let mut value = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+            && (next == '\\' || next == quote)
+        {
+            value.push(next);
+            chars.next();
+        } else {
+            value.push(c);
+        }
+    }
+    value
+}
+
+pub(crate) fn wordpress_define(contents: &str, key: &str) -> Option<String> {
     contents.lines().find_map(|line| {
         let line = line.trim();
         if line.starts_with("//") || line.starts_with('#') {
@@ -178,12 +199,21 @@ fn wordpress_define(contents: &str, key: &str) -> Option<String> {
             // A constant or an expression (getenv(...)): not something the app can read.
             return Some("${expressão}".to_owned());
         }
-        Some(
-            body.strip_prefix(value_quote)?
-                .split_once(value_quote)?
-                .0
-                .to_owned(),
-        )
+        // Up to the closing quote, honoring \\' and \\\\ (T040).
+        let body = body.strip_prefix(value_quote)?;
+        let mut escaped = false;
+        let end = body.char_indices().find_map(|(index, c)| {
+            if escaped {
+                escaped = false;
+                None
+            } else if c == '\\' {
+                escaped = true;
+                None
+            } else {
+                (c == value_quote).then_some(index)
+            }
+        })?;
+        Some(unescape(&body[..end], value_quote))
     })
 }
 

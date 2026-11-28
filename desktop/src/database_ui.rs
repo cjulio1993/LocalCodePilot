@@ -1075,6 +1075,8 @@ impl LocalCodePilot {
                             status.connection = test.clone();
                         }
                     }
+                    // After "Alterar e testar", the result in words (T040, CA-7).
+                    self.credential_test_finished(&project, test.as_ref());
                 }
             }
         }
@@ -1149,7 +1151,7 @@ impl LocalCodePilot {
         result
     }
 
-    fn refresh_project_environment(&mut self, project_path: &Path) {
+    pub(super) fn refresh_project_environment(&mut self, project_path: &Path) {
         if let Some(project) = self
             .projects
             .iter()
@@ -1385,6 +1387,15 @@ impl LocalCodePilot {
         let Some(requirement) = self.rejected_database(project_path) else {
             return;
         };
+        self.retest_requirement(project_path, requirement);
+    }
+
+    /// Logs in again to one database with the project's data, in the background. Reads only.
+    pub(super) fn retest_requirement(
+        &mut self,
+        project_path: &Path,
+        requirement: DatabaseRequirement,
+    ) {
         self.spawn_job(project_path, "", false, move |_| {
             let test = test_connection(
                 &requirement,
@@ -2060,7 +2071,7 @@ fn free_port_after(default: u16) -> Option<u16> {
     })
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -2132,6 +2143,58 @@ fn test_moment(at: std::time::SystemTime) -> String {
 /// Where the copies of a project's configuration go: the app's own folder, never the
 /// project's, so a copy holding a password cannot end up in the project's repository
 /// (T039.01).
+/// A private copy of a project's configuration file before the app changes it (T040), in
+/// the app's own folder.
+pub(super) fn keep_private_copy(file: &Path, contents: &[u8]) -> Result<PathBuf, String> {
+    let moment = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let project = file
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "projeto".into());
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config".into());
+    write_private_copy(
+        &env_copies_directory(),
+        &format!("{project}-{name}-{moment}"),
+        contents,
+    )
+}
+
+/// Why a copy did not go back.
+pub(super) enum RestoreRefusal {
+    /// The file changed after the app wrote it: the person's edit stays.
+    Changed,
+    Failed(String),
+}
+
+/// Puts `backup` back over `file` only if `file` is still exactly what the app wrote.
+pub(super) fn restore_if_unchanged(
+    file: &Path,
+    backup: &Path,
+    written: &str,
+) -> Result<(), RestoreRefusal> {
+    let current = fs::read(file).map_err(|error| {
+        RestoreRefusal::Failed(format!("não foi possível ler a configuração: {error}"))
+    })?;
+    if sha256_hex(&current) != written {
+        return Err(RestoreRefusal::Changed);
+    }
+    let original = fs::read(backup).map_err(|error| {
+        RestoreRefusal::Failed(format!("não foi possível ler a cópia: {error}"))
+    })?;
+    fs::write(file, &original).map_err(|error| {
+        RestoreRefusal::Failed(format!(
+            "não foi possível restaurar a configuração: {error}"
+        ))
+    })
+}
+
 fn env_copies_directory() -> PathBuf {
     crate::config::config_directory()
         .unwrap_or_else(std::env::temp_dir)
