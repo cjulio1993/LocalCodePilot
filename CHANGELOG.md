@@ -6,6 +6,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ## [Não publicado]
 
+## [1.0.0-alpha.1] - 2026-11-28
+
 ### Adicionado
 
 - **Lista de Projetos mais legível:** a coluna de ações recebe primeiro a largura dos seus botões, então "Instalar dependências", "Preparar ambiente" e "Detalhes" nunca ficam cortados; quando nenhum projeto visível tem endereço, a coluna Endereço encolhe; numa linha **Com problema**, a causa aparece em texto normal, não em cinza. Em janela estreita (contando o zoom do Ctrl +), a barra lateral mostra só os ícones, sem mudar a sua preferência. O texto branco dos botões azuis ganhou contraste (5,2:1, antes 3,2:1), e as cores do tema têm um teste de contraste. A linha da lista não é mais uma parada sem nome do Tab: o teclado passa pelo nome do projeto e pelos botões.
@@ -383,7 +385,8 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 - Automação de release com pacote ZIP e arquivo de verificação SHA-256.
 - Etapa opcional de assinatura Authenticode por Microsoft Artifact Signing.
 
-[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.5...HEAD
+[Não publicado]: https://github.com/cjulio1993/LocalCodePilot/compare/v1.0.0-alpha.1...HEAD
+[1.0.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.4.0-alpha.10...v1.0.0-alpha.1
 [0.4.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
 [0.3.0-alpha.1]: https://github.com/cjulio1993/LocalCodePilot/releases/tag/v0.3.0-alpha.1
 
