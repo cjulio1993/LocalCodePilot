@@ -1001,7 +1001,7 @@ impl LocalCodePilot {
             .dependency_installs
             .get(&project.path)
             .map(|session| &session.status);
-        summarize_project(&ProjectFacts {
+        let mut summary = summarize_project(&ProjectFacts {
             environment,
             environment_pending: self.discovery.is_some()
                 && !self.project_environments.contains_key(&project.path),
@@ -1050,7 +1050,17 @@ impl LocalCodePilot {
             database_failure: self.database.failures.get(&project.path),
             database_note: self.database.notes.get(&project.path).map(String::as_str),
             migration_failed: self.migrations.failed.contains(&project.path),
-        })
+        });
+        // A Compose protection that blocks the start is the reason; no Iniciar is offered
+        // until it is solved (T038, CA-5 and CA-6).
+        if summary.primary == PrimaryAction::StartWithContainers
+            && let container_ui::CardStart::Blocked(reason) =
+                self.card_container_start(&project.path)
+        {
+            summary.reason = Some(reason.to_owned());
+            summary.primary = PrimaryAction::Details;
+        }
+        summary
     }
 
     fn summaries(&self) -> Summaries {
@@ -1093,6 +1103,21 @@ impl LocalCodePilot {
                     self.managed.terminal = Some(id);
                 }
             }
+            // Iniciar of a Compose project: the same checks as the environment's Iniciar.
+            ProjectCardAction::StartContainers(path) => match self.card_container_start(&path) {
+                container_ui::CardStart::Run(command) => self.confirm_container_command(command),
+                container_ui::CardStart::StartEngine {
+                    choices,
+                    context,
+                    resume,
+                } => self.request_engine_start(choices, Some(context), resume, None),
+                container_ui::CardStart::Blocked(_) | container_ui::CardStart::Elsewhere => {
+                    if self.page != Page::Project {
+                        self.open_project_page(ctx, path.clone());
+                    }
+                    self.reveal_containers_of(ctx, &path);
+                }
+            },
             // The environment's own Iniciar is under O que roda, with the Compose checks.
             ProjectCardAction::ViewContainers(path) => {
                 if self.page != Page::Project {
@@ -1314,7 +1339,7 @@ fn primary_to_card_action(project: &Project, summary: &ProjectSummary) -> Projec
     match &summary.primary {
         PrimaryAction::OpenSite(url) => ProjectCardAction::OpenUrl(url.clone()),
         PrimaryAction::Start => ProjectCardAction::Start(path),
-        PrimaryAction::StartWithContainers => ProjectCardAction::ViewContainers(path),
+        PrimaryAction::StartWithContainers => ProjectCardAction::StartContainers(path),
         PrimaryAction::ViewLogs => logs_action(project, summary),
         PrimaryAction::ViewInstallLogs => ProjectCardAction::ViewDependencyLogs(path),
         PrimaryAction::ViewMigrationLogs => ProjectCardAction::ViewMigrationLogs(path),

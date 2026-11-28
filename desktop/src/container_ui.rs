@@ -650,6 +650,22 @@ impl ContainerState {
     }
 }
 
+/// What "Iniciar" of a project's row can do for its containers (T038.02).
+pub(super) enum CardStart {
+    /// Start the environment, after the usual confirmation.
+    Run(ContainerCommand),
+    /// Turn the engine on first, then start (T026).
+    StartEngine {
+        choices: Vec<ContainerEngine>,
+        context: String,
+        resume: Vec<(ContainerEngine, ContainerCommand)>,
+    },
+    /// A Compose protection blocks the start: the sentence says why.
+    Blocked(&'static str),
+    /// Not one clear environment: the project's page shows each one with its own Iniciar.
+    Elsewhere,
+}
+
 /// Pages that show container state and how often they refresh it.
 fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)> {
     match page {
@@ -1884,6 +1900,88 @@ impl LocalCodePilot {
             .proposed_commands(engine)
             .into_iter()
             .find(|command| command.action == ContainerAction::Stop)
+    }
+
+    /// What "Iniciar" of a project's row or page does for its containers (T038.02): the same
+    /// checks as the environment's own Iniciar. One environment with a Compose file, on the
+    /// engine it would use; when that engine is stopped and the plan is safe, turn it on first
+    /// and then start (T026).
+    pub(super) fn card_container_start(&self, root: &Path) -> CardStart {
+        let catalog = self
+            .projects
+            .iter()
+            .map(|project| (project.name.as_str(), project.path.as_path()))
+            .collect::<Vec<_>>();
+        let names = self.compose_name_map();
+        let overview = group_containers(
+            &catalog,
+            &self.container_state.projects,
+            &names,
+            &self.container_state.runtime_containers,
+        );
+        let Some(group) = overview
+            .projects
+            .iter()
+            .find(|group| same_folder(group.root, root))
+        else {
+            return CardStart::Elsewhere;
+        };
+        let mut composed = group
+            .environments
+            .iter()
+            .filter(|environment| environment.project.compose_file.is_some());
+        let (Some(environment), None) = (composed.next(), composed.next()) else {
+            return CardStart::Elsewhere;
+        };
+        let project = environment.project;
+        let engine = self.action_engine(environment);
+        let Some(command) = project
+            .proposed_commands(engine)
+            .into_iter()
+            .find(|command| command.action == ContainerAction::Start)
+        else {
+            return CardStart::Elsewhere;
+        };
+        let (ready, compose) = self.engine_readiness(engine);
+        let engine_ok = ready && compose;
+        let safety = self.compose_environment_safety(&project.directory, engine);
+        let blocked =
+            guard_environment_action(ContainerAction::Start, &safety, &project.directory).err();
+        if engine_ok {
+            return match blocked {
+                Some(blocked) => CardStart::Blocked(blocked.summary),
+                None => CardStart::Run(command),
+            };
+        }
+        // With the engine stopped the environment cannot be verified yet; only that block
+        // lets the engine be turned on (the environment is verified again before anything runs).
+        let blocked_by_stopped_engine = matches!(safety, ComposeSafety::Unverifiable { .. });
+        if let Some(blocked) = blocked.as_ref().filter(|_| !blocked_by_stopped_engine) {
+            return CardStart::Blocked(blocked.summary);
+        }
+        let choices = start_choices(
+            &self.container_state.engines,
+            &environment.engines_in_use(),
+            engine,
+        );
+        if choices.is_empty() || self.container_state.engine_start.busy() {
+            return CardStart::Elsewhere;
+        }
+        let resume = choices
+            .iter()
+            .filter_map(|choice| {
+                project
+                    .proposed_commands(*choice)
+                    .into_iter()
+                    .find(|command| command.action == ContainerAction::Start)
+                    .map(|command| (*choice, command))
+            })
+            .collect();
+        CardStart::StartEngine {
+            choices,
+            context: group.name.to_owned(),
+            resume,
+        }
     }
 
     /// Opens a project in Containers with the parts that need a choice: the blocked notice,

@@ -533,6 +533,8 @@ enum ProjectCardAction {
     ToggleRecentVisibility(PathBuf),
     /// "Exportar diagnóstico", in "Detalhes técnicos" (T034).
     ExportDiagnostic(PathBuf),
+    /// "Iniciar" of a Compose project, with the environment's checks (T038.02).
+    StartContainers(PathBuf),
     /// The project's name, row or "Detalhes": opens its page (T038.01).
     OpenProject(PathBuf),
     /// A guided fix of the project's database, confirmed first.
