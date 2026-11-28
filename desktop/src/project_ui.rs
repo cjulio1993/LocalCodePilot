@@ -1807,6 +1807,17 @@ fn project_name_link(ui: &mut egui::Ui, name: &str, size: f32, path: &Path) -> b
         )
         .on_hover_text(display_path(path))
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Back from the project's page, the keyboard continues from here (T038, CA-11).
+    let key = project_page::return_focus_key();
+    if ui
+        .ctx()
+        .data(|data| data.get_temp::<PathBuf>(key))
+        .as_deref()
+        == Some(path)
+    {
+        ui.ctx().data_mut(|data| data.remove::<PathBuf>(key));
+        response.request_focus();
+    }
     announced(response, egui::Role::Link, &format!("Abrir {name}")).clicked()
 }
 

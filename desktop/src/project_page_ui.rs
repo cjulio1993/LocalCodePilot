@@ -17,6 +17,8 @@ impl LocalCodePilot {
         self.clear_container_filter();
         self.open_project = Some(path);
         self.page = Page::Project;
+        // The keyboard lands at the top of the page (T038, CA-11).
+        ctx.data_mut(|data| data.insert_temp(focus_page_key(), true));
         if uses_containers && !self.container_refresh_pending() {
             self.refresh_containers(ctx.clone());
         }
@@ -70,12 +72,34 @@ impl LocalCodePilot {
         let mut action = None;
 
         let back = format!("{CARET_LEFT}  Projetos");
-        if announced(ui.link(&back), egui::Role::Link, "Voltar para Projetos").clicked() {
+        let back = announced(ui.link(&back), egui::Role::Link, "Voltar para Projetos");
+        if ui
+            .ctx()
+            .data_mut(|data| data.remove_temp::<bool>(focus_page_key()))
+            == Some(true)
+        {
+            back.request_focus();
+        }
+        if back.clicked() {
+            // Back on the list, the keyboard returns to this project's name.
+            let path = project.path.clone();
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(return_focus_key(), path));
             self.page = Page::Projects;
         }
         ui.add_space(4.0);
         page_section(ui, "Resumo");
-        self.project_header(ui, &project, &summary, folder.as_deref(), &mut action);
+        let log_target = self.project_log_target(&project.path);
+        if let Some(id) = self.project_header(
+            ui,
+            &project,
+            &summary,
+            folder.as_deref(),
+            log_target.as_deref(),
+            &mut action,
+        ) {
+            self.managed.terminal = Some(id);
+        }
 
         let uses_containers = project.technologies.contains(&TechnologyKind::Containers);
         let has_processes = self
@@ -102,11 +126,10 @@ impl LocalCodePilot {
             );
         }
 
-        self.project_database_section(ui, &project, &mut action);
+        self.project_database_section(ui, &project, &summary, &mut action);
 
         page_section(ui, "Logs");
         let has_install_logs = self.dependency_installs.contains_key(&project.path);
-        let log_target = self.project_log_target(&project.path);
         if log_target.is_some() || has_install_logs {
             ui.horizontal_wrapped(|ui| {
                 if let Some(id) = &log_target
@@ -177,8 +200,10 @@ impl LocalCodePilot {
         project: &Project,
         summary: &ProjectSummary,
         folder: Option<&str>,
+        log_target: Option<&str>,
         action: &mut Option<ProjectCardAction>,
-    ) {
+    ) -> Option<String> {
+        let mut open_logs = None;
         let favorite = self.is_favorite(&project.path);
         Frame::new()
             .fill(theme::SURFACE)
@@ -255,6 +280,13 @@ impl LocalCodePilot {
                     if can_retry(summary) && retry_button(ui) {
                         *action = Some(ProjectCardAction::Start(project.path.clone()));
                     }
+                    // The logs of the process that runs, or of the last run (T038, CA-2).
+                    if let Some(id) = log_target
+                        && !matches!(summary.primary, PrimaryAction::ViewLogs)
+                        && logs_button(ui)
+                    {
+                        open_logs = Some(id.to_owned());
+                    }
                     if summary.state == ProjectState::Running || summary.stoppable {
                         if let Some(url) = &summary.url
                             && !matches!(summary.primary, PrimaryAction::OpenSite(_))
@@ -278,6 +310,7 @@ impl LocalCodePilot {
                     }
                 });
             });
+        open_logs
     }
 
     /// The project's databases, one row each: engine, state and where it is, with the
@@ -286,6 +319,7 @@ impl LocalCodePilot {
         &self,
         ui: &mut egui::Ui,
         project: &Project,
+        summary: &ProjectSummary,
         action: &mut Option<ProjectCardAction>,
     ) {
         page_section(ui, "Banco de dados");
@@ -352,6 +386,13 @@ impl LocalCodePilot {
                 *action = Some(ProjectCardAction::TestRemoteDatabase(project.path.clone()));
             }
         });
+        // Stopping the project leaves a shared server on (T038, CA-9): say so where it is.
+        if database_keeps_running(summary.state, &environment.databases) {
+            ui.label(
+                RichText::new("Projeto parado. O banco de dados continua rodando.")
+                    .size(theme::TEXT_BODY),
+            );
+        }
         if !extras.stop_blocked_by.is_empty() {
             ui.label(
                 RichText::new(format!(
@@ -365,9 +406,77 @@ impl LocalCodePilot {
     }
 }
 
+fn focus_page_key() -> egui::Id {
+    egui::Id::unique("project-page-focus")
+}
+
+/// The project whose name takes the keyboard focus back on the list.
+pub(super) fn return_focus_key() -> egui::Id {
+    egui::Id::unique("project-return-focus")
+}
+
+/// The project is stopped and a server the app created for it still runs.
+fn database_keeps_running(state: ProjectState, databases: &[DatabaseStatus]) -> bool {
+    state != ProjectState::Running
+        && state != ProjectState::Starting
+        && databases.iter().any(|status| {
+            status
+                .managed
+                .as_ref()
+                .is_some_and(|managed| managed.running)
+        })
+}
+
 /// A section title of the project page.
 fn page_section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(18.0);
     ui.label(RichText::new(title).strong().size(theme::TEXT_TITLE));
     ui.add_space(6.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use localcodepilot_runtime::databases::{DatabaseEngine, DatabaseRequirement};
+
+    fn server(running: Option<bool>) -> DatabaseStatus {
+        DatabaseStatus {
+            requirement: DatabaseRequirement {
+                source: PathBuf::from(".env"),
+                engine: DatabaseEngine::MySql,
+                host: Some("127.0.0.1".into()),
+                port: Some(3306),
+                compose_service: None,
+            },
+            available: running,
+            connection: None,
+            managed: running.map(|running| database_ui::ManagedInfo {
+                id: "mysql-3306".into(),
+                running,
+                summary: String::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_stopped_project_says_its_shared_database_keeps_running() {
+        assert!(database_keeps_running(
+            ProjectState::Stopped,
+            &[server(Some(true))]
+        ));
+        // Not while the project runs, not for a stopped server, not for one the app did
+        // not create.
+        assert!(!database_keeps_running(
+            ProjectState::Running,
+            &[server(Some(true))]
+        ));
+        assert!(!database_keeps_running(
+            ProjectState::Stopped,
+            &[server(Some(false))]
+        ));
+        assert!(!database_keeps_running(
+            ProjectState::Stopped,
+            &[server(None)]
+        ));
+    }
 }
