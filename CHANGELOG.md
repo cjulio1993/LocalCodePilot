@@ -8,6 +8,9 @@ O projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/) a parti
 
 ### Adicionado
 
+- **Ajuda mais direta:** o atalho **Projeto com problema** leva à resposta, e a página de um projeto com problema tem o link **Ajuda: o que fazer com um projeto com problema**, que abre a Ajuda nesse trecho. **Primeiros passos** ficou em três etapas curtas: encontre o projeto, confira o estado, escolha a ação.
+- Em janela estreita ou com zoom, as ações das linhas de motores e de bancos em **Ambiente** descem para baixo do estado, sem cobrir nada nem sair da janela.
+- Ao navegar com Tab, a página rola até o item focado quando ele está fora da vista, então o foco sempre aparece.
 - Quando **Adicionar pasta** e **Atualizar** estão bloqueados, o aviso diz quais projetos estão rodando (até três, e quantos mais) e oferece **Ver** em cada um; com mais de três, **Ver os projetos rodando**. A proteção continua.
 - **Ambiente** ganha um resumo no topo (estado de cada motor, bancos com problema ou não verificados e outros containers), e os bancos ficam agrupados em **Conexões com problema**, **Conexões não verificadas** ("Ainda sem teste de conexão: isso não quer dizer que há uma falha.") e **Outros bancos**.
 

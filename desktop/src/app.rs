@@ -505,6 +505,8 @@ pub struct LocalCodePilot {
     expanded_processes: HashSet<String>,
     /// The project whose page is open (T038.01).
     open_project: Option<PathBuf>,
+    /// The widget with the keyboard focus on the last frame, to scroll to a new one.
+    last_focus: Option<egui::Id>,
     /// The window is too narrow for the full sidebar (zoom included): it shows icons only.
     sidebar_narrow: bool,
     /// "Parar" of the databases of Ambiente, waiting for the confirmation (T037.06).
@@ -656,6 +658,7 @@ impl LocalCodePilot {
             projects: cached_projects,
             expanded_processes: HashSet::new(),
             open_project: None,
+            last_focus: None,
             sidebar_narrow: false,
             database_stop_request: None,
             managed: ManagedProcesses::default(),
@@ -1072,6 +1075,24 @@ impl LocalCodePilot {
                         });
                     });
             });
+    }
+
+    /// When the keyboard moves the focus to a widget out of view (Tab, zoom), the page
+    /// scrolls to it, so the focus is always seen (T039.04, CA-10). A click focuses what is
+    /// already visible, so nothing moves.
+    fn reveal_focus(&mut self, ui: &egui::Ui) {
+        let focused = ui.ctx().memory(|memory| memory.focused());
+        if focused == self.last_focus {
+            return;
+        }
+        self.last_focus = focused;
+        if let Some(rect) = focused
+            .and_then(|id| ui.ctx().read_response(id))
+            .map(|response| response.rect)
+            .filter(|rect| !ui.clip_rect().contains_rect(*rect))
+        {
+            ui.scroll_to_rect(rect, Some(Align::Center));
+        }
     }
 
     fn sidebar(&mut self, root_ui: &mut egui::Ui) {
@@ -4639,12 +4660,15 @@ impl LocalCodePilot {
             .show(root_ui, |ui| {
                 self.show_update_banner(ui);
                 self.config_recovery_banner(ui);
-                egui::ScrollArea::vertical().show(ui, |ui| match self.page {
-                    Page::Projects => self.projects_page(&ctx, ui),
-                    Page::Project => self.project_page(ui),
-                    Page::Settings => self.settings_page(ui),
-                    Page::Environment => self.environment_page(ui),
-                    Page::Help => self.help_page(ui),
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    match self.page {
+                        Page::Projects => self.projects_page(&ctx, ui),
+                        Page::Project => self.project_page(ui),
+                        Page::Settings => self.settings_page(ui),
+                        Page::Environment => self.environment_page(ui),
+                        Page::Help => self.help_page(ui),
+                    }
+                    self.reveal_focus(ui);
                 });
             });
         // Cards and Containers both ask to confirm container actions.

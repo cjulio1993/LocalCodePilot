@@ -215,7 +215,34 @@ impl LocalCodePilot {
                 .inner_margin(Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
+                    // Engine, state, port and place take about 450 points; below that plus the
+                    // buttons, the actions go to their own line (T039.04, CA-10).
+                    let narrow = ui.available_width() < 600.0;
+                    let mut actions = |ui: &mut egui::Ui| {
+                        if let Some((path, server)) = &can_stop
+                            && ui.button("Parar").clicked()
+                        {
+                            stop = Some((
+                                path.clone(),
+                                server.clone(),
+                                entry.engine.label(),
+                                entry
+                                    .projects
+                                    .iter()
+                                    .map(|(path, name)| match folders.get(path) {
+                                        Some(folder) => format!("{name} ({folder})"),
+                                        None => name.clone(),
+                                    })
+                                    .collect(),
+                            ));
+                        }
+                        if let Some(path) = &remote
+                            && ui.button("Testar conexão").clicked()
+                        {
+                            test = Some((path.clone(), entry.status.requirement.clone()));
+                        }
+                    };
+                    ui.horizontal_wrapped(|ui| {
                         let column = |width: f32| {
                             (
                                 egui::vec2(width, 24.0),
@@ -256,31 +283,13 @@ impl LocalCodePilot {
                                 .color(theme::MUTED)
                                 .size(theme::TEXT_DETAIL),
                         );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if let Some((path, server)) = &can_stop
-                                && ui.button("Parar").clicked()
-                            {
-                                stop = Some((
-                                    path.clone(),
-                                    server.clone(),
-                                    entry.engine.label(),
-                                    entry
-                                        .projects
-                                        .iter()
-                                        .map(|(path, name)| match folders.get(path) {
-                                            Some(folder) => format!("{name} ({folder})"),
-                                            None => name.clone(),
-                                        })
-                                        .collect(),
-                                ));
-                            }
-                            if let Some(path) = &remote
-                                && ui.button("Testar conexão").clicked()
-                            {
-                                test = Some((path.clone(), entry.status.requirement.clone()));
-                            }
-                        });
+                        if !narrow {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| actions(ui));
+                        }
                     });
+                    if narrow {
+                        ui.horizontal(|ui| actions(ui));
+                    }
                     ui.add(
                         egui::Label::new(
                             RichText::new(entry.status.card_state(None))
