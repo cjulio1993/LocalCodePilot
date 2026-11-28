@@ -655,7 +655,7 @@ fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)
     match page {
         Page::Containers => Some((Duration::from_secs(15), ContainerRefresh::Full)),
         // The project page opens with a full check (T038.01); then a light one.
-        Page::Overview | Page::Projects | Page::Project | Page::Processes | Page::Databases => {
+        Page::Projects | Page::Project | Page::Processes | Page::Databases => {
             Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
         }
         // Ambiente shows whether each engine is available (T037.05).
@@ -2843,7 +2843,7 @@ mod tests {
 
     #[test]
     fn project_cards_keep_container_state_current_with_a_light_refresh() {
-        for page in [Page::Overview, Page::Projects, Page::Processes] {
+        for page in [Page::Projects, Page::Processes] {
             assert_eq!(
                 container_refresh_schedule(page),
                 Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))

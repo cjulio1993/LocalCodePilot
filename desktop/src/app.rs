@@ -45,7 +45,7 @@ use crate::{
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Stroke};
 use egui_phosphor::regular::{
     ARROW_SQUARE_OUT, BOOK_OPEN, CARET_DOUBLE_LEFT, CARET_DOUBLE_RIGHT, CIRCLE, CODE_SIMPLE, CUBE,
-    FOLDER_OPEN, GEAR, LAYOUT, PLAY, PLUS, STAR, TERMINAL,
+    FOLDER_OPEN, GEAR, PLAY, PLUS, STAR, TERMINAL,
 };
 use localcodepilot_core::{
     custom_commands::{self, CustomCommand},
@@ -124,7 +124,6 @@ const INSTALLATION_STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
-    Overview,
     Projects,
     Processes,
     Containers,
@@ -141,7 +140,6 @@ enum Page {
 impl Page {
     fn key(self) -> &'static str {
         match self {
-            Self::Overview => "overview",
             Self::Projects => "projects",
             Self::Processes => "processes",
             Self::Containers => "containers",
@@ -169,7 +167,8 @@ impl Page {
             "environment" => Self::Environment,
             "help" => Self::Help,
             "settings" => Self::Settings,
-            _ => Self::Overview,
+            // Projetos is the start page (T038.02); "overview" and unknown keys open it.
+            _ => Self::Projects,
         }
     }
 }
@@ -1181,7 +1180,6 @@ impl LocalCodePilot {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         nav_group(ui, collapsed, "Trabalho");
-                        self.nav_button(ui, Page::Overview, LAYOUT, "Visão geral", None);
                         self.nav_button(
                             ui,
                             Page::Projects,
@@ -1359,7 +1357,6 @@ impl LocalCodePilot {
                             .on_hover_text(&self.username);
 
                         let search_hint = match self.page {
-                            Page::Overview => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
                             Page::Projects
                             | Page::Project
@@ -1389,7 +1386,6 @@ impl LocalCodePilot {
 
     fn page_title(&self) -> &'static str {
         match self.page {
-            Page::Overview => "Visão geral",
             Page::Projects | Page::Project => "Projetos",
             Page::Processes | Page::Containers | Page::Databases => "Serviços",
             Page::Environment => "Ambiente",
@@ -1516,10 +1512,6 @@ impl LocalCodePilot {
             self.workspace_state.custom_commands.clone(),
             ctx.clone(),
         ));
-    }
-
-    fn overview(&mut self, ui: &mut egui::Ui) {
-        self.overview_page(ui);
     }
 
     fn projects_page(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -5049,16 +5041,12 @@ impl LocalCodePilot {
                     .inner_margin(Margin::same(margin)),
             )
             .show(root_ui, |ui| {
-                // The overview shows the update notice after its sections (T037.04).
-                if self.page != Page::Overview {
-                    self.show_update_banner(ui);
-                }
+                self.show_update_banner(ui);
                 self.config_recovery_banner(ui);
                 if self.page.is_service() {
                     self.services_tabs(ui);
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
-                    Page::Overview => self.overview(ui),
                     Page::Projects => self.projects_page(&ctx, ui),
                     Page::Processes => self.processes_page(ui, false),
                     Page::Project => self.project_page(ui),
@@ -7361,12 +7349,6 @@ fn unix_timestamp() -> u64 {
         .unwrap_or_default()
 }
 
-fn system_time_timestamp(time: Option<SystemTime>) -> u64 {
-    time.and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
-}
-
 fn relative_time(timestamp: u64) -> String {
     let elapsed = unix_timestamp().saturating_sub(timestamp);
     match elapsed {
@@ -8523,7 +8505,7 @@ mod tests {
         assert!(Page::from_key("processes") == Page::Processes);
         assert!(Page::from_key("containers") == Page::Containers);
         assert!(Page::Processes.is_service() && Page::Containers.is_service());
-        for page in [Page::Overview, Page::Projects, Page::Help, Page::Settings] {
+        for page in [Page::Projects, Page::Help, Page::Settings] {
             assert!(!page.is_service());
         }
     }
@@ -8537,9 +8519,10 @@ mod tests {
 
     #[test]
     fn a_saved_plugins_page_opens_the_overview() {
-        assert!(Page::from_key("plugins") == Page::Overview);
+        // Projetos is the start page: the old overview and unknown pages open it.
+        assert!(Page::from_key("plugins") == Page::Projects);
+        assert!(Page::from_key("overview") == Page::Projects);
         for page in [
-            Page::Overview,
             Page::Projects,
             Page::Processes,
             Page::Containers,

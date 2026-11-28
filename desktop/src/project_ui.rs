@@ -2,7 +2,7 @@
 //! a single main action) rendered with the same vocabulary everywhere.
 
 use super::*;
-use egui_phosphor::regular::{LIST, SQUARES_FOUR, STOP, WARNING_CIRCLE};
+use egui_phosphor::regular::{STOP, WARNING_CIRCLE};
 
 #[path = "project_page_ui.rs"]
 mod project_page;
@@ -285,14 +285,6 @@ fn no_command_reason(languages: &[RuntimeKind], ambiguous: Option<&str>) -> Stri
                 "Reconhecemos {names}, mas não encontramos um arquivo ou alvo de entrada. Defina o comando de início."
             )
         }
-    }
-}
-
-/// Name of a state filter for assistive technologies, with its count.
-fn filter_name(label: &str, count: usize) -> String {
-    match count {
-        1 => format!("{label}, 1 projeto"),
-        _ => format!("{label}, {count} projetos"),
     }
 }
 
@@ -833,33 +825,11 @@ impl ProjectFilter {
     }
 }
 
-/// Transient view state: which project cards have their details open, and whether the
-/// scanned folders are listed.
+/// Transient view state: whether the scanned folders are listed.
 #[derive(Default)]
 pub(super) struct ProjectUiState {
-    expanded: HashSet<PathBuf>,
     /// The list of scanned folders is open on Projects.
     pub(super) show_roots: bool,
-    /// Height of the tallest closed card on the last frame, so every closed card has it.
-    card_layout: CardLayout,
-}
-
-/// The two parts of a closed card, measured apart so the actions line up at the bottom.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-struct CardLayout {
-    /// Name, folder, technologies, state, address and reason.
-    content: f32,
-    /// The main action and the row of secondary actions.
-    actions: f32,
-}
-
-impl CardLayout {
-    fn max(self, other: Self) -> Self {
-        Self {
-            content: self.content.max(other.content),
-            actions: self.actions.max(other.actions),
-        }
-    }
 }
 
 /// Projects with their summaries, in display order.
@@ -1099,13 +1069,14 @@ impl LocalCodePilot {
             })
             .map(|project| (project.clone(), self.project_summary(project)))
             .collect::<Vec<_>>();
-        summaries.sort_by_key(|(project, _)| {
-            let last_activity = self
-                .workspace_state
-                .project(&project.path)
-                .map(|history| history.last_activity)
-                .unwrap_or_else(|| system_time_timestamp(project.modified_at));
-            std::cmp::Reverse((self.is_favorite(&project.path), last_activity))
+        // A stable order (T038, CA-4): favorites first, then by name, so a project does not
+        // move when it starts, stops or is opened.
+        summaries.sort_by_cached_key(|(project, _)| {
+            (
+                !self.is_favorite(&project.path),
+                project.name.to_lowercase(),
+                project.path.clone(),
+            )
         });
         summaries
     }
@@ -1113,25 +1084,21 @@ impl LocalCodePilot {
     /// Turns a card or row action into navigation or a process operation.
     pub(super) fn apply_project_action(&mut self, ctx: &egui::Context, action: ProjectCardAction) {
         match action {
-            // On the project page the logs and the containers are already there (T038.01).
-            ProjectCardAction::ViewDetails(path) if self.page == Page::Project => {
+            // The logs and the containers are on the project's page (T038.02).
+            ProjectCardAction::ViewDetails(path) => {
+                if self.page != Page::Project {
+                    self.open_project_page(ctx, path.clone());
+                }
                 if let Some(id) = self.project_log_target(&path) {
                     self.managed.terminal = Some(id);
                 }
             }
             // The environment's own Iniciar is under O que roda, with the Compose checks.
-            ProjectCardAction::ViewContainers(path) if self.page == Page::Project => {
-                self.reveal_containers_of(ctx, &path);
-            }
-            ProjectCardAction::ViewDetails(path) => {
-                self.focused_project = Some(path);
-                self.search.clear();
-                self.page = Page::Processes;
-            }
             ProjectCardAction::ViewContainers(path) => {
-                self.touch_project(&path);
-                self.focused_project = Some(path);
-                self.page = Page::Containers;
+                if self.page != Page::Project {
+                    self.open_project_page(ctx, path.clone());
+                }
+                self.reveal_containers_of(ctx, &path);
             }
             ProjectCardAction::Open(path) => match open_in_vscode(&path) {
                 Ok(()) => {
@@ -1212,121 +1179,8 @@ impl LocalCodePilot {
         }
     }
 
-    /// The overview (T037.04): what needs attention first, then what runs, then recent
-    /// projects, then the update notice. No big counters: the counts are in the titles, and
-    /// "Ver todos" opens Projetos with the matching filter.
-    pub(super) fn overview_page(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Visão geral").strong().size(24.0));
-        ui.label(
-            RichText::new("O que precisa de atenção, o que está rodando e os projetos recentes.")
-                .color(theme::MUTED)
-                .size(theme::TEXT_BODY),
-        );
-        ui.add_space(16.0);
-        let summaries = self.summaries();
-        let folders = self.distinguishing_folders();
-        let folder = |project: &Project| folders.get(&project.path).map(String::as_str);
-        let mut action = None;
-        let mut open_filter = None;
-
-        if self.projects.is_empty() {
-            self.overview_without_projects(ui);
-            self.show_update_banner(ui);
-            return;
-        }
-
-        let problems = summaries
-            .iter()
-            .filter(|(_, summary)| summary.state == ProjectState::Problem)
-            .collect::<Vec<_>>();
-        if section_header(ui, "Com problema", problems.len()) {
-            open_filter = Some(ProjectFilter::Problem);
-        }
-        if problems.is_empty() {
-            empty_hint(ui, "Nenhum problema encontrado.");
-        }
-        for (project, summary) in &problems {
-            if let Some(selected) =
-                project_row(ui, project, summary, folder(project), RowDetails::Hide)
-            {
-                action = Some(selected);
-            }
-        }
-        ui.add_space(18.0);
-
-        let running = summaries
-            .iter()
-            .filter(|(_, summary)| ProjectFilter::Running.matches(summary.state))
-            .collect::<Vec<_>>();
-        if section_header(ui, "Rodando agora", running.len()) {
-            open_filter = Some(ProjectFilter::Running);
-        }
-        if running.is_empty() {
-            empty_hint(ui, "Nenhum projeto rodando agora.");
-            if let Some((project, summary)) = summaries.iter().find(|(project, summary)| {
-                summary.state == ProjectState::Stopped
-                    && matches!(
-                        summary.primary,
-                        PrimaryAction::Start | PrimaryAction::StartWithContainers
-                    )
-                    && !is_localcodepilot_qa_project(&project.path)
-            }) {
-                ui.label(
-                    RichText::new(format!("Você pode iniciar {}.", project.name))
-                        .size(theme::TEXT_BODY),
-                );
-                folder_line(ui, &project.path, folder(project));
-                ui.add_space(4.0);
-                if primary_button(ui, &summary.primary, 180.0) {
-                    action = Some(primary_to_card_action(project, summary));
-                }
-            }
-        }
-        for (project, summary) in &running {
-            if let Some(selected) =
-                project_row(ui, project, summary, folder(project), RowDetails::Hide)
-            {
-                action = Some(selected);
-            }
-        }
-        ui.add_space(18.0);
-
-        let recent_stopped = summaries
-            .iter()
-            .filter(|(project, summary)| {
-                summary.state == ProjectState::Stopped
-                    && !is_localcodepilot_qa_project(&project.path)
-            })
-            .take(5)
-            .collect::<Vec<_>>();
-        if section_header(ui, "Projetos recentes", recent_stopped.len()) {
-            open_filter = Some(ProjectFilter::Stopped);
-        }
-        if recent_stopped.is_empty() {
-            empty_hint(ui, "Nenhum projeto parado recentemente.");
-        }
-        for (project, summary) in &recent_stopped {
-            if let Some(selected) =
-                project_row(ui, project, summary, folder(project), RowDetails::Hide)
-            {
-                action = Some(selected);
-            }
-        }
-        ui.add_space(18.0);
-        // The update notice comes last here; the other pages show it at the top.
-        self.show_update_banner(ui);
-
-        if let Some(filter) = open_filter {
-            self.workspace_state.project_filter = filter.key().to_owned();
-            self.workspace_dirty = true;
-            self.page = Page::Projects;
-        }
-        if let Some(action) = action {
-            self.apply_project_action(ui.ctx(), action);
-        }
-    }
-
-    fn overview_without_projects(&mut self, ui: &mut egui::Ui) {
+    /// Projetos with no project yet: still looking, the search failed, or nothing found.
+    fn projects_empty_state(&mut self, ui: &mut egui::Ui) {
         if self.discovery.is_some() {
             components::loading_state(
                 ui,
@@ -1363,83 +1217,62 @@ impl LocalCodePilot {
         }
     }
 
-    /// Filter bar, cards or list, on the Projects page.
+    /// Projetos, the start page (T038.02): the search, three filters and one list in rows,
+    /// with a header like a table. The order stays put while states change: favorites
+    /// first, then by name.
     pub(super) fn project_catalog(&mut self, ui: &mut egui::Ui) {
+        if self.projects.is_empty() {
+            self.projects_empty_state(ui);
+            return;
+        }
         let summaries = self.summaries();
         let folders = self.distinguishing_folders();
-        let folder = |project: &Project| folders.get(&project.path).map(String::as_str);
         let mut filter = ProjectFilter::from_key(&self.workspace_state.project_filter);
-        let mut list = self.workspace_state.project_view == "list";
-        let (old_filter, old_list) = (filter, list);
+        let old_filter = filter;
         ui.horizontal_wrapped(|ui| {
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
                     .hint_text("Buscar por nome...")
-                    .desired_width(ui.available_width().min(200.0)),
+                    .desired_width(ui.available_width().min(240.0)),
             );
             name_search_field(&search, "Buscar projetos por nome", &self.search);
+            ui.add_space(8.0);
+            // A filter narrows the list; clicking it again shows every project.
             for (option, label) in [
-                (ProjectFilter::All, "Todos"),
-                (ProjectFilter::Running, "Rodando"),
                 (ProjectFilter::Problem, "Com problema"),
-                (ProjectFilter::Stopped, "Parados"),
+                (ProjectFilter::Running, "Rodando"),
+                (ProjectFilter::Stopped, "Parado"),
             ] {
-                let count = summaries
-                    .iter()
-                    .filter(|(_, summary)| option.matches(summary.state))
-                    .count();
-                let response = ui.selectable_value(&mut filter, option, format!("{label} {count}"));
-                let name = filter_name(label, count);
+                let selected = filter == option;
+                let response = ui.add(egui::Button::selectable(selected, label).corner_radius(14));
                 response.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::Button, true, filter == option, &name)
-                });
-            }
-            // The two view buttons wrap together.
-            if ui.available_size_before_wrap().x < 90.0 {
-                ui.end_row();
-            }
-            for (cards, icon, name) in [
-                (true, SQUARES_FOUR, "Ver como cartões"),
-                (false, LIST, "Ver como lista"),
-            ] {
-                let response = ui
-                    .selectable_value(
-                        &mut list,
-                        !cards,
-                        RichText::new(icon).size(theme::TEXT_HEADING),
+                    egui::WidgetInfo::selected(
+                        egui::Role::Button,
+                        true,
+                        selected,
+                        format!("Filtrar: {label}"),
                     )
-                    .on_hover_text(name);
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::Button, true, list != cards, name)
                 });
+                if response.clicked() {
+                    filter = if selected { ProjectFilter::All } else { option };
+                }
             }
         });
-        if (filter, list) != (old_filter, old_list) {
+        if filter != old_filter {
             self.workspace_state.project_filter = filter.key().to_owned();
-            self.workspace_state.project_view = if list { "list".into() } else { String::new() };
             self.workspace_dirty = true;
         }
         ui.add_space(10.0);
 
         let visible = summaries
-            .into_iter()
+            .iter()
             .filter(|(_, summary)| filter.matches(summary.state))
             .collect::<Vec<_>>();
-        if visible.is_empty() && self.discovery.is_some() {
-            components::loading_state(
-                ui,
-                "Procurando projetos...",
-                "Estamos examinando as pastas mais comuns da sua máquina.",
-            );
-            return;
-        }
         if visible.is_empty() {
             empty_hint(
                 ui,
                 if !self.search.trim().is_empty() {
                     "Nenhum projeto com esse nome."
-                } else if self.projects.is_empty() {
-                    "Nenhum projeto encontrado. Use Adicionar pasta para escolher onde ficam seus projetos."
                 } else {
                     "Nenhum projeto neste filtro."
                 },
@@ -1448,73 +1281,28 @@ impl LocalCodePilot {
         }
 
         let mut action = None;
-        if list {
-            for (project, summary) in &visible {
-                if let Some(selected) =
-                    project_row(ui, project, summary, folder(project), RowDetails::Offer)
-                {
-                    action = Some(selected);
+        Frame::new()
+            .fill(theme::SURFACE)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(10)
+            .inner_margin(Margin::symmetric(14, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let columns = RowColumns::for_width(ui.available_width());
+                if columns.wide {
+                    table_header(ui, columns);
                 }
-            }
-        } else {
-            let available_width = ui.available_width();
-            let columns: usize = if available_width >= 900.0 {
-                3
-            } else if available_width >= 560.0 {
-                2
-            } else {
-                1
-            };
-            let gap = 14.0;
-            let card_width =
-                ((available_width - gap * (columns - 1) as f32) / columns as f32).floor();
-            // Every closed card takes the height of the tallest one measured on the last
-            // frame; an open card grows and is left out of the measure.
-            let target = self.project_ui.card_layout;
-            let mut tallest = CardLayout::default();
-            for row in visible.chunks(columns) {
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    for (project, summary) in row {
-                        let card = ProjectCard {
-                            project,
-                            summary,
-                            folder: folder(project),
-                            languages: self.language_lines(project),
-                            custom_commands: self.custom_commands_of(&project.path),
-                            environment: self.project_environments.get(&project.path),
-                            favorite: self.is_favorite(&project.path),
-                            expanded: self.project_ui.expanded.contains(&project.path),
-                            hidden_from_recent: self
-                                .workspace_state
-                                .hidden_recent_projects
-                                .contains(&project.path),
-                            has_install_logs: self.dependency_installs.contains_key(&project.path),
-                            database: self.database_card_extras(&project.path),
-                        };
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(card_width, 0.0),
-                            Layout::top_down(Align::Min),
-                            |ui| {
-                                let (selected, measured) = card.show(ui, card_width, target);
-                                if let Some(selected) = selected {
-                                    action = Some(selected);
-                                }
-                                if !card.expanded {
-                                    tallest = tallest.max(measured);
-                                }
-                            },
-                        );
+                for (index, (project, summary)) in visible.iter().enumerate() {
+                    if index > 0 || columns.wide {
+                        ui.separator();
                     }
-                });
-                ui.add_space(gap);
-            }
-            if tallest != self.project_ui.card_layout {
-                // Width, filter or content changed: the next frame lines the cards up.
-                self.project_ui.card_layout = tallest;
-                ui.ctx().request_repaint();
-            }
-        }
+                    let folder = folders.get(&project.path).map(String::as_str);
+                    if let Some(selected) = project_table_row(ui, project, summary, folder, columns)
+                    {
+                        action = Some(selected);
+                    }
+                }
+            });
         if let Some(action) = action {
             self.apply_project_action(ui.ctx(), action);
         }
@@ -1552,31 +1340,6 @@ fn stop_action(project: &Project, summary: &ProjectSummary) -> ProjectCardAction
     } else {
         ProjectCardAction::Stop(project.path.clone())
     }
-}
-
-/// A section of the overview: its title with the count, and "Ver todos" on the right, which
-/// opens Projetos with the matching filter. Returns whether "Ver todos" was clicked.
-fn section_header(ui: &mut egui::Ui, title: &str, count: usize) -> bool {
-    let clicked = ui
-        .horizontal(|ui| {
-            ui.label(
-                RichText::new(format!("{title} ({count})"))
-                    .strong()
-                    .size(theme::TEXT_TITLE),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                announced(
-                    ui.link("Ver todos"),
-                    egui::Role::Link,
-                    &format!("Ver todos: {title}"),
-                )
-                .clicked()
-            })
-            .inner
-        })
-        .inner;
-    ui.add_space(6.0);
-    clicked
 }
 
 use super::components::empty_hint;
@@ -1645,7 +1408,8 @@ fn short_url(url: &str) -> &str {
 }
 
 /// Main action as a filled button. Returns true when clicked.
-fn primary_button(ui: &mut egui::Ui, action: &PrimaryAction, width: f32) -> bool {
+/// In a list, `of` names the project, so a screen reader says "Iniciar loja-web".
+fn primary_button(ui: &mut egui::Ui, action: &PrimaryAction, width: f32, of: Option<&str>) -> bool {
     let Some(label) = action.label() else {
         ui.spinner();
         return false;
@@ -1657,9 +1421,17 @@ fn primary_button(ui: &mut egui::Ui, action: &PrimaryAction, width: f32) -> bool
                 .min_size(egui::vec2(width, 32.0)),
         ),
         egui::Role::Button,
-        &label,
+        &spoken(&label, of),
     )
     .clicked()
+}
+
+/// A button's words, followed by the project's name when the button is in a list.
+fn spoken(label: &str, of: Option<&str>) -> String {
+    match of {
+        Some(project) => format!("{} {project}", words(label)),
+        None => label.to_owned(),
+    }
 }
 
 /// After a failure (a port in use, a server that closed), the project can start again once
@@ -1680,120 +1452,236 @@ fn logs_button(ui: &mut egui::Ui) -> bool {
     announced(ui.button(&label), egui::Role::Button, &label).clicked()
 }
 
-fn stop_button(ui: &mut egui::Ui, summary: &ProjectSummary) -> bool {
+fn stop_button(ui: &mut egui::Ui, summary: &ProjectSummary, of: Option<&str>) -> bool {
     let label = stop_label(summary);
     announced(
         ui.button(RichText::new(&label).color(theme::DANGER)),
         egui::Role::Button,
-        &label,
+        &spoken(&label, of),
     )
     .clicked()
 }
 
-/// Whether a row offers "Detalhes técnicos": the Projects list does, so details stay one
-/// keyboard step away (#101, CA-6); the Overview keeps its short rows.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RowDetails {
-    Offer,
-    Hide,
+/// Column widths of the project list (T038.02). Below 760 px each row stacks instead.
+#[derive(Clone, Copy)]
+struct RowColumns {
+    wide: bool,
+    name: f32,
+    state: f32,
+    address: f32,
 }
 
-/// One line per project, used by the Overview and the list view. Wraps on narrow windows.
-fn project_row(
+impl RowColumns {
+    fn for_width(width: f32) -> Self {
+        Self {
+            wide: width >= 760.0,
+            name: (width * 0.27).max(180.0),
+            state: width * 0.35,
+            address: (width * 0.15).max(120.0),
+        }
+    }
+}
+
+/// A fixed-width column of a row, top-aligned.
+fn row_column<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
+        ui.set_min_width(width);
+        ui.set_max_width(width);
+        add(ui)
+    })
+    .inner
+}
+
+/// The column titles of the list, like the head of a table.
+fn table_header(ui: &mut egui::Ui, columns: RowColumns) {
+    let title = |ui: &mut egui::Ui, text: &str| {
+        ui.label(
+            RichText::new(text)
+                .color(theme::MUTED)
+                .strong()
+                .size(theme::TEXT_DETAIL),
+        );
+    };
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        row_column(ui, columns.name, |ui| title(ui, "Projeto"));
+        row_column(ui, columns.state, |ui| title(ui, "Estado"));
+        row_column(ui, columns.address, |ui| title(ui, "Endereço"));
+        row_column(ui, ui.available_width(), |ui| title(ui, "Ação"));
+    });
+}
+
+/// What the project is, in one neutral label: the stack, else the language.
+fn project_type(project: &Project) -> Option<String> {
+    project
+        .shown_technologies()
+        .find(|technology| *technology != TechnologyKind::Containers)
+        .map(|technology| technology.to_string())
+        .or_else(|| project.runtimes.first().map(ToString::to_string))
+        .or_else(|| {
+            project
+                .technologies
+                .contains(&TechnologyKind::Containers)
+                .then(|| "Containers".to_owned())
+        })
+}
+
+/// The name (a link to the project's page), the type and, for same-name projects, the
+/// folder that tells them apart.
+fn name_cell(
+    ui: &mut egui::Ui,
+    project: &Project,
+    folder: Option<&str>,
+    action: &mut Option<ProjectCardAction>,
+) {
+    ui.horizontal(|ui| {
+        if project_name_link(ui, &project.name, theme::TEXT_BODY + 1.0, &project.path) {
+            *action = Some(ProjectCardAction::OpenProject(project.path.clone()));
+        }
+        if let Some(kind) = project_type(project) {
+            ui.label(
+                RichText::new(kind)
+                    .color(theme::MUTED)
+                    .size(theme::TEXT_DETAIL),
+            );
+        }
+    });
+    folder_line(ui, &project.path, folder);
+}
+
+/// The state in words (with its icon), the site check and the reason in up to 2 lines.
+fn state_cell(ui: &mut egui::Ui, summary: &ProjectSummary) {
+    ui.horizontal_wrapped(|ui| {
+        state_badge(ui, summary);
+        if let Some(http) = summary.http {
+            http_badge(ui, http);
+        }
+    });
+    if let Some(reason) = &summary.reason {
+        reason_label(ui, reason);
+    }
+}
+
+/// The address: a link that opens the site while the project runs.
+fn address_cell(ui: &mut egui::Ui, summary: &ProjectSummary) -> Option<ProjectCardAction> {
+    let Some(url) = &summary.url else {
+        ui.label(RichText::new("—").color(theme::MUTED));
+        return None;
+    };
+    let text = short_url(url);
+    if summary.state != ProjectState::Running {
+        ui.label(
+            RichText::new(text)
+                .monospace()
+                .color(theme::MUTED)
+                .size(theme::TEXT_DETAIL),
+        );
+        return None;
+    }
+    let mut response = announced(
+        ui.link(RichText::new(text).monospace().size(theme::TEXT_DETAIL)),
+        egui::Role::Link,
+        &format!("Abrir site {text}"),
+    );
+    if summary.uses_containers {
+        response = response.on_hover_text("Endereço provável, pelas portas publicadas");
+    }
+    response
+        .clicked()
+        .then(|| ProjectCardAction::OpenUrl(url.clone()))
+}
+
+/// The one action for the state (T038, CA-6): Parar while it runs; while it starts, only
+/// Parar for a build that can be interrupted; otherwise the main action of the summary.
+/// Then "Detalhes", which opens the project's page.
+fn actions_cell(
+    ui: &mut egui::Ui,
+    project: &Project,
+    summary: &ProjectSummary,
+    action: &mut Option<ProjectCardAction>,
+) {
+    ui.horizontal(|ui| {
+        match summary.state {
+            ProjectState::Running => {
+                if stop_button(ui, summary, Some(&project.name)) {
+                    *action = Some(stop_action(project, summary));
+                }
+            }
+            ProjectState::Starting => {
+                if summary.stoppable {
+                    if stop_button(ui, summary, Some(&project.name)) {
+                        *action = Some(stop_action(project, summary));
+                    }
+                } else {
+                    ui.spinner();
+                }
+            }
+            ProjectState::Stopped | ProjectState::Problem => {
+                if !matches!(summary.primary, PrimaryAction::Details)
+                    && primary_button(ui, &summary.primary, 0.0, Some(&project.name))
+                {
+                    *action = Some(primary_to_card_action(project, summary));
+                }
+            }
+        }
+        let name = format!("Detalhes de {}", project.name);
+        if announced(ui.button("Detalhes"), egui::Role::Button, &name).clicked() {
+            *action = Some(ProjectCardAction::OpenProject(project.path.clone()));
+        }
+    });
+}
+
+/// One project in the list. Wide windows show the columns; narrow ones stack the same parts.
+/// A click anywhere else on the row opens the project's page: the row senses clicks below
+/// its buttons, so the buttons keep theirs.
+fn project_table_row(
     ui: &mut egui::Ui,
     project: &Project,
     summary: &ProjectSummary,
     folder: Option<&str>,
-    details: RowDetails,
+    columns: RowColumns,
 ) -> Option<ProjectCardAction> {
     let mut action = None;
-    let row = Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::BORDER))
-        .corner_radius(10)
-        .inner_margin(Margin::symmetric(14, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if project_name_link(ui, &project.name, theme::TEXT_HEADING, &project.path) {
-                    action = Some(ProjectCardAction::OpenProject(project.path.clone()));
-                }
-                // One label only: the stack, not how it runs (the actions already say Containers).
-                if let Some(technology) = project
-                    .shown_technologies()
-                    .find(|technology| *technology != TechnologyKind::Containers)
+    let row = ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt(("project-row", &project.path))
+            .sense(egui::Sense::click()),
+        |ui| {
+            // Compact rows, like a table.
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if columns.wide {
+                ui.horizontal(|ui| {
+                    row_column(ui, columns.name, |ui| {
+                        name_cell(ui, project, folder, &mut action);
+                    });
+                    row_column(ui, columns.state, |ui| state_cell(ui, summary));
+                    row_column(ui, columns.address, |ui| {
+                        if let Some(selected) = address_cell(ui, summary) {
+                            action = Some(selected);
+                        }
+                    });
+                    actions_cell(ui, project, summary, &mut action);
+                });
+            } else {
+                name_cell(ui, project, folder, &mut action);
+                state_cell(ui, summary);
+                if summary.url.is_some()
+                    && let Some(selected) = address_cell(ui, summary)
                 {
-                    ui.label(
-                        RichText::new(technology.to_string())
-                            .color(technology_color(technology))
-                            .size(theme::TEXT_DETAIL),
-                    );
-                } else if let Some(runtime) = project.runtimes.first() {
-                    ui.label(
-                        RichText::new(runtime.to_string())
-                            .color(runtime_color(*runtime))
-                            .size(theme::TEXT_DETAIL),
-                    );
+                    action = Some(selected);
                 }
-                ui.add_space(6.0);
-                state_badge(ui, summary);
-                if let Some(http) = summary.http {
-                    http_badge(ui, http);
-                }
-                if let Some(url) = &summary.url {
-                    address_label(ui, summary, url);
-                }
-                if let Some(reason) = &summary.reason {
-                    ui.label(
-                        RichText::new(reason)
-                            .color(theme::MUTED)
-                            .size(theme::TEXT_BODY),
-                    );
-                }
-            });
-            folder_line(ui, &project.path, folder);
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                if primary_button(ui, &summary.primary, 120.0) {
-                    action = Some(primary_to_card_action(project, summary));
-                }
-                if can_retry(summary) && retry_button(ui) {
-                    action = Some(ProjectCardAction::Start(project.path.clone()));
-                }
-                if summary.state == ProjectState::Running {
-                    if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
-                        action = Some(logs_action(project, summary));
-                    }
-                    if stop_button(ui, summary) {
-                        action = Some(stop_action(project, summary));
-                    }
-                } else if summary.stoppable && stop_button(ui, summary) {
-                    action = Some(stop_action(project, summary));
-                }
-                // Opens the project's page (T038.01).
-                let name = format!("Detalhes de {}", project.name);
-                if details == RowDetails::Offer
-                    && !matches!(summary.primary, PrimaryAction::Details)
-                    && announced(ui.button("Detalhes"), egui::Role::Button, &name).clicked()
-                {
-                    action = Some(ProjectCardAction::OpenProject(project.path.clone()));
-                }
-            });
-        });
-    // The rest of the row, outside its buttons, opens the project too (T038, CA-1).
+                actions_cell(ui, project, summary, &mut action);
+            }
+        },
+    );
     if action.is_none()
-        && ui
-            .interact(
-                row.response.rect,
-                egui::Id::unique(("project-row", project.path.clone())),
-                egui::Sense::click(),
-            )
+        && row
+            .response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
     {
         action = Some(ProjectCardAction::OpenProject(project.path.clone()));
     }
-    ui.add_space(8.0);
     action
 }
 
@@ -1856,90 +1744,16 @@ fn card_badges(project: &Project) -> Vec<(String, Color32)> {
     badges
 }
 
-/// How many badges fit in one line of `available` width, keeping room for a "+N" badge
-/// when some are left out. At least the first one is shown.
-fn badges_that_fit(
-    widths: &[f32],
-    available: f32,
-    spacing: f32,
-    more_width: impl Fn(usize) -> f32,
-) -> usize {
-    let mut used = 0.0;
-    let mut shown = 0;
-    for (index, width) in widths.iter().enumerate() {
-        let next = used + if index > 0 { spacing } else { 0.0 } + width;
-        let left_out = widths.len() - index - 1;
-        let reserve = if left_out > 0 {
-            spacing + more_width(left_out)
-        } else {
-            0.0
-        };
-        if index > 0 && next + reserve > available {
-            break;
-        }
-        used = next;
-        shown = index + 1;
-    }
-    shown
-}
-
-/// The badges in a single line; the ones that do not fit become "+N", and the whole list
-/// goes to the hover, to screen readers and to "Detalhes técnicos".
-fn badge_line(ui: &mut egui::Ui, badges: &[(String, Color32)]) -> bool {
-    let badge_width = |ui: &egui::Ui, label: &str| {
-        let text = ui.ctx().fonts_mut(|fonts| {
-            fonts
-                .layout_no_wrap(
-                    label.to_owned(),
-                    egui::FontId::proportional(12.0),
-                    theme::TEXT,
-                )
-                .size()
-                .x
-        });
-        // Inner margin (7 each side) and the stroke.
-        text + 16.0
-    };
-    let spacing = ui.spacing().item_spacing.x;
-    let widths = badges
-        .iter()
-        .map(|(label, _)| badge_width(ui, label))
-        .collect::<Vec<_>>();
-    let shown = badges_that_fit(&widths, ui.available_width(), spacing, |left_out| {
-        badge_width(ui, &format!("+{left_out}"))
-    });
-    let all = badges
-        .iter()
-        .map(|(label, _)| label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let response = ui
-        .horizontal(|ui| {
-            for (label, color) in &badges[..shown] {
-                runtime_badge(ui, label, *color);
-            }
-            if shown < badges.len() {
-                runtime_badge(ui, &format!("+{}", badges.len() - shown), theme::MUTED);
-            }
-        })
-        .response;
-    if shown < badges.len() {
-        let response = response.on_hover_text(&all);
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &all));
-    }
-    shown == badges.len()
-}
-
-/// The reason in up to 3 lines, ending in "…" when longer. The whole sentence goes to the
-/// hover, to screen readers and to "Detalhes técnicos".
-fn reason_label(ui: &mut egui::Ui, reason: &str) -> bool {
+/// The reason of a row in up to 2 lines, ending in "…" when longer. The whole sentence goes
+/// to the hover, to screen readers and to the project's page.
+fn reason_label(ui: &mut egui::Ui, reason: &str) {
     let mut job = egui::text::LayoutJob::simple(
         reason.to_owned(),
-        egui::FontId::proportional(13.0),
-        ui.visuals().text_color(),
+        egui::FontId::proportional(theme::TEXT_DETAIL),
+        theme::MUTED,
         ui.available_width(),
     );
-    job.wrap.max_rows = REASON_MAX_LINES;
+    job.wrap.max_rows = 2;
     job.wrap.overflow_character = Some('…');
     let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
     let elided = galley.elided;
@@ -1948,31 +1762,17 @@ fn reason_label(ui: &mut egui::Ui, reason: &str) -> bool {
         response = response.on_hover_text(reason);
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, reason));
-    !elided
 }
 
-/// What a closed card shortened, to show in full in "Detalhes técnicos".
-#[derive(Debug, Default, Clone)]
-struct Shortened {
-    reason: Option<String>,
-    badges: Option<String>,
-}
-
-/// Lines of the reason on a closed card; the rest is in "Detalhes técnicos".
-const REASON_MAX_LINES: usize = 3;
-
+/// What "Detalhes técnicos" of the project's page shows.
 struct ProjectCard<'a> {
     project: &'a Project,
     summary: &'a ProjectSummary,
-    /// The part of the folder that tells it apart from a project with the same name.
-    folder: Option<&'a str>,
     /// Start commands the person defined for this project.
     custom_commands: Vec<CustomCommand>,
     /// Each language, where it was found and whether this computer has it.
     languages: Vec<String>,
     environment: Option<&'a ProjectEnvironment>,
-    favorite: bool,
-    expanded: bool,
     hidden_from_recent: bool,
     has_install_logs: bool,
     /// The project's database: what the app did, the failure and the actions it allows.
@@ -1980,184 +1780,12 @@ struct ProjectCard<'a> {
 }
 
 impl ProjectCard<'_> {
-    /// Draws the card. A closed card is padded to `target`, so every closed card in the grid
-    /// has the same height with the actions at the bottom; returns the card's own measure.
-    fn show(
-        &self,
-        ui: &mut egui::Ui,
-        width: f32,
-        target: CardLayout,
-    ) -> (Option<ProjectCardAction>, CardLayout) {
-        let summary = self.summary;
-        let mut action = None;
-        let mut measured = CardLayout::default();
-        let pad = |ui: &mut egui::Ui, wanted: f32, own: f32| {
-            if !self.expanded {
-                ui.add_space((wanted - own).max(0.0));
-            }
-        };
-        Frame::new()
-            .fill(theme::SURFACE)
-            .stroke(Stroke::new(
-                1.0,
-                if summary.state == ProjectState::Problem {
-                    theme::WARNING.gamma_multiply(0.5)
-                } else {
-                    theme::BORDER
-                },
-            ))
-            .corner_radius(12)
-            .inner_margin(Margin::same(16))
-            .show(ui, |ui| {
-                ui.set_width(width - 32.0);
-                let content = ui.vertical(|ui| self.content(ui, &mut action));
-                let cut = content.inner;
-                measured.content = content.response.rect.height();
-                pad(ui, target.content, measured.content);
-                ui.add_space(10.0);
-                measured.actions = ui
-                    .vertical(|ui| self.actions(ui, &mut action))
-                    .response
-                    .rect
-                    .height();
-                pad(ui, target.actions, measured.actions);
-                if self.expanded {
-                    ui.separator();
-                    if let Some(selected) = self.details(ui, cut) {
-                        action = Some(selected);
-                    }
-                }
-            });
-        (action, measured)
-    }
-
-    /// Name, folder, technologies (one line), state, address and reason (up to 3 lines).
-    fn content(&self, ui: &mut egui::Ui, action: &mut Option<ProjectCardAction>) -> Shortened {
-        let ProjectCard {
-            project, summary, ..
-        } = *self;
-        let path = || project.path.clone();
-        ui.horizontal(|ui| {
-            if project_name_link(ui, &project.name, theme::TEXT_TITLE, &project.path) {
-                *action = Some(ProjectCardAction::OpenProject(path()));
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let name = if self.favorite {
-                    "Remover dos favoritos"
-                } else {
-                    "Adicionar aos favoritos"
-                };
-                let star = ui
-                    .button(RichText::new(STAR).color(if self.favorite {
-                        theme::PRIMARY
-                    } else {
-                        theme::MUTED
-                    }))
-                    .on_hover_text(name);
-                star.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::Role::Button,
-                        true,
-                        self.favorite,
-                        format!("{name}: {}", project.name),
-                    )
-                });
-                if star.clicked() {
-                    *action = Some(ProjectCardAction::ToggleFavorite(path()));
-                }
-            });
-        });
-        folder_line(ui, &project.path, self.folder);
-        let badges = card_badges(project);
-        let mut cut = Shortened {
-            badges: (!badge_line(ui, &badges)).then(|| {
-                badges
-                    .iter()
-                    .map(|(label, _)| label.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }),
-            reason: None,
-        };
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            state_badge(ui, summary);
-            if let Some(http) = summary.http {
-                http_badge(ui, http);
-            }
-        });
-        if let Some(url) = &summary.url {
-            address_label(ui, summary, url);
-        }
-        if let Some(reason) = &summary.reason
-            && !reason_label(ui, reason)
-        {
-            cut.reason = Some(reason.clone());
-        }
-        if !self.custom_commands.is_empty() {
-            ui.label(
-                RichText::new("Comando definido por você")
-                    .color(theme::MUTED)
-                    .size(theme::TEXT_DETAIL),
-            );
-        }
-        cut
-    }
-
-    /// The main action and the row of secondary actions.
-    fn actions(&self, ui: &mut egui::Ui, action: &mut Option<ProjectCardAction>) {
-        let ProjectCard {
-            project, summary, ..
-        } = *self;
-        let path = || project.path.clone();
-        if primary_button(ui, &summary.primary, ui.available_width()) {
-            *action = Some(match summary.primary {
-                PrimaryAction::Details => ProjectCardAction::OpenProject(path()),
-                _ => primary_to_card_action(project, summary),
-            });
-        }
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            if can_retry(summary) && retry_button(ui) {
-                *action = Some(ProjectCardAction::Start(project.path.clone()));
-            }
-            if summary.state == ProjectState::Running {
-                if !matches!(summary.primary, PrimaryAction::ViewLogs) && logs_button(ui) {
-                    *action = Some(logs_action(project, summary));
-                }
-                if stop_button(ui, summary) {
-                    *action = Some(stop_action(project, summary));
-                }
-            } else if summary.stoppable && stop_button(ui, summary) {
-                *action = Some(stop_action(project, summary));
-            }
-            // Everything else about the project is on its page (T038.01).
-            if summary.primary != PrimaryAction::Details {
-                let name = format!("Detalhes de {}", project.name);
-                if announced(ui.button("Detalhes"), egui::Role::Button, &name).clicked() {
-                    *action = Some(ProjectCardAction::OpenProject(path()));
-                }
-            }
-        });
-    }
-
     /// Technical details and secondary actions, shown only on request.
-    fn details(&self, ui: &mut egui::Ui, cut: Shortened) -> Option<ProjectCardAction> {
+    fn details(&self, ui: &mut egui::Ui) -> Option<ProjectCardAction> {
         let project = self.project;
         let path = || project.path.clone();
         let mut action = None;
-        // What the closed card shortened is shown in full here, where the keyboard reaches.
-        if let Some(reason) = &cut.reason {
-            ui.label(RichText::new(reason).size(theme::TEXT_BODY));
-        }
-        if let Some(badges) = &cut.badges {
-            ui.label(
-                RichText::new(badges)
-                    .color(theme::MUTED)
-                    .size(theme::TEXT_DETAIL),
-            );
-        }
-        // The reason is already on the card; repeating it here adds nothing.
+        // The reason is already in the summary; repeating it here adds nothing.
         let reason = self.summary.reason.as_deref().unwrap_or_default();
         let detail = |ui: &mut egui::Ui, text: &str| {
             if !reason.starts_with(text.trim_end_matches('.')) {
@@ -2414,39 +2042,6 @@ mod tests {
         assert!(!summarize_project(&facts(&environment)).stoppable);
     }
 
-    #[test]
-    fn badges_that_do_not_fit_leave_room_for_the_count() {
-        let more = |_: usize| 30.0;
-        // Everything fits: no "+N".
-        assert_eq!(badges_that_fit(&[60.0, 60.0], 200.0, 10.0, more), 2);
-        // 60 + 10 + 60 + (10 + 30) = 170 fits in 170; the third badge does not.
-        assert_eq!(badges_that_fit(&[60.0, 60.0, 60.0], 170.0, 10.0, more), 2);
-        // Room for one badge and the count.
-        assert_eq!(badges_that_fit(&[60.0, 60.0, 60.0], 120.0, 10.0, more), 1);
-        // The first badge is always shown, even in a very narrow card.
-        assert_eq!(badges_that_fit(&[200.0, 60.0], 100.0, 10.0, more), 1);
-        assert_eq!(badges_that_fit(&[], 100.0, 10.0, more), 0);
-    }
-
-    #[test]
-    fn the_tallest_closed_card_sets_both_parts() {
-        let a = CardLayout {
-            content: 120.0,
-            actions: 40.0,
-        };
-        let b = CardLayout {
-            content: 90.0,
-            actions: 80.0,
-        };
-        assert_eq!(
-            a.max(b),
-            CardLayout {
-                content: 120.0,
-                actions: 80.0
-            }
-        );
-    }
-
     fn ready() -> ProjectEnvironment {
         ProjectEnvironment {
             command_count: 1,
@@ -2599,13 +2194,6 @@ mod tests {
                 .starts_with("Conexão testada em 127.0.0.1:3306 com o usuário app no banco loja")
         );
         assert!(lines[1].ends_with(": conectado"));
-    }
-
-    #[test]
-    fn filters_are_named_with_their_count() {
-        assert_eq!(filter_name("Rodando", 1), "Rodando, 1 projeto");
-        assert_eq!(filter_name("Parados", 3), "Parados, 3 projetos");
-        assert_eq!(filter_name("Com problema", 0), "Com problema, 0 projetos");
     }
 
     #[test]
