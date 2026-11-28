@@ -116,7 +116,7 @@ O LocalCodePilot lê o banco de dados do projeto no `.env` (`DB_CONNECTION`, `DB
 
 **Onde ficam os dados.** Os servidores preparados no Windows guardam os dados em `%LOCALAPPDATA%\LocalCodePilot\bancos` (no macOS e no Linux, na pasta de dados do app); o SQL Server, e o PostgreSQL no macOS e no Linux, guardam num volume do Docker ou do Podman. Ao fechar o app, o LocalCodePilot tenta encerrar os servidores e containers que preparou, inclusive durante o primeiro preparo. Se algum continuar rodando, avisa na próxima abertura; os dados permanecem e voltam no próximo **Iniciar**.
 
-**Correções.** Quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: **Usar outra porta** (muda só `DB_PORT` e guarda uma cópia do `.env`), **Corrigir conexão** (só no servidor do LocalCodePilot) ou **Criar banco novo** (os dados anteriores ficam guardados). **Detalhes técnicos** mostra onde está a configuração, o endereço testado, o usuário, o banco e o resultado; a senha nunca aparece.
+**Correções.** Quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: **Usar outra porta** (muda só `DB_PORT` e guarda uma cópia do `.env` na pasta do LocalCodePilot, fora do projeto), **Corrigir conexão** (só no servidor do LocalCodePilot) ou **Criar banco novo** (os dados anteriores ficam guardados). **Detalhes técnicos** mostra onde está a configuração, o endereço testado, o usuário, o banco e o resultado; a senha nunca aparece.
 
 Mais detalhes em [docs/DATABASES.md](docs/DATABASES.md).
 
@@ -252,7 +252,7 @@ LocalCodePilot reads the project's database settings from `.env` (`DB_CONNECTION
 
 **Where the data lives.** Servers prepared on Windows keep their data in `%LOCALAPPDATA%\LocalCodePilot\bancos` (on macOS and Linux, in the app's data folder); SQL Server, and PostgreSQL on macOS and Linux, keep it in a Docker or Podman volume. When the app closes, LocalCodePilot tries to stop the servers and containers it prepared, even during a first preparation. If one keeps running, it tells you at the next launch; the data stays and comes back on the next **Start**.
 
-**Fixes.** When it is safe, the card offers a way out, always with a confirmation and a new login test before starting: **Usar outra porta** (use another port: changes only `DB_PORT` and keeps a copy of `.env`), **Corrigir conexão** (fix connection: only on LocalCodePilot's own server) or **Criar banco novo** (create a new database: the previous data is kept). **Detalhes técnicos** shows where the settings are, the address tested, the user, the database and the result; the password never appears.
+**Fixes.** When it is safe, the card offers a way out, always with a confirmation and a new login test before starting: **Usar outra porta** (use another port: changes only `DB_PORT` and keeps a copy of `.env` in the LocalCodePilot folder, outside the project), **Corrigir conexão** (fix connection: only on LocalCodePilot's own server) or **Criar banco novo** (create a new database: the previous data is kept). **Detalhes técnicos** shows where the settings are, the address tested, the user, the database and the result; the password never appears.
 
 More in [docs/DATABASES.md](docs/DATABASES.md).
 

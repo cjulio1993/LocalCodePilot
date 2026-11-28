@@ -1534,11 +1534,6 @@ fn retry_button(ui: &mut egui::Ui) -> bool {
     announced(ui.button(&label), egui::Role::Button, &label).clicked()
 }
 
-fn logs_button(ui: &mut egui::Ui) -> bool {
-    let label = format!("{TERMINAL}  Ver logs");
-    announced(ui.button(&label), egui::Role::Button, &label).clicked()
-}
-
 fn stop_button(ui: &mut egui::Ui, summary: &ProjectSummary, of: Option<&str>) -> bool {
     let label = stop_label(summary);
     announced(
@@ -2291,7 +2286,7 @@ mod tests {
         assert_eq!(
             refused.reason.as_deref(),
             Some(
-                "O banco respondeu, mas não aceitou os dados de acesso deste projeto. Confira a configuração de conexão."
+                "O banco recusou o acesso deste projeto. Confira os dados de conexão em Detalhes."
             )
         );
         let missing = summarize_project(&facts(&with_database(database(
@@ -2311,12 +2306,20 @@ mod tests {
     fn technical_details_show_the_tested_address_but_never_a_password() {
         let lines = database(Some(true), Some(ConnectionOutcome::Connected)).technical();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("configurado em .env como 127.0.0.1:3306"));
+        assert!(lines[0].starts_with("Conexão do banco MySQL · Origem da configuração: .env"));
+        assert!(lines[0].ends_with("· Host: 127.0.0.1 · Porta: 3306"));
+        assert!(lines[1].starts_with("Último teste ("));
+        assert!(lines[1].contains("em 127.0.0.1:3306 com o usuário app no banco loja"));
+        assert!(lines[1].ends_with("· Resultado: conectado"));
+        // Never tested: said, not guessed (T039.01).
+        let untested = database(Some(true), None).technical();
+        assert_eq!(untested[1], "Último teste: não testado");
         assert!(
-            lines[1]
-                .starts_with("Conexão testada em 127.0.0.1:3306 com o usuário app no banco loja")
+            lines
+                .iter()
+                .chain(&untested)
+                .all(|line| !line.contains("senha"))
         );
-        assert!(lines[1].ends_with(": conectado"));
     }
 
     #[test]

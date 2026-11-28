@@ -232,7 +232,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Correções",
-                "quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: Usar outra porta (muda só DB_PORT e guarda uma cópia do .env), Corrigir conexão (só no servidor do LocalCodePilot) ou Criar banco novo (os dados anteriores ficam guardados).",
+                "quando for seguro, o cartão oferece uma saída, sempre com confirmação e com um novo teste do login antes de iniciar: Usar outra porta (muda só DB_PORT e guarda uma cópia do .env na pasta do LocalCodePilot, fora do projeto), Corrigir conexão (só no servidor do LocalCodePilot) ou Criar banco novo (os dados anteriores ficam guardados).",
             ),
             Block::Item(
                 "Compose",

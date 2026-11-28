@@ -32,6 +32,23 @@ impl LocalCodePilot {
         self.page = Page::Project;
     }
 
+    /// "Ver logs" when the project has a single service; "Ver logs de {serviço}" when it has
+    /// more, so the button says which logs it opens (T039.01, CA-7).
+    pub(in crate::app) fn logs_label(&self, path: &Path, id: &str) -> String {
+        let processes = self
+            .managed
+            .processes
+            .iter()
+            .filter(|process| process.project_path == path)
+            .collect::<Vec<_>>();
+        match processes.iter().find(|process| process.id == id) {
+            Some(process) if processes.len() > 1 => {
+                format!("{TERMINAL}  Ver logs de {}", process.name)
+            }
+            _ => format!("{TERMINAL}  Ver logs"),
+        }
+    }
+
     /// The process whose logs "Ver logs" opens on the project page: one that runs, else the
     /// last one with saved logs.
     pub(in crate::app) fn project_log_target(&self, path: &Path) -> Option<String> {
@@ -98,15 +115,22 @@ impl LocalCodePilot {
         ui.add_space(4.0);
         page_section(ui, "Resumo");
         let log_target = self.project_log_target(&project.path);
-        if let Some(id) = self.project_header(
+        let logs_label = log_target
+            .as_deref()
+            .map(|id| self.logs_label(&project.path, id));
+        let header = self.project_header(
             ui,
             &project,
             &summary,
             folder.as_deref(),
-            log_target.as_deref(),
+            log_target.as_deref().zip(logs_label.as_deref()),
             &mut action,
-        ) {
+        );
+        if let Some(id) = header.logs {
             self.managed.terminal = Some(id);
+        }
+        if header.retest {
+            self.retest_database(&project.path);
         }
 
         let uses_containers = project.technologies.contains(&TechnologyKind::Containers);
@@ -140,8 +164,8 @@ impl LocalCodePilot {
         let has_install_logs = self.dependency_installs.contains_key(&project.path);
         if log_target.is_some() || has_install_logs {
             ui.horizontal_wrapped(|ui| {
-                if let Some(id) = &log_target
-                    && logs_button(ui)
+                if let Some((id, label)) = log_target.as_ref().zip(logs_label.as_ref())
+                    && announced(ui.button(label), egui::Role::Button, label).clicked()
                 {
                     self.managed.terminal = Some(id.clone());
                 }
@@ -184,7 +208,7 @@ impl LocalCodePilot {
         };
         let open = notice::heading_disclosure(
             ui,
-            egui::Id::unique(("project-technical", project.path.clone())),
+            technical_key(&project.path),
             "Comandos, caminhos e diagnóstico",
             false,
         );
@@ -205,10 +229,11 @@ impl LocalCodePilot {
         project: &Project,
         summary: &ProjectSummary,
         folder: Option<&str>,
-        log_target: Option<&str>,
+        logs: Option<(&str, &str)>,
         action: &mut Option<ProjectCardAction>,
-    ) -> Option<String> {
-        let mut open_logs = None;
+    ) -> HeaderRequests {
+        let mut requests = HeaderRequests::default();
+        let can_retest = self.rejected_database(&project.path).is_some();
         let favorite = self.is_favorite(&project.path);
         Frame::new()
             .fill(theme::SURFACE)
@@ -276,21 +301,40 @@ impl LocalCodePilot {
                 }
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    // "Detalhes" as the main action means: look below, where they are.
-                    if !matches!(summary.primary, PrimaryAction::Details)
-                        && primary_button(ui, &summary.primary, 140.0, None)
-                    {
+                    // "Detalhes" as the main action: open the technical details below and, when
+                    // the server refused the project, test again (T039.01, CA-1). The page never
+                    // leaves only "Abrir no VS Code".
+                    if matches!(summary.primary, PrimaryAction::Details) {
+                        let label = "Ver detalhes técnicos";
+                        let button =
+                            egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
+                                .fill(theme::PRIMARY)
+                                .min_size(egui::vec2(140.0, 32.0));
+                        if announced(ui.add(button), egui::Role::Button, label).clicked() {
+                            notice::reveal(ui.ctx(), technical_key(&project.path));
+                        }
+                        if can_retest
+                            && announced(
+                                ui.button("Testar conexão de novo"),
+                                egui::Role::Button,
+                                "Testar conexão de novo",
+                            )
+                            .clicked()
+                        {
+                            requests.retest = true;
+                        }
+                    } else if primary_button(ui, &summary.primary, 140.0, None) {
                         *action = Some(primary_to_card_action(project, summary));
                     }
                     if can_retry(summary) && retry_button(ui) {
                         *action = Some(ProjectCardAction::Start(project.path.clone()));
                     }
                     // The logs of the process that runs, or of the last run (T038, CA-2).
-                    if let Some(id) = log_target
+                    if let Some((id, label)) = logs
                         && !matches!(summary.primary, PrimaryAction::ViewLogs)
-                        && logs_button(ui)
+                        && announced(ui.button(label), egui::Role::Button, label).clicked()
                     {
-                        open_logs = Some(id.to_owned());
+                        requests.logs = Some(id.to_owned());
                     }
                     if summary.state == ProjectState::Running || summary.stoppable {
                         if let Some(url) = &summary.url
@@ -303,7 +347,20 @@ impl LocalCodePilot {
                                 *action = Some(ProjectCardAction::OpenUrl(url.clone()));
                             }
                         }
-                        if stop_button(ui, summary, None) {
+                        // The whole project (its processes, or its Compose environment with the
+                        // confirmation that lists what stops), said on the button (CA-7).
+                        let label = if summary.uses_containers && !summary.stops_containers_here {
+                            format!("{STOP}  Escolher o que parar")
+                        } else {
+                            format!("{STOP}  Parar o projeto")
+                        };
+                        if announced(
+                            ui.button(RichText::new(&label).color(theme::DANGER)),
+                            egui::Role::Button,
+                            &label,
+                        )
+                        .clicked()
+                        {
                             *action = Some(stop_action(project, summary));
                         }
                     }
@@ -315,7 +372,7 @@ impl LocalCodePilot {
                     }
                 });
             });
-        open_logs
+        requests
     }
 
     /// The project's databases, one row each: engine, state and where it is, with the
@@ -430,6 +487,20 @@ fn database_keeps_running(state: ProjectState, databases: &[DatabaseStatus]) -> 
                 .as_ref()
                 .is_some_and(|managed| managed.running)
         })
+}
+
+/// What the header asked for, done by the page once it is drawn.
+#[derive(Default)]
+struct HeaderRequests {
+    /// Open the logs of this process.
+    logs: Option<String>,
+    /// "Testar conexão de novo".
+    retest: bool,
+}
+
+/// The "Detalhes técnicos" group of a project's page, which "Ver detalhes técnicos" opens.
+fn technical_key(path: &Path) -> egui::Id {
+    egui::Id::unique(("project-technical", path.to_path_buf()))
 }
 
 /// A section title of the project page.
