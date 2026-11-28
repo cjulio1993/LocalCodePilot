@@ -348,6 +348,25 @@ pub(super) fn engine_short_status(diagnosis: &EngineDiagnosis) -> (&'static str,
     }
 }
 
+/// An engine in the vocabulary of the projects (T038.03): Rodando, Parado (installed and
+/// can be turned on), Não encontrado, or Com problema, with the sentence that explains it.
+pub(super) fn engine_summary(
+    diagnosis: &EngineDiagnosis,
+) -> (&'static str, Color32, Option<String>) {
+    let reason = engine_message(diagnosis).map(|message| message.sentence);
+    match diagnosis.state {
+        EngineState::Ready if diagnosis.compose_available => ("Rodando", theme::SUCCESS, None),
+        EngineState::Missing => ("Não encontrado", theme::MUTED, reason),
+        // Ambiente is about the computer, not a project: the short sentence of the spec.
+        _ if diagnosis.start.is_some() => (
+            "Parado",
+            theme::MUTED,
+            Some(format!("O {} está parado.", diagnosis.engine)),
+        ),
+        _ => ("Com problema", theme::WARNING, reason),
+    }
+}
+
 fn environment_state_text(state: EnvironmentState, paused: usize) -> (String, Color32) {
     let (mut text, color) = match state {
         EnvironmentState::Problem => ("Com problema".to_owned(), theme::DANGER),
@@ -1155,6 +1174,60 @@ impl LocalCodePilot {
 
     pub(super) fn clear_container_filter(&mut self) {
         self.container_state.filter.clear();
+    }
+
+    /// Whether an engine is being turned on, and whether any start is under way.
+    pub(super) fn engine_starting(&self, engine: ContainerEngine) -> bool {
+        self.container_state.engine_start.starting(engine)
+    }
+
+    pub(super) fn engine_start_busy(&self) -> bool {
+        self.container_state.engine_start.busy()
+    }
+
+    /// Containers no project of the list owns, or whose origin was not confirmed (T038.03).
+    pub(super) fn loose_containers(&self) -> Vec<RuntimeContainer> {
+        let catalog = self
+            .projects
+            .iter()
+            .map(|project| (project.name.as_str(), project.path.as_path()))
+            .collect::<Vec<_>>();
+        let names = self.compose_name_map();
+        group_containers(
+            &catalog,
+            &self.container_state.projects,
+            &names,
+            &self.container_state.runtime_containers,
+        )
+        .others
+        .into_iter()
+        .cloned()
+        .collect()
+    }
+
+    /// "Ver logs" of a container: reads its output, changes nothing.
+    pub(super) fn show_container_logs(&mut self, container: &RuntimeContainer) {
+        if let Some(command) = container.command(ContainerAction::LogsExisting) {
+            self.start_container_execution(command);
+        }
+    }
+
+    /// The containers of a project seen by the last check, for the search (T038.03).
+    pub(super) fn project_containers(&self, project: &Path) -> Vec<&RuntimeContainer> {
+        self.container_state
+            .runtime_containers
+            .iter()
+            .filter(|container| container.belongs_to(project))
+            .collect()
+    }
+
+    /// An engine that is installed but not running: its containers are not in the search.
+    pub(super) fn engine_not_running(&self) -> Option<ContainerEngine> {
+        self.container_state
+            .engines
+            .iter()
+            .find(|diagnosis| !matches!(engine_summary(diagnosis).0, "Rodando" | "Não encontrado"))
+            .map(|diagnosis| diagnosis.engine)
     }
 
     pub(super) fn container_refresh_pending(&self) -> bool {

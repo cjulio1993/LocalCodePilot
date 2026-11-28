@@ -321,6 +321,14 @@ const SECTIONS: &[HelpSection] = &[
                 "no fim da página do projeto: pasta, linguagens e de onde vieram (arquivos do projeto ou imagem do container), comandos detectados e, quando o projeto falha, o processo, o comando e o código de saída.",
             ),
             Block::Item(
+                "Ambiente",
+                "mostra o que este computador tem, em dois grupos. Controlado pelo LocalCodePilot: os motores Docker e Podman, com Iniciar ali mesmo e a confirmação de sempre, e os bancos de dados dos projetos. Encontrado neste computador: containers que não são de um projeto da lista, só com Ver logs, e as linguagens.",
+            ),
+            Block::Item(
+                "Busca",
+                "em Projetos, a busca encontra o projeto pelo nome ou pela pasta e também pelo serviço, pela porta ou pelo container, e diz o que encontrou. Com um motor parado, os containers dele não entram na busca.",
+            ),
+            Block::Item(
                 "Linguagens neste computador",
                 "em Ambiente, cada linguagem aparece com a versão instalada ou como não encontrada nos locais verificados, e Detalhes técnicos mostra onde o aplicativo procurou.",
             ),

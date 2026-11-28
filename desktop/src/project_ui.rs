@@ -1063,6 +1063,59 @@ impl LocalCodePilot {
         summary
     }
 
+    /// What a project runs, as the search sees it (T038.03): each process with its port and
+    /// each container the last check saw, with a label that says what was found.
+    fn search_candidates(&self, project: &Project) -> Vec<(String, Vec<String>)> {
+        let mut candidates = Vec::new();
+        for process in self
+            .managed
+            .processes
+            .iter()
+            .filter(|process| process.project_path == project.path)
+        {
+            let port = self
+                .managed
+                .assigned_ports
+                .get(&process.id)
+                .copied()
+                .or(process.expected_port)
+                .map(|port| port.value().to_string());
+            let label = match &port {
+                Some(port) => format!("serviço {} · porta {port}", process.name),
+                None => format!("serviço {}", process.name),
+            };
+            candidates.push((
+                label,
+                [Some(process.name.clone()), port]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            ));
+        }
+        for container in self.project_containers(&project.path) {
+            let label = match &container.service {
+                Some(service) => format!("container {} · serviço {service}", container.name),
+                None => format!("container {}", container.name),
+            };
+            let words = [
+                Some(container.name.clone()),
+                container.service.clone(),
+                Some(container.image.clone()),
+                Some(container.ports.clone()),
+            ];
+            candidates.push((label, words.into_iter().flatten().collect()));
+        }
+        candidates
+    }
+
+    /// Why a project shows up in a search that is not its name or folder, if it does.
+    fn search_hit(&self, project: &Project, query: &str) -> Option<String> {
+        if query.is_empty() {
+            return None;
+        }
+        service_hit(query, &self.search_candidates(project))
+    }
+
     fn summaries(&self) -> Summaries {
         let query = self.search.trim().to_lowercase();
         let mut summaries = self
@@ -1070,12 +1123,8 @@ impl LocalCodePilot {
             .iter()
             .filter(|project| {
                 query.is_empty()
-                    || project.name.to_lowercase().contains(&query)
-                    || project
-                        .path
-                        .to_string_lossy()
-                        .to_lowercase()
-                        .contains(&query)
+                    || name_matches(project, &query)
+                    || self.search_hit(project, &query).is_some()
             })
             .map(|project| (project.clone(), self.project_summary(project)))
             .collect::<Vec<_>>();
@@ -1257,10 +1306,14 @@ impl LocalCodePilot {
         ui.horizontal_wrapped(|ui| {
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Buscar por nome...")
-                    .desired_width(ui.available_width().min(240.0)),
+                    .hint_text("Buscar projeto, serviço, porta ou container")
+                    .desired_width(ui.available_width().min(320.0)),
             );
-            name_search_field(&search, "Buscar projetos por nome", &self.search);
+            name_search_field(
+                &search,
+                "Buscar projeto, serviço, porta ou container",
+                &self.search,
+            );
             ui.add_space(8.0);
             // A filter narrows the list; clicking it again shows every project.
             for (option, label) in [
@@ -1294,16 +1347,20 @@ impl LocalCodePilot {
             .filter(|(_, summary)| filter.matches(summary.state))
             .collect::<Vec<_>>();
         if visible.is_empty() {
-            empty_hint(
-                ui,
-                if !self.search.trim().is_empty() {
-                    "Nenhum projeto com esse nome."
-                } else {
-                    "Nenhum projeto neste filtro."
-                },
-            );
+            let text = if self.search.trim().is_empty() {
+                "Nenhum projeto neste filtro.".to_owned()
+            } else if let Some(engine) = self.engine_not_running() {
+                // A stopped engine shows no containers: say so instead of "nothing exists".
+                format!(
+                    "Nada encontrado. O {engine} não está rodando, então os containers dele não entram na busca."
+                )
+            } else {
+                "Nenhum projeto, serviço, porta ou container encontrado.".to_owned()
+            };
+            empty_hint(ui, &text);
             return;
         }
+        let query = self.search.trim().to_lowercase();
 
         let mut action = None;
         Frame::new()
@@ -1322,7 +1379,12 @@ impl LocalCodePilot {
                         ui.separator();
                     }
                     let folder = folders.get(&project.path).map(String::as_str);
-                    if let Some(selected) = project_table_row(ui, project, summary, folder, columns)
+                    // What matched, when it was not the name or the folder.
+                    let found = (!name_matches(project, &query))
+                        .then(|| self.search_hit(project, &query))
+                        .flatten();
+                    if let Some(selected) =
+                        project_table_row(ui, project, summary, folder, found.as_deref(), columns)
                     {
                         action = Some(selected);
                     }
@@ -1557,6 +1619,7 @@ fn name_cell(
     ui: &mut egui::Ui,
     project: &Project,
     folder: Option<&str>,
+    found: Option<&str>,
     action: &mut Option<ProjectCardAction>,
 ) {
     ui.horizontal(|ui| {
@@ -1572,6 +1635,13 @@ fn name_cell(
         }
     });
     folder_line(ui, &project.path, folder);
+    if let Some(found) = found {
+        ui.label(
+            RichText::new(format!("Encontrado: {found}"))
+                .color(theme::PRIMARY)
+                .size(theme::TEXT_DETAIL),
+        );
+    }
 }
 
 /// The state in words (with its icon), the site check and the reason in up to 2 lines.
@@ -1664,6 +1734,7 @@ fn project_table_row(
     project: &Project,
     summary: &ProjectSummary,
     folder: Option<&str>,
+    found: Option<&str>,
     columns: RowColumns,
 ) -> Option<ProjectCardAction> {
     let mut action = None;
@@ -1677,7 +1748,7 @@ fn project_table_row(
             if columns.wide {
                 ui.horizontal(|ui| {
                     row_column(ui, columns.name, |ui| {
-                        name_cell(ui, project, folder, &mut action);
+                        name_cell(ui, project, folder, found, &mut action);
                     });
                     row_column(ui, columns.state, |ui| state_cell(ui, summary));
                     row_column(ui, columns.address, |ui| {
@@ -1688,7 +1759,7 @@ fn project_table_row(
                     actions_cell(ui, project, summary, &mut action);
                 });
             } else {
-                name_cell(ui, project, folder, &mut action);
+                name_cell(ui, project, folder, found, &mut action);
                 state_cell(ui, summary);
                 if summary.url.is_some()
                     && let Some(selected) = address_cell(ui, summary)
@@ -1708,6 +1779,33 @@ fn project_table_row(
         action = Some(ProjectCardAction::OpenProject(project.path.clone()));
     }
     action
+}
+
+/// The search matches the project's name or folder (T038.03).
+fn name_matches(project: &Project, query: &str) -> bool {
+    query.is_empty()
+        || project.name.to_lowercase().contains(query)
+        || project
+            .path
+            .to_string_lossy()
+            .to_lowercase()
+            .contains(query)
+}
+
+/// The first service, port or container whose words contain the query, by its label.
+fn service_hit(query: &str, candidates: &[(String, Vec<String>)]) -> Option<String> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return None;
+    }
+    candidates
+        .iter()
+        .find(|(_, words)| {
+            words
+                .iter()
+                .any(|word| word.to_lowercase().contains(&query))
+        })
+        .map(|(label, _)| label.clone())
 }
 
 /// The project's name, which opens its page (T038.01). Looks like a title, works as a link.
@@ -2219,6 +2317,39 @@ mod tests {
                 .starts_with("Conexão testada em 127.0.0.1:3306 com o usuário app no banco loja")
         );
         assert!(lines[1].ends_with(": conectado"));
+    }
+
+    #[test]
+    fn the_search_finds_a_service_a_port_or_a_container_and_says_which() {
+        let candidates = vec![
+            (
+                "serviço start · porta 3000".to_owned(),
+                vec!["start".to_owned(), "3000".to_owned()],
+            ),
+            (
+                "container loja-web-1 · serviço web".to_owned(),
+                vec![
+                    "loja-web-1".to_owned(),
+                    "web".to_owned(),
+                    "nginx:alpine".to_owned(),
+                    "0.0.0.0:8089->80/tcp".to_owned(),
+                ],
+            ),
+        ];
+        assert_eq!(
+            service_hit("3000", &candidates).as_deref(),
+            Some("serviço start · porta 3000")
+        );
+        assert_eq!(
+            service_hit("NGINX", &candidates).as_deref(),
+            Some("container loja-web-1 · serviço web")
+        );
+        assert_eq!(
+            service_hit("8089", &candidates).as_deref(),
+            Some("container loja-web-1 · serviço web")
+        );
+        assert_eq!(service_hit("redis", &candidates), None);
+        assert_eq!(service_hit("  ", &candidates), None);
     }
 
     #[test]
