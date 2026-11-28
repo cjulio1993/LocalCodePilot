@@ -73,8 +73,10 @@ fn tracked_by_git(file: &Path) -> bool {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
+    // 0: tracked. 1: Git answered that the file is not tracked. Anything else (Git missing,
+    // a broken worktree pointer, a repository Git cannot read): treated as tracked.
     match command.status() {
-        Ok(status) => status.success(),
+        Ok(status) => status.code() != Some(1),
         Err(_) => true,
     }
 }
@@ -442,6 +444,32 @@ mod tests {
         assert!(git(&["add", ".env"]));
         assert!(tracked_by_git(&folder.join(".env")));
         assert!(!tracked_by_git(&folder.join(".env.local")));
+        // A worktree: there .git is a file, and the .env is tracked too.
+        let worktree = folder.with_extension("wt");
+        let _ = std::fs::remove_dir_all(&worktree);
+        if git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "fixture",
+        ]) && git(&["worktree", "add", "-q", worktree.to_str().unwrap()])
+        {
+            assert!(worktree.join(".git").is_file());
+            assert!(tracked_by_git(&worktree.join(".env")));
+        }
+        // A .git that Git cannot read: the password is blocked.
+        let broken = folder.with_extension("broken");
+        let _ = std::fs::remove_dir_all(&broken);
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(".git"), "gitdir: /nao/existe\n").unwrap();
+        std::fs::write(broken.join(".env"), "DB_PASSWORD=x\n").unwrap();
+        assert!(tracked_by_git(&broken.join(".env")));
+        let _ = git(&["worktree", "remove", "--force", worktree.to_str().unwrap()]);
+        let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&broken);
         let _ = std::fs::remove_dir_all(&folder);
     }
 }

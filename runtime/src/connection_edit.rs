@@ -118,15 +118,20 @@ fn fields_of(contents: &str, wordpress: bool) -> Vec<ConnectionField> {
                     dotenv_value(line, name)
                 }
             });
-            let refusal = if found.len() > 1 {
+            // A constant the file names but not in a plain define line (inside an `if`, a
+            // ternary…): the app cannot tell which value applies.
+            let hidden = wordpress
+                && found.is_empty()
+                && (contents.contains(&format!("'{name}'"))
+                    || contents.contains(&format!("\"{name}\"")));
+            let refusal = if found.len() > 1 || hidden {
                 Some(FieldRefusal::Unsafe)
             } else if wordpress
                 && found
                     .first()
-                    .is_some_and(|&index| lines[index].starts_with([' ', '\t']))
+                    .is_some_and(|&index| inside_condition(&lines, index))
             {
-                // An indented define may sit inside an `if`: rewriting it could change only
-                // one branch.
+                // A define inside an `if`: rewriting it could change only one branch.
                 Some(FieldRefusal::Unsafe)
             } else if value.as_deref().is_some_and(|value| value.contains("${")) {
                 Some(FieldRefusal::Variable)
@@ -144,6 +149,69 @@ fn fields_of(contents: &str, wordpress: bool) -> Vec<ConnectionField> {
             }
         })
         .collect()
+}
+
+/// Whether line `index` of a PHP file may run only under a condition: an `if`, `else`,
+/// `switch` or `?` before the define on the same line, or a block still open at that
+/// line (braces, or `if (…):` until `endif`). Strings and comments are skipped. When in
+/// doubt the answer is yes: the field is then left for manual editing.
+fn inside_condition(lines: &[&str], index: usize) -> bool {
+    let line = lines[index];
+    let before = &line[..line.find("define").unwrap_or(0)];
+    let lowered = before.to_ascii_lowercase();
+    if ["if", "else", "switch", "?", "&&", "||", "case"]
+        .iter()
+        .any(|word| lowered.contains(word))
+    {
+        return true;
+    }
+    let mut depth = 0i32;
+    let mut alternative = 0i32;
+    let mut in_block_comment = false;
+    for line in &lines[..index] {
+        let mut chars = line.chars().peekable();
+        let mut quote: Option<char> = None;
+        let mut code = String::new();
+        while let Some(c) = chars.next() {
+            if in_block_comment {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    in_block_comment = false;
+                }
+                continue;
+            }
+            if let Some(q) = quote {
+                if c == '\\' {
+                    chars.next();
+                } else if c == q {
+                    quote = None;
+                }
+                continue;
+            }
+            match c {
+                '\'' | '"' => quote = Some(c),
+                '/' if chars.peek() == Some(&'/') => break,
+                '#' => break,
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    in_block_comment = true;
+                }
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => code.push(c),
+            }
+        }
+        let code = code.trim().to_ascii_lowercase();
+        if (code.starts_with("if") || code.starts_with("else") || code.starts_with("switch"))
+            && code.ends_with(':')
+        {
+            alternative += 1;
+        }
+        if code.starts_with("endif") || code.starts_with("endswitch") {
+            alternative -= 1;
+        }
+    }
+    depth > 0 || alternative > 0
 }
 
 /// How a value is written in a `.env`, so that both the app and the project's own loader read
@@ -441,6 +509,31 @@ mod tests {
         let credentials = read_back(&folder.join("wp-config.php"));
         assert_eq!(credentials.user.as_deref(), Some("novo"));
         assert_eq!(credentials.password_for_setup(), "d'agua \\ $x");
+    }
+
+    #[test]
+    fn a_define_under_a_condition_is_never_editable_even_without_indentation() {
+        for contents in [
+            "<?php\nif ( $local ) {\ndefine( 'DB_USER', 'dev' );\n}\n",
+            "<?php\nif ( $local ) define( 'DB_USER', 'dev' );\n",
+            "<?php\nif ( $local ):\ndefine( 'DB_USER', 'dev' );\nendif;\n",
+            "<?php\n$local ? define( 'DB_USER', 'a' ) : null;\n",
+        ] {
+            let fields = fields_of(contents, true);
+            assert_eq!(fields[1].refusal, Some(FieldRefusal::Unsafe), "{contents}");
+        }
+        // A brace inside a string or a comment does not open a block.
+        let plain = fields_of(
+            "<?php\n$x = '{';\n// if ( a ) {\ndefine( 'DB_USER', 'app' );\n",
+            true,
+        );
+        assert_eq!(plain[1].refusal, None);
+        // After the block closes, the next define is editable again.
+        let after = fields_of(
+            "<?php\nif ( $a ) {\n  $b = 1;\n}\ndefine( 'DB_USER', 'app' );\n",
+            true,
+        );
+        assert_eq!(after[1].refusal, None);
     }
 
     #[test]
