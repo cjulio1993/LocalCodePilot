@@ -44,7 +44,45 @@ fn entry_state(status: &DatabaseStatus) -> (&'static str, Color32) {
     }
 }
 
+/// The group of a row in Ambiente (T039.03, CA-8): a refused or failed connection first,
+/// then the ones not verified yet (not a failure), then the rest.
+fn entry_group(state: &str) -> usize {
+    match state {
+        "Com problema" => 0,
+        "Não verificado" => 1,
+        _ => 2,
+    }
+}
+
+const GROUPS: [(&str, &str); 3] = [
+    (
+        "Conexões com problema",
+        "O banco respondeu, mas recusou o acesso ou o banco de dados não existe.",
+    ),
+    (
+        "Conexões não verificadas",
+        "Ainda sem teste de conexão: isso não quer dizer que há uma falha.",
+    ),
+    (
+        "Outros bancos",
+        "Rodando ou parados, sem problema encontrado.",
+    ),
+];
+
 impl LocalCodePilot {
+    /// How many database rows have a problem and how many are not verified, for the summary
+    /// at the top of Ambiente.
+    pub(super) fn database_counts(&self) -> (usize, usize, usize) {
+        let entries = self.database_entries();
+        let in_group = |group: usize| {
+            entries
+                .iter()
+                .filter(|entry| entry_group(entry_state(&entry.status).0) == group)
+                .count()
+        };
+        (in_group(0), in_group(1), entries.len())
+    }
+
     /// The databases of all projects, grouped by server.
     fn database_entries(&self) -> Vec<DatabaseEntry> {
         let mut entries: Vec<DatabaseEntry> = Vec::new();
@@ -106,7 +144,9 @@ impl LocalCodePilot {
             .color(theme::MUTED),
         );
         ui.add_space(12.0);
-        let entries = self.database_entries();
+        let mut entries = self.database_entries();
+        // Problems first, then not verified, then the rest; the order inside a group stays.
+        entries.sort_by_key(|entry| entry_group(entry_state(&entry.status).0));
         if entries.is_empty() {
             if self.discovery.is_some() {
                 components::loading_state(
@@ -124,8 +164,30 @@ impl LocalCodePilot {
         let folders = self.distinguishing_folders();
         let mut test = None;
         let mut open = None;
+        let mut shown_group = None;
         for entry in &entries {
             let (state, color) = entry_state(&entry.status);
+            let group = entry_group(state);
+            if shown_group != Some(group) {
+                shown_group = Some(group);
+                let count = entries
+                    .iter()
+                    .filter(|other| entry_group(entry_state(&other.status).0) == group)
+                    .count();
+                let (title, explanation) = GROUPS[group];
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("{title} ({count})"))
+                        .strong()
+                        .size(theme::TEXT_BODY),
+                );
+                ui.label(
+                    RichText::new(explanation)
+                        .color(theme::MUTED)
+                        .size(theme::TEXT_DETAIL),
+                );
+                ui.add_space(4.0);
+            }
             // The actions come from this row's own database, never from another database of
             // the same project. "Parar": a server the app created, running, and no project
             // that uses it running. "Testar conexão": a database on another computer.

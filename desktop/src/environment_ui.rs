@@ -13,6 +13,8 @@ impl LocalCodePilot {
                 .color(theme::MUTED)
                 .size(theme::TEXT_BODY),
         );
+        ui.add_space(10.0);
+        self.environment_summary(ui);
         ui.add_space(16.0);
         group_title(
             ui,
@@ -31,6 +33,52 @@ impl LocalCodePilot {
         self.loose_containers_section(ui);
         ui.add_space(20.0);
         self.languages_section(ui);
+    }
+
+    /// One line to triage at a glance (T039.03, CA-8): each engine's state, the databases
+    /// with a problem or not verified, and the other containers.
+    fn environment_summary(&self, ui: &mut egui::Ui) {
+        let mut parts = self
+            .container_state
+            .engines
+            .iter()
+            .map(|diagnosis| {
+                format!(
+                    "{}: {}",
+                    diagnosis.engine,
+                    container_ui::engine_summary(diagnosis).0
+                )
+            })
+            .collect::<Vec<_>>();
+        let (problems, unverified, total) = self.database_counts();
+        parts.push(match (total, problems, unverified) {
+            (0, _, _) => "Bancos: nenhum".to_owned(),
+            (_, 0, 0) => format!("Bancos: {total}, sem problema encontrado"),
+            _ => format!(
+                "Bancos: {problems} com problema, {unverified} {}",
+                if unverified == 1 {
+                    "não verificado"
+                } else {
+                    "não verificados"
+                }
+            ),
+        });
+        parts.push(format!(
+            "Outros containers: {}",
+            self.loose_containers().len()
+        ));
+        Frame::new()
+            .fill(theme::SURFACE)
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .corner_radius(8)
+            .inner_margin(Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(
+                    egui::Label::new(RichText::new(parts.join(" · ")).size(theme::TEXT_BODY))
+                        .wrap(),
+                );
+            });
     }
 
     /// Docker and Podman: one row each, with the state in words and the reason, and Iniciar
