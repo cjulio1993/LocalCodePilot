@@ -120,6 +120,8 @@ impl LocalCodePilot {
             return;
         }
         let mut stop = None;
+        // Same-name projects show their folder in the confirmation (T039.01, CA-4).
+        let folders = self.distinguishing_folders();
         let mut test = None;
         let mut open = None;
         for entry in &entries {
@@ -203,7 +205,10 @@ impl LocalCodePilot {
                                     entry
                                         .projects
                                         .iter()
-                                        .map(|(_, name)| name.clone())
+                                        .map(|(path, name)| match folders.get(path) {
+                                            Some(folder) => format!("{name} ({folder})"),
+                                            None => name.clone(),
+                                        })
                                         .collect(),
                                 ));
                             }

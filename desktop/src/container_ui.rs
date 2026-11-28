@@ -1937,7 +1937,11 @@ impl LocalCodePilot {
             .collect();
         CardStart::StartEngine {
             choices,
-            context: group.name.to_owned(),
+            // "loja (a\loja)" when another project has the same name (T039.01, CA-4).
+            context: match self.distinguishing_folders().remove(group.root) {
+                Some(folder) => format!("{} ({folder})", group.name),
+                None => group.name.to_owned(),
+            },
             resume,
         }
     }

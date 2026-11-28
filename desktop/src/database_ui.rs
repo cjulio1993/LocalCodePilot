@@ -360,6 +360,8 @@ enum JobResult {
     Failed(JobFailure),
     Stopped(Result<(), String>),
     Tested(Option<ConnectionTest>),
+    /// "Testar conexão de novo" of a database of this computer (T039.01).
+    Retested(DatabaseRequirement, Option<ConnectionTest>),
 }
 
 /// The card's sentence when a database job stops without a result.
@@ -1062,6 +1064,18 @@ impl LocalCodePilot {
                         self.database.remote_tests.insert(project, test);
                     }
                 }
+                // The new result replaces the old one: the card and the page follow it.
+                JobResult::Retested(requirement, test) => {
+                    if let Some(environment) = self.project_environments.get_mut(&project) {
+                        for status in environment
+                            .databases
+                            .iter_mut()
+                            .filter(|status| status.requirement == requirement)
+                        {
+                            status.connection = test.clone();
+                        }
+                    }
+                }
             }
         }
     }
@@ -1354,6 +1368,33 @@ impl LocalCodePilot {
         self.test_remote_requirement(project_path, requirement);
     }
 
+    /// The database whose login the server refused or whose database is missing: the one
+    /// "Testar conexão de novo" tests again (T039.01).
+    pub(super) fn rejected_database(&self, project_path: &Path) -> Option<DatabaseRequirement> {
+        self.project_environments
+            .get(project_path)?
+            .databases
+            .iter()
+            .find(|status| status.rejection().is_some())
+            .map(|status| status.requirement.clone())
+    }
+
+    /// "Testar conexão de novo": logs in again with the project's data. Reads only; nothing
+    /// changes in the database.
+    pub(super) fn retest_database(&mut self, project_path: &Path) {
+        let Some(requirement) = self.rejected_database(project_path) else {
+            return;
+        };
+        self.spawn_job(project_path, "", false, move |_| {
+            let test = test_connection(
+                &requirement,
+                &read_credentials(&requirement),
+                Duration::from_secs(5),
+            );
+            JobResult::Retested(requirement, test)
+        });
+    }
+
     /// Tests one remote database, for the row of the databases of Ambiente that shows it.
     pub(super) fn test_remote_requirement(
         &mut self,
@@ -1576,7 +1617,7 @@ impl LocalCodePilot {
                 env,
                 from,
                 to,
-            } => match change_env_port(&env, from, to) {
+            } => match change_env_port(&env, from, to, &env_copies_directory()) {
                 Ok(change) => {
                     self.database.failures.remove(&project);
                     self.database.port_changes.insert(project.clone(), change);
@@ -2063,20 +2104,92 @@ fn with_port(contents: &str, to: u16) -> String {
 }
 
 /// "Usar outra porta": a copy of `.env` next to it, then only `DB_PORT` changes.
-fn change_env_port(env: &Path, from: u16, to: u16) -> Result<PortChange, String> {
-    let original = fs::read(env)
-        .map_err(|error| format!("não foi possível ler {}: {error}", display_path(env)))?;
-    let moment = std::time::SystemTime::now()
+/// "28/11/2026 às 14:02 (há 2 min)": the date and time of a test in the computer's time zone,
+/// or in UTC (said) when the time zone cannot be read (T039.01, CA-2).
+fn test_moment(at: std::time::SystemTime) -> String {
+    let seconds = at
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let relative = relative_time(seconds);
+    let Ok(utc) = time::OffsetDateTime::from_unix_timestamp(seconds as i64) else {
+        return relative;
+    };
+    let (moment, zone) = match time::UtcOffset::local_offset_at(utc) {
+        Ok(offset) => (utc.to_offset(offset), ""),
+        Err(_) => (utc, " UTC"),
+    };
+    format!(
+        "{:02}/{:02}/{} às {:02}:{:02}{zone} ({relative})",
+        moment.day(),
+        u8::from(moment.month()),
+        moment.year(),
+        moment.hour(),
+        moment.minute(),
+    )
+}
+
+/// Where the copies of a project's configuration go: the app's own folder, never the
+/// project's, so a copy holding a password cannot end up in the project's repository
+/// (T039.01).
+fn env_copies_directory() -> PathBuf {
+    crate::config::config_directory()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("copias")
+}
+
+/// Writes a copy that only the person can read. On macOS and Linux the folder is created
+/// 0700 and the file 0600 from the start, so the copy is never readable by others, and a
+/// folder that cannot be made private stops the copy. On Windows the app folder is already
+/// in the person's profile.
+fn write_private_copy(directory: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let refused = |error: std::io::Error| format!("não foi possível guardar a cópia: {error}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)
+            .map_err(refused)?;
+        // A folder that already existed keeps its mode: make it private or give up.
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(refused)?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(directory).map_err(refused)?;
+    let path = directory.join(name);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(refused)?;
+    file.write_all(contents).map_err(refused)?;
+    Ok(path)
+}
+
+fn change_env_port(env: &Path, from: u16, to: u16, copies: &Path) -> Result<PortChange, String> {
+    let original = fs::read(env)
+        .map_err(|error| format!("não foi possível ler {}: {error}", display_path(env)))?;
+    // Nanoseconds: two copies in the same second never collide (the file is created new).
+    let moment = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
         .unwrap_or_default();
     let name = env
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| ".env".into());
-    let backup = env.with_file_name(format!("{name}.localcodepilot-{moment}"));
-    fs::write(&backup, &original)
-        .map_err(|error| format!("não foi possível guardar a cópia: {error}"))?;
+    // The project's folder name tells copies of different projects apart.
+    let project = env
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "projeto".into());
+    let backup = write_private_copy(copies, &format!("{project}-{name}-{moment}"), &original)?;
     let changed = with_port(&String::from_utf8_lossy(&original), to);
     fs::write(env, changed.as_bytes())
         .map_err(|error| format!("não foi possível alterar {}: {error}", display_path(env)))?;
@@ -2596,8 +2709,10 @@ impl DatabaseStatus {
     pub(super) fn rejection(&self) -> Option<String> {
         let test = self.connection.as_ref()?;
         match &test.outcome {
+            // What happened and what it means for the project (T039.01, CA-1).
             ConnectionOutcome::AccessDenied => Some(
-                "O banco respondeu, mas não aceitou os dados de acesso deste projeto. Confira a configuração de conexão.".into(),
+                "O banco recusou o acesso deste projeto, que não consegue usar o banco com estes dados. Confira os dados de conexão em Detalhes."
+                    .into(),
             ),
             ConnectionOutcome::DatabaseMissing => Some(format!(
                 "O banco respondeu, mas o banco de dados {} não foi encontrado. Confira a configuração de conexão.",
@@ -2656,7 +2771,7 @@ impl DatabaseStatus {
     pub(super) fn technical(&self) -> Vec<String> {
         let requirement = &self.requirement;
         let mut lines = vec![format!(
-            "Banco {}: configurado em {} como {}:{}",
+            "Conexão do banco {} · Origem da configuração: {} · Host: {} · Porta: {}",
             requirement.engine.label(),
             display_path(&requirement.source),
             requirement.host.as_deref().unwrap_or("?"),
@@ -2665,11 +2780,7 @@ impl DatabaseStatus {
                 .map_or_else(|| "?".to_owned(), |port| port.to_string()),
         )];
         if let Some(test) = &self.connection {
-            let when = test
-                .at
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| relative_time(elapsed.as_secs()))
-                .unwrap_or_default();
+            let when = test_moment(test.at);
             let result = match &test.outcome {
                 ConnectionOutcome::Connected => "conectado".to_owned(),
                 ConnectionOutcome::AccessDenied => "acesso recusado pelo servidor".to_owned(),
@@ -2682,11 +2793,13 @@ impl DatabaseStatus {
                 ConnectionOutcome::Failed(message) => format!("falhou: {message}"),
             };
             lines.push(format!(
-                "Conexão testada em {} com o usuário {} no banco {} ({when}): {result}",
+                "Último teste: {when} · Endereço: {} · Usuário: {} · Banco: {} · Resultado: {result}",
                 test.target,
                 test.user.as_deref().unwrap_or("?"),
                 test.database.as_deref().unwrap_or("?"),
             ));
+        } else {
+            lines.push("Último teste: não testado".to_owned());
         }
         if self.not_preparable_here().is_some()
             && let Err(reason) = database_packages::availability(requirement.engine)
@@ -3374,8 +3487,20 @@ mod tests {
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         let env = folder.join(".env");
+        let copies = folder.join("copias-do-app");
         fs::write(&env, "DB_PORT=3306\nDB_PASSWORD=x\n").unwrap();
-        let change = change_env_port(&env, 3306, 3307).unwrap();
+        let change = change_env_port(&env, 3306, 3307, &copies).unwrap();
+        // The copy holds the password: it stays out of the project's folder (T039.01).
+        assert!(change.backup.starts_with(&copies));
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 2);
+        // Only the person can read it, from the start (macOS and Linux).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&copies), 0o700);
+            assert_eq!(mode(&change.backup), 0o600);
+        }
         assert_eq!(
             fs::read_to_string(&env).unwrap(),
             "DB_PORT=3307\nDB_PASSWORD=x\n"
@@ -3390,7 +3515,7 @@ mod tests {
             "DB_PORT=3306\nDB_PASSWORD=x\n"
         );
         // An edit after the change is never overwritten; the copy stays.
-        let change = change_env_port(&env, 3306, 3307).unwrap();
+        let change = change_env_port(&env, 3306, 3307, &copies).unwrap();
         fs::write(&env, "DB_PORT=3307\nDB_PASSWORD=nova\n").unwrap();
         assert!(restore_env(&change).is_err());
         assert_eq!(
