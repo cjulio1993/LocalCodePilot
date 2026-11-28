@@ -1483,7 +1483,7 @@ impl LocalCodePilot {
                     }
                     if request.missing_runtime.is_empty() {
                         if ui
-                            .add(egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY))
+                            .add(egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY_FILL))
                             .clicked()
                         {
                             confirm = true;
@@ -1590,7 +1590,7 @@ impl LocalCodePilot {
                         cancel = true;
                     }
                     if ui
-                        .add(egui::Button::new(button).fill(theme::PRIMARY))
+                        .add(egui::Button::new(button).fill(theme::PRIMARY_FILL))
                         .clicked()
                     {
                         confirm = true;
@@ -1923,7 +1923,7 @@ fn sql_server_confirmation_window(
                 if ui
                     .add_enabled(
                         request.accepted,
-                        egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY),
+                        egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY_FILL),
                     )
                     .clicked()
                 {
@@ -2013,7 +2013,7 @@ fn postgres_confirmation_window(
                     cancel = true;
                 }
                 if ui
-                    .add(egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY))
+                    .add(egui::Button::new("Preparar e iniciar").fill(theme::PRIMARY_FILL))
                     .clicked()
                 {
                     confirm = true;

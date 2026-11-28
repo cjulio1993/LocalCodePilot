@@ -285,7 +285,7 @@ impl LocalCodePilot {
                             egui::Button::new(
                                 RichText::new("Ligar e iniciar").color(Color32::WHITE).strong(),
                             )
-                            .fill(theme::PRIMARY),
+                            .fill(theme::PRIMARY_FILL),
                         )
                         .clicked()
                     {

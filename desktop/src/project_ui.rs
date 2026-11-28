@@ -1370,7 +1370,17 @@ impl LocalCodePilot {
             .inner_margin(Margin::symmetric(14, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let columns = RowColumns::for_width(ui.available_width());
+                let actions = visible
+                    .iter()
+                    .map(|(_, summary)| row_actions_width(ui, summary))
+                    .fold(0.0, f32::max);
+                let any_address = visible.iter().any(|(_, summary)| summary.url.is_some());
+                let columns = RowColumns::for_width(
+                    ui.available_width(),
+                    actions,
+                    any_address,
+                    ui.spacing().item_spacing.x,
+                );
                 if columns.wide {
                     table_header(ui, columns);
                 }
@@ -1504,7 +1514,7 @@ fn primary_button(ui: &mut egui::Ui, action: &PrimaryAction, width: f32, of: Opt
     announced(
         ui.add(
             egui::Button::new(RichText::new(&label).color(Color32::WHITE).strong())
-                .fill(theme::PRIMARY)
+                .fill(theme::PRIMARY_FILL)
                 .min_size(egui::vec2(width, 32.0)),
         ),
         egui::Role::Button,
@@ -1545,23 +1555,53 @@ fn stop_button(ui: &mut egui::Ui, summary: &ProjectSummary, of: Option<&str>) ->
 }
 
 /// Column widths of the project list (T038.02). Below 760 px each row stacks instead.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct RowColumns {
     wide: bool,
     name: f32,
     state: f32,
     address: f32,
+    actions: f32,
 }
 
 impl RowColumns {
-    fn for_width(width: f32) -> Self {
+    /// The actions get the width their longest buttons need first, so "Instalar
+    /// dependências" and "Detalhes" are never cut (T039.02, CA-3). The address column is
+    /// narrow when no visible row has an address (CA-6). Name and state share the rest; when
+    /// they would be too narrow, each row stacks its parts instead.
+    fn for_width(width: f32, actions: f32, any_address: bool, spacing: f32) -> Self {
+        let address = if any_address {
+            (width * 0.15).clamp(110.0, 180.0)
+        } else {
+            24.0
+        };
+        let rest = width - actions - address - spacing * 3.0;
+        let name = (rest * 0.42).max(0.0);
         Self {
-            wide: width >= 760.0,
-            name: (width * 0.27).max(180.0),
-            state: width * 0.35,
-            address: (width * 0.15).max(120.0),
+            wide: width >= 760.0 && rest >= 320.0,
+            name,
+            state: (rest - name).max(0.0),
+            address,
+            actions,
         }
     }
+}
+
+/// The width the actions of a row need: its main action (or Parar) and "Detalhes".
+fn row_actions_width(ui: &egui::Ui, summary: &ProjectSummary) -> f32 {
+    let main = match summary.state {
+        ProjectState::Running => Some(stop_label(summary)),
+        ProjectState::Starting if summary.stoppable => Some(stop_label(summary)),
+        ProjectState::Starting => None,
+        ProjectState::Stopped | ProjectState::Problem => summary
+            .primary
+            .label()
+            .filter(|_| !matches!(summary.primary, PrimaryAction::Details)),
+    };
+    let spacing = ui.spacing().item_spacing.x;
+    // Bold text on the main button is a little wider than the measure: keep a margin.
+    let main = main.map_or(24.0, |label| super::button_width(ui, &label) + 12.0);
+    main + spacing + super::button_width(ui, "Detalhes") + 4.0
 }
 
 /// A fixed-width column of a row, top-aligned.
@@ -1588,8 +1628,13 @@ fn table_header(ui: &mut egui::Ui, columns: RowColumns) {
     ui.horizontal(|ui| {
         row_column(ui, columns.name, |ui| title(ui, "Projeto"));
         row_column(ui, columns.state, |ui| title(ui, "Estado"));
-        row_column(ui, columns.address, |ui| title(ui, "Endereço"));
-        row_column(ui, ui.available_width(), |ui| title(ui, "Ação"));
+        // A narrow address column has no room for its title, and nothing to show.
+        row_column(ui, columns.address, |ui| {
+            if columns.address > 60.0 {
+                title(ui, "Endereço");
+            }
+        });
+        row_column(ui, columns.actions, |ui| title(ui, "Ação"));
     });
 }
 
@@ -1647,8 +1692,9 @@ fn state_cell(ui: &mut egui::Ui, summary: &ProjectSummary) {
             http_badge(ui, http);
         }
     });
+    // A problem's cause is read first: normal text, not the grey of a hint (CA-6).
     if let Some(reason) = &summary.reason {
-        reason_label(ui, reason);
+        reason_label(ui, reason, summary.state == ProjectState::Problem);
     }
 }
 
@@ -1736,7 +1782,9 @@ fn project_table_row(
     let row = ui.scope_builder(
         egui::UiBuilder::new()
             .id_salt(("project-row", &project.path))
-            .sense(egui::Sense::click()),
+            // Clicks only: the keyboard reaches the project by its name link, so the row
+            // itself is not an extra unnamed stop (T039.02, CA-10).
+            .sense(egui::Sense::CLICK),
         |ui| {
             // Compact rows, like a table.
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -1751,7 +1799,9 @@ fn project_table_row(
                             action = Some(selected);
                         }
                     });
-                    actions_cell(ui, project, summary, &mut action);
+                    row_column(ui, columns.actions, |ui| {
+                        actions_cell(ui, project, summary, &mut action);
+                    });
                 });
             } else {
                 name_cell(ui, project, folder, found, &mut action);
@@ -1864,11 +1914,16 @@ fn card_badges(project: &Project) -> Vec<(String, Color32)> {
 
 /// The reason of a row in up to 2 lines, ending in "…" when longer. The whole sentence goes
 /// to the hover, to screen readers and to the project's page.
-fn reason_label(ui: &mut egui::Ui, reason: &str) {
+fn reason_label(ui: &mut egui::Ui, reason: &str, emphasized: bool) {
+    let (size, color) = if emphasized {
+        (theme::TEXT_BODY, theme::TEXT)
+    } else {
+        (theme::TEXT_DETAIL, theme::MUTED)
+    };
     let mut job = egui::text::LayoutJob::simple(
         reason.to_owned(),
-        egui::FontId::proportional(theme::TEXT_DETAIL),
-        theme::MUTED,
+        egui::FontId::proportional(size),
+        color,
         ui.available_width(),
     );
     job.wrap.max_rows = 2;
@@ -2337,6 +2392,20 @@ mod tests {
             assert!(!line.contains("SEGREDO-FIXTURE-91") && !line.contains("TOKEN-FIXTURE-27"));
         }
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn the_actions_column_always_fits_its_buttons() {
+        // 760 px wide (the smallest window), the longest action and an address.
+        let columns = RowColumns::for_width(700.0, 260.0, true, 8.0);
+        let used = columns.name + columns.state + columns.address + columns.actions + 3.0 * 8.0;
+        assert!(used <= 700.0 + 0.5, "{columns:?}");
+        assert_eq!(columns.actions, 260.0);
+        // Without addresses the column shrinks and gives the space back.
+        let none = RowColumns::for_width(700.0, 260.0, false, 8.0);
+        assert!(none.address < 30.0 && none.name > columns.name);
+        // Too narrow for name and state next to the actions: the rows stack.
+        assert!(!RowColumns::for_width(600.0, 260.0, true, 8.0).wide);
     }
 
     #[test]

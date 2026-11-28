@@ -508,7 +508,7 @@ impl LocalCodePilot {
                                     .color(Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(theme::PRIMARY),
+                            .fill(theme::PRIMARY_FILL),
                         )
                         .clicked()
                     {

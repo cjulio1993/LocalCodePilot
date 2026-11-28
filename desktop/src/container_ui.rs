@@ -2317,7 +2317,7 @@ impl LocalCodePilot {
             let startable = !start_choices.is_empty() && !self.container_state.engine_start.busy();
             let button = if main == ContainerAction::Start {
                 egui::Button::new(RichText::new(&label).color(Color32::WHITE).strong())
-                    .fill(theme::PRIMARY)
+                    .fill(theme::PRIMARY_FILL)
             } else {
                 egui::Button::new(&label)
             };
@@ -2842,7 +2842,7 @@ impl LocalCodePilot {
                             egui::Button::new(
                                 RichText::new(&confirm_label).color(Color32::WHITE).strong(),
                             )
-                            .fill(theme::PRIMARY),
+                            .fill(theme::PRIMARY_FILL),
                         )
                         .clicked()
                     {

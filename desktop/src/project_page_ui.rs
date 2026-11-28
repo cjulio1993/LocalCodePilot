@@ -308,7 +308,7 @@ impl LocalCodePilot {
                         let label = "Ver detalhes técnicos";
                         let button =
                             egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
-                                .fill(theme::PRIMARY)
+                                .fill(theme::PRIMARY_FILL)
                                 .min_size(egui::vec2(140.0, 32.0));
                         if announced(ui.add(button), egui::Role::Button, label).clicked() {
                             notice::reveal(ui.ctx(), technical_key(&project.path));
