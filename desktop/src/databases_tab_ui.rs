@@ -1,4 +1,4 @@
-//! Serviços > Bancos de dados (T037.06): the databases of every project, one row per server.
+//! The databases of Ambiente (T037.06, T038.03): the databases of every project, one row per server.
 //! A server several projects use shows once, with those projects. The actions follow the
 //! rules of the project card: "Parar" only for a server the app created, when no project that
 //! uses it is running; "Testar conexão" for a server on another computer; nothing that changes
@@ -7,7 +7,7 @@
 use super::*;
 use localcodepilot_runtime::databases::DatabaseEngine;
 
-/// "Parar" asked in Serviços > Bancos de dados, waiting for the confirmation: the project
+/// "Parar" asked in the databases of Ambiente, waiting for the confirmation: the project
 /// used to run the job, the server, its engine and the projects that use it.
 #[derive(Debug, Clone)]
 pub(super) struct DatabaseStopRequest {

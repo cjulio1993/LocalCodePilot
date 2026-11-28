@@ -86,7 +86,7 @@ fn no_container_engine(kind: ContainerKind) -> String {
     match kind {
         ContainerKind::SqlServer => NO_CONTAINER_ENGINE.into(),
         other => format!(
-            "O {} deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers.",
+            "O {} deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e ligue-o em Ambiente.",
             other.name()
         ),
     }
@@ -132,7 +132,7 @@ fn looked_after(engine: DatabaseEngine) -> bool {
 }
 
 const NO_CONTAINER_ENGINE: &str =
-    "Para preparar o SQL Server, prepare o Docker ou o Podman em Serviços > Containers.";
+    "Para preparar o SQL Server, prepare o Docker ou o Podman e ligue-o em Ambiente.";
 
 /// The first container engine that answers (Docker first).
 fn ready_container_engine(path: Option<&std::ffi::OsStr>) -> Option<&'static str> {
@@ -189,7 +189,7 @@ impl DatabaseFix {
             Self::OtherPort => "Usar outra porta",
             Self::FixPassword => "Corrigir conexão",
             Self::NewData => "Criar banco novo",
-            Self::OpenContainers => "Abrir Containers",
+            Self::OpenContainers => "Abrir Ambiente",
             Self::NewSqlServer => "Criar SQL Server novo",
             Self::NewContainer(kind) => match kind {
                 ContainerKind::SqlServer => "Criar SQL Server novo",
@@ -1219,8 +1219,9 @@ impl LocalCodePilot {
         match fix {
             DatabaseFix::OpenContainers => {
                 self.touch_project(project_path);
-                self.focused_project = Some(project_path.to_path_buf());
-                self.page = Page::Containers;
+                // The engine is turned on in Ambiente, where the app's containers are too
+                // (T038.04).
+                self.page = Page::Environment;
                 return;
             }
             DatabaseFix::NewSqlServer | DatabaseFix::NewContainer(_) => {
@@ -1296,7 +1297,7 @@ impl LocalCodePilot {
         self.stop_managed_server(project_path, server);
     }
 
-    /// Stops one server the app created, for Serviços > Bancos de dados (T037.06): the row
+    /// Stops one server the app created, for the databases of Ambiente (T037.06): the row
     /// names the server, so a project with more than one never stops the wrong one. The caller
     /// checks that no project using it is running.
     pub(super) fn stop_managed_server(&mut self, project_path: &Path, server: ManagedInfo) {
@@ -1353,7 +1354,7 @@ impl LocalCodePilot {
         self.test_remote_requirement(project_path, requirement);
     }
 
-    /// Tests one remote database, for the row of Serviços > Bancos de dados that shows it.
+    /// Tests one remote database, for the row of the databases of Ambiente that shows it.
     pub(super) fn test_remote_requirement(
         &mut self,
         project_path: &Path,
@@ -2999,7 +3000,7 @@ mod tests {
         }
         assert_eq!(
             no_container_engine(ContainerKind::MariaDb),
-            "O MariaDB deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers."
+            "O MariaDB deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e ligue-o em Ambiente."
         );
         assert_eq!(
             DatabaseFix::NewContainer(ContainerKind::MySql).label(),
@@ -3053,7 +3054,7 @@ mod tests {
         assert!(engine_preparable_here(DatabaseEngine::PostgreSql));
         assert_eq!(
             no_container_engine(ContainerKind::PostgreSql),
-            "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers."
+            "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e ligue-o em Ambiente."
         );
         for (step, text) in [
             (
@@ -3213,7 +3214,7 @@ mod tests {
             vec!["o SQL Server não ficou pronto: tempo esgotado"]
         );
         assert_eq!(failure.recovery, None);
-        // The stop was not confirmed: "Abrir Containers", never "Tentar de novo".
+        // The stop was not confirmed: "Abrir Ambiente", never "Tentar de novo".
         let failure = JobFailure::sql(
             ContainerKind::SqlServer,
             format!(

@@ -1483,7 +1483,7 @@ fn address_label(ui: &mut egui::Ui, summary: &ProjectSummary, url: &str) {
 /// leads to Containers.
 fn stop_label(summary: &ProjectSummary) -> String {
     if summary.uses_containers && !summary.stops_containers_here {
-        format!("{STOP}  Parar em Containers")
+        format!("{STOP}  Escolher o que parar")
     } else {
         format!("{STOP}  Parar")
     }
@@ -2429,7 +2429,10 @@ mod tests {
         assert!(running.uses_containers);
         // Without a confirmed reach, "Parar" leads to Containers and says so.
         assert!(!running.stops_containers_here);
-        assert_eq!(stop_label(&running), format!("{STOP}  Parar em Containers"));
+        assert_eq!(
+            stop_label(&running),
+            format!("{STOP}  Escolher o que parar")
+        );
         containers.container_stop_here = true;
         let direct = summarize_project(&containers);
         assert!(direct.stops_containers_here);

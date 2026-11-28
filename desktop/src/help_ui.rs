@@ -100,7 +100,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Iniciando",
-                "o aplicativo está iniciando o projeto ou instalando dependências. Para projetos com containers, acompanhe o progresso em Containers.",
+                "o aplicativo está iniciando o projeto ou instalando dependências. Para projetos com containers, acompanhe o progresso em O que roda, na página do projeto.",
             ),
             Block::Item(
                 "Com problema",
@@ -143,7 +143,7 @@ const SECTIONS: &[HelpSection] = &[
                 "motor-parado",
                 &Block::Item(
                     "Docker ou Podman parado",
-                    "clique em Iniciar no projeto ou abra Containers. Confira qual motor será ligado e confirme. O LocalCodePilot aguarda o motor responder antes de iniciar o projeto. Se não conseguir, consulte o motivo e Detalhes técnicos.",
+                    "clique em Iniciar no projeto ou no motor, em Ambiente. Confira qual motor será ligado e confirme. O LocalCodePilot aguarda o motor responder antes de iniciar o projeto. Se não conseguir, consulte o motivo e Detalhes técnicos.",
                 ),
             ),
             Block::Item(
@@ -176,7 +176,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Use Abrir site quando o projeto mostrar um endereço. Se a página não abrir, confira o estado, o endereço e a porta, depois use Ver logs.",
             ),
             Block::Text(
-                "Ver logs leva à aba Processos ou Containers em Serviços, conforme a forma de execução do projeto.",
+                "Abra o projeto para ver O que roda, Banco de dados e Logs. Em Ambiente, veja os motores e os recursos deste computador.",
             ),
             Block::Text(
                 "Os logs salvos ficam neste computador por até 30 dias. Senhas e tokens em formatos conhecidos, como TOKEN=valor, aparecem como •••• nos logs salvos e em Copiar logs. Limpar histórico, em Configurações, remove todos os logs salvos.",
@@ -201,7 +201,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Dois projetos com o mesmo nome de ambiente Compose, por exemplo duas pastas docker/ com compose.yaml, ficam bloqueados para iniciar e parar até receberem nomes diferentes. Isso evita que um projeto altere os containers e os dados do outro. No aviso do ambiente, Como resolver mostra os passos e a configuração sugerida; se os containers do outro projeto estiverem rodando, Parar containers do outro projeto para só eles, sem remover volumes.",
             ),
         ],
-        link: Some((Page::Containers, "Abrir Serviços > Containers")),
+        link: Some((Page::Environment, "Abrir Ambiente")),
     },
     HelpSection {
         id: "bancos",
@@ -216,7 +216,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Onde ver os bancos",
-                "encontre o banco no projeto ou em Serviços > Bancos de dados. Um servidor compartilhado aparece uma vez, com os projetos que o usam. Testar conexão não inicia nem altera um banco remoto.",
+                "encontre o banco na página do projeto ou em Ambiente. Um servidor compartilhado aparece uma vez, com os projetos que o usam. Testar conexão não inicia nem altera um banco remoto.",
             ),
             Block::Item(
                 "Onde ficam os dados",
@@ -236,11 +236,11 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Compose",
-                "um banco que é serviço do Compose, como db, só existe na rede dos containers. Ele é iniciado em Containers, com as mesmas proteções contra conflito de nomes, e o cartão mostra Container ativo; conexão não verificada. O LocalCodePilot não prepara outro servidor para ele.",
+                "um banco que é serviço do Compose, como db, só existe na rede dos containers. Ele é iniciado em O que roda, na página do projeto, com as mesmas proteções contra conflito de nomes, e o cartão mostra Container ativo; conexão não verificada. O LocalCodePilot não prepara outro servidor para ele.",
             ),
             Block::Item(
                 "SQL Server",
-                "o login do projeto é testado. No Windows, com o Docker ou o Podman prontos, Iniciar pode criar um container do SQL Server 2022 Developer, gratuito para desenvolvimento e teste: antes, você precisa marcar que leu e aceita os termos de licença da Microsoft, e os dados ficam num volume do motor de containers. Sem Docker nem Podman prontos, o cartão leva a Serviços > Containers. O LocalCodePilot não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.",
+                "o login do projeto é testado. No Windows, com o Docker ou o Podman prontos, Iniciar pode criar um container do SQL Server 2022 Developer, gratuito para desenvolvimento e teste: antes, você precisa marcar que leu e aceita os termos de licença da Microsoft, e os dados ficam num volume do motor de containers. Sem Docker nem Podman prontos, o projeto leva a Ambiente, onde o motor é ligado. O LocalCodePilot não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.",
             ),
             Block::Item(
                 "macOS e Linux",
@@ -668,9 +668,6 @@ impl LocalCodePilot {
         }
         ui.add_space(16.0);
         if let Some(page) = open_page {
-            if matches!(page, Page::Processes | Page::Containers) {
-                self.focused_project = None;
-            }
             self.page = page;
         }
     }
@@ -713,6 +710,10 @@ mod tests {
         for retired in [
             "Abrir aplicação",
             "Iniciar ambiente",
+            // The navigation centered on the project (T038): no Serviços, no Visão geral.
+            "Serviços >",
+            "Visão geral",
+            "aba Processos",
             "Ver diagnóstico e logs",
             "Aplicação respondendo",
             "Mais ações",

@@ -337,17 +337,6 @@ struct PageRequests {
     check_again: bool,
 }
 
-pub(super) fn engine_short_status(diagnosis: &EngineDiagnosis) -> (&'static str, Color32) {
-    match diagnosis.state {
-        EngineState::Ready if diagnosis.compose_available => ("pronto", theme::SUCCESS),
-        EngineState::Ready => ("Compose não confirmado", theme::WARNING),
-        EngineState::Missing => ("não encontrado", theme::MUTED),
-        EngineState::Unavailable => ("sem acesso", theme::WARNING),
-        EngineState::TimedOut => ("demorou para responder", theme::WARNING),
-        EngineState::QueryFailed => ("respondeu com erro", theme::WARNING),
-    }
-}
-
 /// An engine in the vocabulary of the projects (T038.03): Rodando, Parado (installed and
 /// can be turned on), Não encontrado, or Com problema, with the sentence that explains it.
 pub(super) fn engine_summary(
@@ -445,7 +434,7 @@ fn service_port(container: &RuntimeContainer) -> Option<u16> {
         .or_else(|| container.other_local_ports().first().copied())
 }
 
-/// One row per service, as in Serviços > Processos (T037.03): Serviço · Estado · Porta in
+/// One row per service, as the processes of the project page (T037.03): Serviço · Estado · Porta in
 /// fixed columns, and "Abrir site" on the right when there is an address. Actions on single
 /// containers stay in "Outras ações", behind the Compose checks.
 fn service_row(ui: &mut egui::Ui, row: &ServiceRow) {
@@ -688,9 +677,8 @@ pub(super) enum CardStart {
 /// Pages that show container state and how often they refresh it.
 fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)> {
     match page {
-        Page::Containers => Some((Duration::from_secs(15), ContainerRefresh::Full)),
         // The project page opens with a full check (T038.01); then a light one.
-        Page::Projects | Page::Project | Page::Processes | Page::Databases => {
+        Page::Projects | Page::Project => {
             Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
         }
         // Ambiente shows whether each engine is available (T037.05).
@@ -1234,38 +1222,6 @@ impl LocalCodePilot {
         self.container_state.pending.is_some()
     }
     /// Containers live in Containers; Processes only says how many are up and leads there.
-    pub(super) fn container_processes_summary(&mut self, ui: &mut egui::Ui) {
-        let running = self
-            .container_state
-            .runtime_containers
-            .iter()
-            .filter(|container| {
-                ServiceState::of(container).is_active()
-                    && self
-                        .focused_project
-                        .as_ref()
-                        .is_none_or(|path| container.belongs_to(path))
-            })
-            .count();
-        if running == 0 {
-            return;
-        }
-        let text = match (running, self.focused_project.is_some()) {
-            (1, true) => "1 container rodando neste projeto".to_owned(),
-            (count, true) => format!("{count} containers rodando neste projeto"),
-            (1, false) => "1 container rodando".to_owned(),
-            (count, false) => format!("{count} containers rodando"),
-        };
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(text).color(theme::MUTED));
-            if ui.link("Ver em Containers").clicked() {
-                self.page = Page::Containers;
-            }
-        });
-        ui.add_space(8.0);
-    }
-
-    /// Opens Containers on the environment created from `folder`, with "Como resolver" open.
     fn show_compose_notice(&mut self, ctx: &egui::Context, folder: &Path) {
         let directory = self
             .container_state
@@ -1287,10 +1243,8 @@ impl LocalCodePilot {
         notice::open(ctx, container_group_id(&root));
         // A search typed earlier could hide the notice.
         self.container_state.filter.clear();
-        if self.focused_project.is_none() {
-            self.focused_project = Some(root);
-        }
-        self.page = Page::Containers;
+        // The notice is on the project's page, in O que roda (T038.04).
+        self.show_project_page(root);
     }
 
     pub(super) fn refresh_containers(&mut self, ctx: egui::Context) {
@@ -1491,7 +1445,7 @@ impl LocalCodePilot {
                     finished = Some(match &outcome {
                         ContainerExecutionOutcome::Succeeded => session.done_message.clone(),
                         _ => Some(format!(
-                            "{}: não foi concluído. Veja o resultado em Containers.",
+                            "{}: não foi concluído. Veja o resultado em O que roda, na página do projeto.",
                             session.command.label
                         )),
                     });
@@ -1518,7 +1472,8 @@ impl LocalCodePilot {
         }
         // Outside Containers the result panel is not visible, so failures are told here too.
         if let Some(message) = finished.flatten().filter(|message| {
-            !message.ends_with("Veja o resultado em Containers.") || self.page != Page::Containers
+            !message.ends_with("Veja o resultado em O que roda, na página do projeto.")
+                || self.page != Page::Project
         }) {
             self.notify(message);
         }
@@ -1561,78 +1516,6 @@ impl LocalCodePilot {
         });
     }
 
-    pub(super) fn containers_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Containers");
-        if let Some(project_path) = self.focused_project.clone() {
-            let name = self
-                .projects
-                .iter()
-                .find(|project| project.path == project_path)
-                .map(|project| project.name.clone())
-                .unwrap_or_else(|| {
-                    project_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned()
-                });
-            let folder = self.distinguishing_folders().remove(&project_path);
-            ui.horizontal(|ui| {
-                ui.label(format!("Projeto: {name}"));
-                if ui.button("Ver todos os projetos").clicked() {
-                    self.focused_project = None;
-                }
-            });
-            project_ui::folder_line(ui, &project_path, folder.as_deref());
-        }
-        ui.label(
-            RichText::new(
-                "Os ambientes Docker e Podman dos seus projetos e o estado de cada serviço",
-            )
-            .color(theme::MUTED),
-        );
-        ui.add_space(12.0);
-        let checking = self.container_state.pending.is_some();
-        let executing = self
-            .container_state
-            .execution
-            .as_ref()
-            .is_some_and(|session| session.execution.is_some());
-        // The progress sits beside the button: a line of its own would push the page down
-        // every 15 seconds and move the buttons under the pointer.
-        let check = ui
-            .horizontal(|ui| {
-                let clicked = ui
-                    .add_enabled(
-                        !checking && !executing && self.discovery.is_none(),
-                        egui::Button::new("Verificar motores e arquivos"),
-                    )
-                    .clicked();
-                if checking {
-                    ui.spinner();
-                    ui.label("Verificando em segundo plano...");
-                }
-                clicked
-            })
-            .inner;
-        if check {
-            self.refresh_containers(ui.ctx().clone());
-        }
-        if checking {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        }
-        if let Some(error) = &self.container_state.error {
-            ui.colored_label(theme::MUTED, error);
-        }
-
-        self.container_execution_panel(ui);
-        ui.add_space(8.0);
-        self.engine_overview(ui, checking || executing);
-        ui.add_space(12.0);
-        self.container_groups(ui, checking, executing);
-        self.volume_confirmation_dialog(ui.ctx());
-    }
-
     fn engine_readiness(&self, engine: ContainerEngine) -> (bool, bool) {
         self.container_state
             .engines
@@ -1657,7 +1540,9 @@ impl LocalCodePilot {
         let mut shown = Vec::new();
         ui.horizontal_wrapped(|ui| {
             for diagnosis in &self.container_state.engines {
-                let (status, color) = engine_short_status(diagnosis);
+                // The same words as Ambiente (T038.04): Rodando, Parado, Não encontrado,
+                // Com problema; the notice below says why.
+                let (status, color, _) = engine_summary(diagnosis);
                 ui.label(RichText::new(format!("{}:", diagnosis.engine)).strong());
                 ui.label(RichText::new(status).color(color));
                 if engine_message(diagnosis).is_some()
@@ -2087,13 +1972,9 @@ impl LocalCodePilot {
         notice::reveal(ctx, container_group_id(root));
         self.container_state.filter.clear();
         self.focused_project = Some(root.to_path_buf());
-        // The project page already shows the containers (T038.01).
-        if self.page == Page::Project {
-            self.notify("Escolha em O que roda o que parar.");
-        } else {
-            self.page = Page::Containers;
-            self.notify("Escolha em Containers o que parar.");
-        }
+        // The choice is on the project's page, in O que roda (T038.04).
+        self.show_project_page(root.to_path_buf());
+        self.notify("Escolha em O que roda o que parar.");
     }
 
     /// On the project page, opens and scrolls to the project's containers, where each
@@ -2356,13 +2237,8 @@ impl LocalCodePilot {
         };
         let (state, color) = environment_state_text(environment.state(), environment.paused());
         ui.label(RichText::new(state).color(color));
-        let safety = self.environment_safety(environment);
-        if safety
-            .as_ref()
-            .is_some_and(|safety| *safety != ComposeSafety::Safe)
-        {
-            ui.label(RichText::new("Bloqueado").color(theme::WARNING));
-        }
+        // A Compose protection is told by the notice under the header, with what to do
+        // (T038.04): the state stays one of the four words.
         let project = environment.project;
         let active = environment
             .services
@@ -2919,7 +2795,7 @@ impl LocalCodePilot {
                                     .collect::<Vec<_>>();
                                 ui.label(
                                     RichText::new(format!(
-                                        "Continuarão rodando: {}. Para parar, use Outras ações em Containers.",
+                                        "Continuarão rodando: {}. Para parar, use Outras ações em O que roda.",
                                         join_names(&kept)
                                     ))
                                     .color(theme::WARNING),
@@ -3014,15 +2890,15 @@ mod tests {
 
     #[test]
     fn project_cards_keep_container_state_current_with_a_light_refresh() {
-        for page in [Page::Projects, Page::Processes] {
+        for page in [Page::Projects, Page::Project] {
             assert_eq!(
                 container_refresh_schedule(page),
                 Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
             );
         }
         assert_eq!(
-            container_refresh_schedule(Page::Containers),
-            Some((Duration::from_secs(15), ContainerRefresh::Full))
+            container_refresh_schedule(Page::Environment),
+            Some((Duration::from_secs(30), ContainerRefresh::Full))
         );
         for page in [Page::Help, Page::Settings] {
             assert_eq!(container_refresh_schedule(page), None);

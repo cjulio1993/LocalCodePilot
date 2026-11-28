@@ -24,6 +24,14 @@ impl LocalCodePilot {
         }
     }
 
+    /// Shows a project's page where no context is at hand (a notice, a guided fix): the page
+    /// refreshes its containers on its own schedule (T038.04).
+    pub(in crate::app) fn show_project_page(&mut self, path: PathBuf) {
+        self.focused_project = Some(path.clone());
+        self.open_project = Some(path);
+        self.page = Page::Project;
+    }
+
     /// The process whose logs "Ver logs" opens on the project page: one that runs, else the
     /// last one with saved logs.
     pub(in crate::app) fn project_log_target(&self, path: &Path) -> Option<String> {
@@ -109,7 +117,7 @@ impl LocalCodePilot {
             .any(|process| process.project_path == project.path);
         page_section(ui, "O que roda");
         if has_processes {
-            self.processes_page(ui, true);
+            self.processes_page(ui);
         }
         if uses_containers {
             let (checking, executing) = self.container_activity();

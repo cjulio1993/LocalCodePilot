@@ -180,10 +180,6 @@ impl WorkspaceState {
         }
     }
 
-    pub fn project(&self, path: &Path) -> Option<&ProjectHistory> {
-        self.projects.iter().find(|project| project.path == path)
-    }
-
     pub fn service(&self, id: &str) -> Option<&ServiceHistory> {
         self.projects
             .iter()
@@ -675,7 +671,12 @@ mod tests {
 
         assert_eq!(restored, state);
         assert_eq!(
-            restored.project(Path::new("opened")).unwrap().last_activity,
+            restored
+                .projects
+                .iter()
+                .find(|project| project.path == Path::new("opened"))
+                .unwrap()
+                .last_activity,
             41
         );
         assert!(

@@ -54,7 +54,7 @@ Com o Docker ou o Podman prontos, **Iniciar** num projeto com SQL Server neste c
 - a senha inicial do administrador é trocada logo depois do preparo, e a definitiva fica no Gerenciador de Credenciais do Windows;
 - o banco e o login do projeto são criados com acesso só a esse banco.
 
-Sem Docker nem Podman prontos, o projeto fica **Com problema**, e a ação **Abrir Containers** leva à página onde o motor é preparado. O app não instala o Docker nem o Podman, não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.
+Sem Docker nem Podman prontos, o projeto fica **Com problema**, e a ação **Abrir Ambiente** leva à página onde o motor é ligado. O app não instala o Docker nem o Podman, não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.
 
 Ao fechar o app, o container é parado, e a parada é conferida. Se nenhuma senha de administração guardada entrar no SQL Server, **Detalhes técnicos** oferece **Criar SQL Server novo**: ele cria outro container e outro volume e mantém o volume anterior com os dados.
 
