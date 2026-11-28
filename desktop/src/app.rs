@@ -85,6 +85,8 @@ use localcodepilot_runtime::databases::{
 /// to hold the check, since a closed port is answered at once and only a server that
 /// answers is logged into.
 const DATABASE_LOGIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Below this window width, in points (so zoom counts), the sidebar shows icons only.
+const SIDEBAR_FOLD_WIDTH: f32 = 900.0;
 use localcodepilot_runtime::{
     ManifestRuntimeDetector, detect_clojure_java_requirement, detect_clojure_requirement,
     detect_dart_requirement, detect_go_requirement, detect_haskell_requirement,
@@ -503,6 +505,8 @@ pub struct LocalCodePilot {
     expanded_processes: HashSet<String>,
     /// The project whose page is open (T038.01).
     open_project: Option<PathBuf>,
+    /// The window is too narrow for the full sidebar (zoom included): it shows icons only.
+    sidebar_narrow: bool,
     /// "Parar" of the databases of Ambiente, waiting for the confirmation (T037.06).
     database_stop_request: Option<databases_tab_ui::DatabaseStopRequest>,
     projects: Vec<Project>,
@@ -652,6 +656,7 @@ impl LocalCodePilot {
             projects: cached_projects,
             expanded_processes: HashSet::new(),
             open_project: None,
+            sidebar_narrow: false,
             database_stop_request: None,
             managed: ManagedProcesses::default(),
             migrations: migration_ui::MigrationState::default(),
@@ -1070,7 +1075,8 @@ impl LocalCodePilot {
     }
 
     fn sidebar(&mut self, root_ui: &mut egui::Ui) {
-        let collapsed = self.workspace_state.sidebar_collapsed;
+        self.sidebar_narrow = root_ui.available_width() < SIDEBAR_FOLD_WIDTH;
+        let collapsed = self.workspace_state.sidebar_collapsed || self.sidebar_narrow;
         egui::Panel::left("sidebar")
             .resizable(false)
             .exact_size(if collapsed { 68.0 } else { 248.0 })
@@ -1091,7 +1097,12 @@ impl LocalCodePilot {
                         );
                         ui.label(RichText::new("LocalCodePilot").strong().size(14.0));
                     }
+                    // In a narrow window the sidebar stays folded: no toggle to offer.
+                    let narrow = self.sidebar_narrow;
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if narrow {
+                            return;
+                        }
                         let (icon, name) = if collapsed {
                             (CARET_DOUBLE_RIGHT, "Expandir menu")
                         } else {
@@ -1152,7 +1163,7 @@ impl LocalCodePilot {
         label: &str,
         projects: Option<usize>,
     ) {
-        let collapsed = self.workspace_state.sidebar_collapsed;
+        let collapsed = self.workspace_state.sidebar_collapsed || self.sidebar_narrow;
         // A project's page belongs to Projetos.
         let selected = if page == Page::Projects {
             matches!(self.page, Page::Projects | Page::Project)
@@ -1392,7 +1403,7 @@ impl LocalCodePilot {
             add_folder = announced(
                 ui.add_enabled(
                     can_change_roots,
-                    egui::Button::new(&add_label).fill(theme::PRIMARY),
+                    egui::Button::new(&add_label).fill(theme::PRIMARY_FILL),
                 ),
                 egui::Role::Button,
                 &add_label,

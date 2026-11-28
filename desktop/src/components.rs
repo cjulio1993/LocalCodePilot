@@ -114,7 +114,7 @@ fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     announced(
         ui.add(
             egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
-                .fill(theme::PRIMARY)
+                .fill(theme::PRIMARY_FILL)
                 .min_size(egui::vec2(180.0, 34.0)),
         ),
         egui::Role::Button,
