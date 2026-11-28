@@ -104,7 +104,7 @@ const SECTIONS: &[HelpSection] = &[
             ),
             Block::Item(
                 "Com problema",
-                "uma instalação ou execução falhou, ou há um impedimento detectado. O cartão mostra o motivo e a próxima ação. Em Detalhes técnicos, veja a regra e o que foi encontrado; use Ver logs quando precisar investigar a saída. Depois de resolver a causa, tente iniciar novamente. Para pedir suporte, use Exportar diagnóstico em Detalhes técnicos e confira o arquivo antes de compartilhá-lo.",
+                "uma instalação ou execução falhou, ou há um impedimento detectado. A linha do projeto mostra o motivo e a próxima ação. Em Detalhes técnicos, veja a regra e o que foi encontrado; use Ver logs quando precisar investigar a saída. Depois de resolver a causa, tente iniciar novamente. Para pedir suporte, use Exportar diagnóstico em Detalhes técnicos e confira o arquivo antes de compartilhá-lo.",
             ),
             Block::Text("Ao lado do endereço, um selo mostra o resultado da verificação do site:"),
             Block::Item("Site respondendo", "o endereço respondeu à verificação."),
@@ -185,7 +185,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Antes de colar logs ou caminhos em um relato público, confira se eles contêm senhas, tokens ou dados pessoais. A saída ao vivo pode mostrar esses dados.",
             ),
         ],
-        link: Some((Page::Overview, "Abrir Visão geral")),
+        link: Some((Page::Projects, "Abrir Projetos")),
     },
     HelpSection {
         id: "containers",
@@ -518,8 +518,11 @@ impl LocalCodePilot {
                     .color(theme::WARNING)
                     .size(13.0),
                 );
-                if ui.button("Ver na Visão geral").clicked() {
-                    open_page = Some(Page::Overview);
+                if ui.button("Ver em Projetos").clicked() {
+                    // The list opens on the projects with a problem (T038.02).
+                    self.workspace_state.project_filter = "problem".to_owned();
+                    self.workspace_dirty = true;
+                    open_page = Some(Page::Projects);
                 }
             });
             ui.add_space(10.0);

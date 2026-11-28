@@ -164,12 +164,9 @@ impl LocalCodePilot {
         let card = ProjectCard {
             project: &project,
             summary: &summary,
-            folder: folder.as_deref(),
             languages: self.language_lines(&project),
             custom_commands: self.custom_commands_of(&project.path),
             environment: self.project_environments.get(&project.path),
-            favorite: self.is_favorite(&project.path),
-            expanded: true,
             hidden_from_recent: self
                 .workspace_state
                 .hidden_recent_projects
@@ -183,7 +180,7 @@ impl LocalCodePilot {
             "Comandos, caminhos e diagnóstico",
             false,
         );
-        if open && let Some(selected) = card.details(ui, Shortened::default()) {
+        if open && let Some(selected) = card.details(ui) {
             action = Some(selected);
         }
         ui.add_space(16.0);
@@ -273,7 +270,7 @@ impl LocalCodePilot {
                 ui.horizontal_wrapped(|ui| {
                     // "Detalhes" as the main action means: look below, where they are.
                     if !matches!(summary.primary, PrimaryAction::Details)
-                        && primary_button(ui, &summary.primary, 140.0)
+                        && primary_button(ui, &summary.primary, 140.0, None)
                     {
                         *action = Some(primary_to_card_action(project, summary));
                     }
@@ -298,7 +295,7 @@ impl LocalCodePilot {
                                 *action = Some(ProjectCardAction::OpenUrl(url.clone()));
                             }
                         }
-                        if stop_button(ui, summary) {
+                        if stop_button(ui, summary, None) {
                             *action = Some(stop_action(project, summary));
                         }
                     }
