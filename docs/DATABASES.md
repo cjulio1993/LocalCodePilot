@@ -30,7 +30,7 @@ No Windows, o PostgreSQL e o MySQL precisam do Microsoft Visual C++ Redistributa
 
 ### PostgreSQL no macOS e no Linux
 
-A EDB não publica checksum do PostgreSQL para macOS nem binários atuais para Linux. Por isso, no macOS e no Linux, **Iniciar** prepara o PostgreSQL local em container, com o Docker ou o Podman, usando a imagem oficial do PostgreSQL (`docker.io/library/postgres:19.0-trixie`) fixada por digest. Depois do download, o app confere que a cópia do motor tem esse digest; se não tiver, nada é criado. A confirmação **Preparar PostgreSQL para este projeto?** mostra o download estimado (cerca de 160 MB), o espaço em disco (cerca de 550 MB), o banco e o usuário. A porta é publicada só em `127.0.0.1`, e os dados ficam num volume do motor (`localcodepilot-pg-<identificador>`), que permanece depois de fechar o app. A senha inicial do administrador passa por um arquivo temporário só do seu usuário e é trocada logo após o preparo pela senha guardada no cofre. O usuário do projeto é dono só do próprio banco, sem poderes no servidor. O andamento aparece no cartão: baixando a imagem, conferindo a imagem, criando o container, preparando o banco e o usuário, testando a conexão do projeto. Sem Docker nem Podman instalados, o cartão diz "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e abra Containers." e oferece **Abrir Containers**. Com o motor instalado e parado, o app pede para ligá-lo e segue sozinho depois. Ao fechar o app, o container é parado, e a parada é confirmada pelo motor.
+A EDB não publica checksum do PostgreSQL para macOS nem binários atuais para Linux. Por isso, no macOS e no Linux, **Iniciar** prepara o PostgreSQL local em container, com o Docker ou o Podman, usando a imagem oficial do PostgreSQL (`docker.io/library/postgres:19.0-trixie`) fixada por digest. Depois do download, o app confere que a cópia do motor tem esse digest; se não tiver, nada é criado. A confirmação **Preparar PostgreSQL para este projeto?** mostra o download estimado (cerca de 160 MB), o espaço em disco (cerca de 550 MB), o banco e o usuário. A porta é publicada só em `127.0.0.1`, e os dados ficam num volume do motor (`localcodepilot-pg-<identificador>`), que permanece depois de fechar o app. A senha inicial do administrador passa por um arquivo temporário só do seu usuário e é trocada logo após o preparo pela senha guardada no cofre. O usuário do projeto é dono só do próprio banco, sem poderes no servidor. O andamento aparece no cartão: baixando a imagem, conferindo a imagem, criando o container, preparando o banco e o usuário, testando a conexão do projeto. Sem Docker nem Podman instalados, o cartão diz "O PostgreSQL deste projeto não está rodando. Para prepará-lo, instale o Docker ou o Podman e ligue-o em Ambiente." e oferece **Abrir Ambiente**. Com o motor instalado e parado, o app pede para ligá-lo e segue sozinho depois. Ao fechar o app, o container é parado, e a parada é confirmada pelo motor.
 
 ### Onde o preparo existe
 
@@ -54,7 +54,7 @@ Com o Docker ou o Podman prontos, **Iniciar** num projeto com SQL Server neste c
 - a senha inicial do administrador é trocada logo depois do preparo, e a definitiva fica no Gerenciador de Credenciais do Windows;
 - o banco e o login do projeto são criados com acesso só a esse banco.
 
-Sem Docker nem Podman prontos, o projeto fica **Com problema**, e a ação **Abrir Containers** leva à página onde o motor é preparado. O app não instala o Docker nem o Podman, não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.
+Sem Docker nem Podman prontos, o projeto fica **Com problema**, e a ação **Abrir Ambiente** leva à página onde o motor é ligado. O app não instala o Docker nem o Podman, não instala o SQL Server direto no Windows, e a imagem funciona só em computadores x64.
 
 Ao fechar o app, o container é parado, e a parada é conferida. Se nenhuma senha de administração guardada entrar no SQL Server, **Detalhes técnicos** oferece **Criar SQL Server novo**: ele cria outro container e outro volume e mantém o volume anterior com os dados.
 
@@ -72,7 +72,7 @@ Quando o banco impede o início, o cartão oferece a correção que for segura, 
 
 ## Compose
 
-Quando o host (por exemplo, `db` no `DB_HOST` do `wp-config.php`) é o nome de um serviço declarado num arquivo Compose do projeto, inclusive numa subpasta como `docker/`, o banco é tratado como **serviço do Compose**. Ele só existe na rede dos containers, é iniciado em **Containers** com as proteções de conflito de nomes de sempre, e o cartão mostra "Container ativo; conexão não verificada.". O LocalCodePilot não prepara outro servidor para ele.
+Quando o host (por exemplo, `db` no `DB_HOST` do `wp-config.php`) é o nome de um serviço declarado num arquivo Compose do projeto, inclusive numa subpasta como `docker/`, o banco é tratado como **serviço do Compose**. Ele só existe na rede dos containers, é iniciado em **O que roda**, na página do projeto, com as proteções de conflito de nomes de sempre, e o cartão mostra "Container ativo; conexão não verificada.". O LocalCodePilot não prepara outro servidor para ele.
 
 ## Banco em outro computador
 

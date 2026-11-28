@@ -44,7 +44,7 @@ use crate::{
 };
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Stroke};
 use egui_phosphor::regular::{
-    ARROW_SQUARE_OUT, BOOK_OPEN, CARET_DOUBLE_LEFT, CARET_DOUBLE_RIGHT, CIRCLE, CODE_SIMPLE, CUBE,
+    ARROW_SQUARE_OUT, BOOK_OPEN, CARET_DOUBLE_LEFT, CARET_DOUBLE_RIGHT, CIRCLE, CODE_SIMPLE,
     FOLDER_OPEN, GEAR, PLAY, PLUS, STAR, TERMINAL,
 };
 use localcodepilot_core::{
@@ -125,11 +125,7 @@ const INSTALLATION_STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Projects,
-    Processes,
-    Containers,
-    /// The third tab of Serviços: the databases of the projects (T037.06).
-    Databases,
-    /// Ambiente: languages and container engines of this computer (T037.05).
+    /// Ambiente: what this computer has for the projects (T037.05, T038.03).
     Environment,
     Help,
     Settings,
@@ -141,9 +137,6 @@ impl Page {
     fn key(self) -> &'static str {
         match self {
             Self::Projects => "projects",
-            Self::Processes => "processes",
-            Self::Containers => "containers",
-            Self::Databases => "databases",
             Self::Environment => "environment",
             Self::Help => "help",
             Self::Settings => "settings",
@@ -152,22 +145,14 @@ impl Page {
         }
     }
 
-    /// The tabs of Serviços (T037): Processos and Containers. Each keeps its own saved key, so
-    /// a page saved by an older version opens the same tab.
-    fn is_service(self) -> bool {
-        matches!(self, Self::Processes | Self::Containers | Self::Databases)
-    }
-
     fn from_key(key: &str) -> Self {
         match key {
             "projects" => Self::Projects,
-            "processes" => Self::Processes,
-            "containers" => Self::Containers,
-            "databases" => Self::Databases,
             "environment" => Self::Environment,
             "help" => Self::Help,
             "settings" => Self::Settings,
-            // Projetos is the start page (T038.02); "overview" and unknown keys open it.
+            // Projetos is the start page (T038.02). The old pages "overview", "processes",
+            // "containers" and "databases" (T038.04) and unknown keys open it.
             _ => Self::Projects,
         }
     }
@@ -238,16 +223,11 @@ impl Notification {
 }
 
 enum ProcessAction {
-    /// "Detalhes" of a row in Serviços > Processos (T037.02).
+    /// "Detalhes" of a process row on the project page (T037.02).
     ToggleDetails(String),
     Start(String),
     Stop(String),
     Restart(String),
-    StartProject(PathBuf),
-    StopProject(PathBuf),
-    PrepareEnvironment(PathBuf),
-    InstallDependencies(PathBuf),
-    ViewDependencyLogs(PathBuf),
     ClearLogs(String),
     ViewLogs(String),
     OpenUrl(String),
@@ -380,41 +360,6 @@ impl ProjectEnvironment {
                 matches!(requirement.status, RequirementStatus::Available { .. })
             })
             && self.missing_php_extensions.is_empty()
-    }
-
-    fn status(&self) -> (&'static str, Color32) {
-        if self.command_count == 0 {
-            ("Nenhum serviço detectado", theme::MUTED)
-        } else if self
-            .runtime_requirements
-            .iter()
-            .any(|requirement| matches!(requirement.status, RequirementStatus::Incompatible { .. }))
-        {
-            ("Versão incompatível", Color32::from_rgb(255, 205, 75))
-        } else if self.missing_compiler {
-            ("Compilador C/C++ ausente", Color32::from_rgb(255, 205, 75))
-        } else if !self.missing_programs.is_empty()
-            || self
-                .runtime_requirements
-                .iter()
-                .any(|requirement| matches!(requirement.status, RequirementStatus::Missing))
-        {
-            ("Runtime não encontrado", Color32::from_rgb(255, 205, 75))
-        } else if !self.missing_php_extensions.is_empty() {
-            ("Extensões PHP ausentes", Color32::from_rgb(255, 205, 75))
-        } else if !self.missing_dependencies.is_empty() {
-            ("Dependências ausentes", Color32::from_rgb(255, 205, 75))
-        } else if self
-            .databases
-            .iter()
-            .any(|database| database.not_running() || database.rejection().is_some())
-        {
-            ("Banco indisponível", Color32::from_rgb(255, 205, 75))
-        } else if !self.is_ready() {
-            ("Requisitos pendentes", Color32::from_rgb(255, 205, 75))
-        } else {
-            ("Pronto", theme::SUCCESS)
-        }
     }
 
     fn problem_details(&self) -> Option<String> {
@@ -554,13 +499,11 @@ enum DiscoveryEvent {
 
 pub struct LocalCodePilot {
     page: Page,
-    /// The last tab of Serviços (Processos or Containers), opened again from the sidebar.
-    last_services_tab: Page,
-    /// Rows of Serviços > Processos with their details open (T037.02).
+    /// Process rows of the project page with their details open (T037.02).
     expanded_processes: HashSet<String>,
     /// The project whose page is open (T038.01).
     open_project: Option<PathBuf>,
-    /// "Parar" of Serviços > Bancos de dados, waiting for the confirmation (T037.06).
+    /// "Parar" of the databases of Ambiente, waiting for the confirmation (T037.06).
     database_stop_request: Option<databases_tab_ui::DatabaseStopRequest>,
     projects: Vec<Project>,
     /// The managed processes and their ports (T025).
@@ -710,11 +653,6 @@ impl LocalCodePilot {
             expanded_processes: HashSet::new(),
             open_project: None,
             database_stop_request: None,
-            last_services_tab: if page.is_service() {
-                page
-            } else {
-                Page::Processes
-            },
             managed: ManagedProcesses::default(),
             migrations: migration_ui::MigrationState::default(),
             migration_targets: HashMap::new(),
@@ -1189,8 +1127,6 @@ impl LocalCodePilot {
                             "Projetos",
                             Some(self.projects.len()),
                         );
-                        // One entry for what runs: Processos and Containers are its tabs.
-                        self.nav_button(ui, Page::Processes, CUBE, "Serviços", None);
                         self.nav_button(
                             ui,
                             Page::Environment,
@@ -1217,19 +1153,11 @@ impl LocalCodePilot {
         projects: Option<usize>,
     ) {
         let collapsed = self.workspace_state.sidebar_collapsed;
-        // Serviços is selected on any of its tabs, and opens the last one used.
-        let selected = if page.is_service() {
-            self.page.is_service()
-        } else if page == Page::Projects {
-            // A project's page belongs to Projetos.
+        // A project's page belongs to Projetos.
+        let selected = if page == Page::Projects {
             matches!(self.page, Page::Projects | Page::Project)
         } else {
             self.page == page
-        };
-        let page = if page.is_service() {
-            self.last_services_tab
-        } else {
-            page
         };
         let color = if selected {
             Color32::WHITE
@@ -1275,62 +1203,7 @@ impl LocalCodePilot {
             response = response.on_hover_text(&name);
         }
         if response.clicked() {
-            self.open_page(page, ui.ctx());
-        }
-    }
-
-    /// Opens a page or a tab of Serviços, as the sidebar and the tabs do.
-    fn open_page(&mut self, page: Page, ctx: &egui::Context) {
-        let entering_services = page.is_service() && !self.page.is_service();
-        self.page = page;
-        if page.is_service() {
-            self.last_services_tab = page;
-            if entering_services {
-                self.focused_project = None;
-                self.search.clear();
-            }
-            if !self.container_refresh_pending() {
-                self.refresh_containers(ctx.clone());
-            }
-        }
-    }
-
-    /// The tabs of Serviços: Processos and Containers (T037). Screen readers hear each as a
-    /// tab and which one is selected.
-    fn services_tabs(&mut self, ui: &mut egui::Ui) {
-        let mut open = None;
-        ui.horizontal(|ui| {
-            for (page, label) in [
-                (Page::Processes, "Processos"),
-                (Page::Containers, "Containers"),
-                (Page::Databases, "Bancos de dados"),
-            ] {
-                let selected = self.page == page;
-                let response = ui.add(
-                    egui::Button::selectable(
-                        selected,
-                        RichText::new(label)
-                            .size(theme::TEXT_BODY)
-                            .color(if selected {
-                                Color32::WHITE
-                            } else {
-                                theme::MUTED
-                            }),
-                    )
-                    .min_size(egui::vec2(120.0, 32.0))
-                    .corner_radius(8),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::Tab, true, selected, label)
-                });
-                if response.clicked() && !selected {
-                    open = Some(page);
-                }
-            }
-        });
-        ui.add_space(6.0);
-        if let Some(page) = open {
-            self.open_page(page, ui.ctx());
+            self.page = page;
         }
     }
 
@@ -1357,30 +1230,6 @@ impl LocalCodePilot {
                             })
                             .response
                             .on_hover_text(&self.username);
-
-                        let search_hint = match self.page {
-                            Page::Processes => Some("Buscar processo..."),
-                            Page::Projects
-                            | Page::Project
-                            | Page::Help
-                            | Page::Settings
-                            | Page::Containers
-                            | Page::Databases
-                            | Page::Environment => None,
-                        };
-                        if let Some(search_hint) = search_hint {
-                            let search = ui.add_sized(
-                                [220.0, 32.0],
-                                egui::TextEdit::singleline(&mut self.search)
-                                    .hint_text(search_hint)
-                                    .align(egui::Align2::CENTER_CENTER),
-                            );
-                            name_search_field(
-                                &search,
-                                search_hint.trim_end_matches('.'),
-                                &self.search,
-                            );
-                        }
                     });
                 });
             });
@@ -1389,7 +1238,6 @@ impl LocalCodePilot {
     fn page_title(&self) -> &'static str {
         match self.page {
             Page::Projects | Page::Project => "Projetos",
-            Page::Processes | Page::Containers | Page::Databases => "Serviços",
             Page::Environment => "Ambiente",
             Page::Help => "Ajuda",
             Page::Settings => "Configurações",
@@ -2033,10 +1881,9 @@ impl LocalCodePilot {
                     project_path,
                 )
         }) {
-            self.focused_project = Some(project_path.to_path_buf());
-            self.page = Page::Containers;
+            self.show_project_page(project_path.to_path_buf());
             self.notify(
-                "Este projeto usa o banco definido no Compose. Inicie os serviços em Serviços > Containers.",
+                "Este projeto usa o banco definido no Compose. Inicie os serviços em O que roda, na página do projeto.",
             );
             return;
         }
@@ -2176,8 +2023,7 @@ impl LocalCodePilot {
             }
         }
         if let Some((process_name, conflict)) = first_conflict {
-            self.focused_project = Some(project_path.to_path_buf());
-            self.page = Page::Processes;
+            self.show_project_page(project_path.to_path_buf());
             self.notify(format!(
                 "O ambiente não foi iniciado. {}",
                 port_conflict_message(&process_name, &conflict)
@@ -3921,128 +3767,19 @@ impl LocalCodePilot {
         }
     }
 
-    /// Serviços > Processos. `embedded` is the project page (T038.01): only the rows of the
-    /// focused project, without the page title, the counts or the project header, which the
-    /// project page already shows.
-    fn processes_page(&mut self, ui: &mut egui::Ui, embedded: bool) {
+    /// The processes of the project whose page is open (T038.01, T038.04): one row per
+    /// service with its state, port and actions. The page shows the project's header.
+    fn processes_page(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
-        let query = if embedded {
-            String::new()
-        } else {
-            self.search.trim().to_lowercase()
-        };
-        if !embedded && let Some(project_path) = self.focused_project.clone() {
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Projeto: {}",
-                    project_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                ));
-                if ui.button("Ver todos os processos").clicked() {
-                    self.focused_project = None;
-                }
-            });
-        }
-        let matching_processes = self
-            .managed
-            .processes
-            .iter()
-            .filter(|process| {
-                self.focused_project
-                    .as_ref()
-                    .is_none_or(|path| process.project_path == *path)
-            })
-            .filter(|process| {
-                let project = self
-                    .projects
-                    .iter()
-                    .find(|project| project.path == process.project_path);
-                process_matches_search(process, project, &query)
-            })
-            .count();
-        let visible_process_count = self
-            .managed
-            .processes
-            .iter()
-            .filter(|process| {
-                self.focused_project
-                    .as_ref()
-                    .is_none_or(|path| process.project_path == *path)
-            })
-            .count();
-        if !embedded {
-            ui.heading("Processos");
-            self.container_processes_summary(ui);
-            ui.label(
-                RichText::new(if query.is_empty() {
-                    format!(
-                        "{} comando(s) detectado(s) em seus projetos",
-                        visible_process_count
-                    )
-                } else {
-                    format!(
-                        "{matching_processes} de {} comando(s) encontrado(s)",
-                        visible_process_count
-                    )
-                })
-                .color(theme::MUTED),
-            );
-            ui.add_space(20.0);
-        }
-
-        if visible_process_count == 0 && embedded {
-            return;
-        }
-        if visible_process_count == 0 {
-            Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0_f32, theme::BORDER))
-                .corner_radius(12)
-                .inner_margin(Margin::same(24))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Nenhum comando detectado").strong());
-                    ui.label(
-                        RichText::new(
-                            if self.focused_project.is_some() {
-                                "Este projeto não tem comandos locais. Se usar Compose, abra Containers para iniciar os serviços."
-                            } else {
-                                "Atualize os projetos para procurar scripts e comandos disponíveis."
-                            },
-                        )
-                        .color(theme::MUTED),
-                    );
-                    if self.focused_project.is_some()
-                        && ui.button("Abrir Containers deste projeto").clicked()
-                    {
-                        self.page = Page::Containers;
-                    }
-                });
+        let query = String::new();
+        if !self.managed.processes.iter().any(|process| {
+            self.focused_project
+                .as_ref()
+                .is_some_and(|path| process.project_path == *path)
+        }) {
             return;
         }
 
-        if matching_processes == 0 {
-            Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0_f32, theme::BORDER))
-                .corner_radius(12)
-                .inner_margin(Margin::same(24))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Nenhum processo encontrado").strong());
-                    ui.label(
-                        RichText::new(
-                            "Busque pelo projeto, tecnologia, comando ou caminho da pasta.",
-                        )
-                        .color(theme::MUTED),
-                    );
-                });
-            return;
-        }
-
-        let folders = self.distinguishing_folders();
         let mut projects = self.projects.clone();
         projects.sort_by_key(|project| {
             if self.focused_project.as_ref() == Some(&project.path) {
@@ -4093,42 +3830,12 @@ impl LocalCodePilot {
             if commands.is_empty() {
                 continue;
             }
-            let project_command_count = self
-                .managed
-                .processes
-                .iter()
-                .filter(|process| process.project_path == project.path)
-                .count();
-            let active_command_count =
-                project_process_ids(&self.managed.processes, &project.path, true).len();
             let environment = self
                 .project_environments
                 .get(&project.path)
                 .cloned()
                 .unwrap_or_default();
-            let dependency_install_status = self
-                .dependency_installs
-                .get(&project.path)
-                .map(|session| session.status.clone());
-            let installing_dependencies = matches!(
-                &dependency_install_status,
-                Some(DependencyInstallStatus::Running | DependencyInstallStatus::Cancelling)
-            );
-            let dependency_install_failed = matches!(
-                &dependency_install_status,
-                Some(DependencyInstallStatus::Failed { .. })
-            );
-            let resolving_plan = self
-                .environment_plan_request
-                .as_ref()
-                .is_some_and(|(path, _)| path == &project.path);
-            let has_dependency_logs = self.dependency_installs.contains_key(&project.path);
-            let project_history = self.workspace_state.project(&project.path).cloned();
-            let (fill, stroke, margin) = if embedded {
-                (Color32::TRANSPARENT, Stroke::NONE, 0)
-            } else {
-                (theme::SURFACE, Stroke::new(1.0_f32, theme::BORDER), 18)
-            };
+            let (fill, stroke, margin) = (Color32::TRANSPARENT, Stroke::NONE, 0);
             Frame::new()
                 .fill(fill)
                 .stroke(stroke)
@@ -4136,150 +3843,6 @@ impl LocalCodePilot {
                 .inner_margin(Margin::same(margin))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    // The project page has its own header with the state and the main action.
-                    if !embedded {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&project.name).strong().size(15.0));
-                            project_ui::folder_line(
-                                ui,
-                                &project.path,
-                                folders.get(&project.path).map(String::as_str),
-                            );
-                            let (status, status_color) = if resolving_plan {
-                                ("Preparando plano", theme::PRIMARY)
-                            } else if installing_dependencies {
-                                ("Preparando ambiente", theme::PRIMARY)
-                            } else if dependency_install_failed {
-                                ("Falha na instalação", Color32::from_rgb(235, 87, 87))
-                            } else if active_command_count > 0 {
-                                ("Em execução", theme::SUCCESS)
-                            } else {
-                                environment.status()
-                            };
-                            ui.label(
-                                RichText::new(format!(
-                                    "{status} · {project_command_count} serviço(s)"
-                                ))
-                                .color(status_color)
-                                .size(10.0),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if active_command_count > 0 {
-                                if ui
-                                    .add(
-                                        egui::Button::new("Parar ambiente").fill(
-                                            Color32::from_rgb(235, 87, 87).gamma_multiply(0.18),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    action = Some(ProcessAction::StopProject(project.path.clone()));
-                                }
-                            } else if resolving_plan {
-                                ui.spinner();
-                                ui.label("Consultando versões...");
-                            } else if installing_dependencies {
-                                ui.spinner();
-                                ui.label("Instalando...");
-                            } else if environment.can_prepare_environment() {
-                                if ui
-                                    .add(
-                                        egui::Button::new("Preparar ambiente")
-                                            .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                                    )
-                                    .clicked()
-                                {
-                                    action = Some(ProcessAction::PrepareEnvironment(
-                                        project.path.clone(),
-                                    ));
-                                }
-                            } else if environment.can_install_dependencies() {
-                                if ui
-                                    .add(
-                                        egui::Button::new(if dependency_install_failed {
-                                            "Tentar de novo"
-                                        } else {
-                                            "Instalar dependências"
-                                        })
-                                        .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                                    )
-                                    .clicked()
-                                {
-                                    action = Some(ProcessAction::InstallDependencies(
-                                        project.path.clone(),
-                                    ));
-                                }
-                            } else {
-                                let start = ui.add_enabled(
-                                    environment.is_ready(),
-                                    egui::Button::new(RichText::new(format!(
-                                        "{PLAY}  {}",
-                                        if project_history.is_some() {
-                                            "Retomar ambiente"
-                                        } else {
-                                            "Iniciar ambiente"
-                                        }
-                                    )))
-                                    .fill(theme::PRIMARY.gamma_multiply(0.72)),
-                                );
-                                let start = if let Some(details) = environment.problem_details() {
-                                    start.on_hover_text(details)
-                                } else {
-                                    start
-                                };
-                                if start.clicked() {
-                                    action =
-                                        Some(ProcessAction::StartProject(project.path.clone()));
-                                }
-                            }
-                        });
-                    });
-                    if !installing_dependencies && let Some(details) = environment.problem_details()
-                    {
-                        ui.label(
-                            RichText::new(details)
-                                .color(Color32::from_rgb(255, 205, 75))
-                                .size(10.0),
-                        );
-                    }
-                    for database in &environment.databases {
-                        let matching_container = database.requirement.host.as_deref().and_then(|host| {
-                            self.database_container_running(&project.path, host)
-                        });
-                        let state = database.card_state(matching_container);
-                        ui.label(
-                            RichText::new(format!(
-                                "Banco: {} · {state}",
-                                database.requirement.engine.label()
-                            ))
-                            .color(theme::MUTED)
-                            .size(10.0),
-                        )
-                        .on_hover_text(database.technical().join("\n"));
-                    }
-                    if project.technologies.contains(&TechnologyKind::WordPress)
-                        && environment.databases.is_empty()
-                    {
-                        ui.colored_label(
-                            Color32::from_rgb(255, 205, 75),
-                            "Configuração de banco ausente ou DB_HOST dinâmico; confira wp-config.php e o serviço MySQL/MariaDB.",
-                        );
-                    }
-                    if has_dependency_logs
-                        && ui
-                            .link(if dependency_install_failed {
-                                format!("{TERMINAL}  Ver erro e sugestões")
-                            } else {
-                                format!("{TERMINAL}  Ver logs da instalação")
-                            })
-                            .clicked()
-                    {
-                        action = Some(ProcessAction::ViewDependencyLogs(project.path.clone()));
-                    }
-                    ui.add_space(10.0);
-                    }
                     for command in commands {
                         let port_conflict = self.managed.port_conflicts.get(&command.id).cloned();
                         let assigned_port = self.managed.assigned_ports.get(&command.id).copied();
@@ -4788,17 +4351,6 @@ impl LocalCodePilot {
             Some(ProcessAction::Start(id)) => self.start_process(&id),
             Some(ProcessAction::Stop(id)) => self.stop_process(&id),
             Some(ProcessAction::Restart(id)) => self.restart_process(&id),
-            Some(ProcessAction::StartProject(path)) => self.start_project(&path),
-            Some(ProcessAction::StopProject(path)) => self.stop_project(&path),
-            Some(ProcessAction::PrepareEnvironment(path)) => {
-                self.request_environment_plan(&path, ui.ctx().clone());
-            }
-            Some(ProcessAction::InstallDependencies(path)) => {
-                self.install_dependencies(&path, ui.ctx().clone());
-            }
-            Some(ProcessAction::ViewDependencyLogs(path)) => {
-                self.dependency_terminal = Some(path);
-            }
             Some(ProcessAction::ClearLogs(id)) => self.clear_process_logs(&id),
             Some(ProcessAction::ToggleDetails(id)) => {
                 if !self.expanded_processes.remove(&id) {
@@ -5045,17 +4597,11 @@ impl LocalCodePilot {
             .show(root_ui, |ui| {
                 self.show_update_banner(ui);
                 self.config_recovery_banner(ui);
-                if self.page.is_service() {
-                    self.services_tabs(ui);
-                }
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Projects => self.projects_page(&ctx, ui),
-                    Page::Processes => self.processes_page(ui, false),
                     Page::Project => self.project_page(ui),
                     Page::Settings => self.settings_page(ui),
                     Page::Environment => self.environment_page(ui),
-                    Page::Databases => self.databases_page(ui),
-                    Page::Containers => self.containers_page(ui),
                     Page::Help => self.help_page(ui),
                 });
             });
@@ -5085,11 +4631,6 @@ impl eframe::App for LocalCodePilot {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Links and actions open a tab directly ("Ver logs", "Abrir Containers"): the
-        // sidebar remembers it.
-        if self.page.is_service() {
-            self.last_services_tab = self.page;
-        }
         self.sidebar(ui);
         self.topbar(ui);
         self.content(ui);
@@ -8502,13 +8043,10 @@ mod tests {
     }
 
     #[test]
-    fn processes_and_containers_are_the_tabs_of_servicos() {
-        // A page saved by an older version opens the same tab of Serviços.
-        assert!(Page::from_key("processes") == Page::Processes);
-        assert!(Page::from_key("containers") == Page::Containers);
-        assert!(Page::Processes.is_service() && Page::Containers.is_service());
-        for page in [Page::Projects, Page::Help, Page::Settings] {
-            assert!(!page.is_service());
+    fn a_saved_tab_of_servicos_opens_projetos() {
+        // Serviços left the sidebar (T038.04): its saved tabs open the start page.
+        for key in ["processes", "containers", "databases"] {
+            assert!(Page::from_key(key) == Page::Projects);
         }
     }
 
@@ -8516,7 +8054,6 @@ mod tests {
     fn a_project_page_saved_on_close_opens_projetos() {
         // The project may be gone on the next start, so the saved page is the list.
         assert!(Page::from_key(Page::Project.key()) == Page::Projects);
-        assert!(!Page::Project.is_service());
     }
 
     #[test]
@@ -8526,9 +8063,6 @@ mod tests {
         assert!(Page::from_key("overview") == Page::Projects);
         for page in [
             Page::Projects,
-            Page::Processes,
-            Page::Containers,
-            Page::Databases,
             Page::Environment,
             Page::Help,
             Page::Settings,
@@ -8985,7 +8519,6 @@ mod tests {
             ..ProjectEnvironment::default()
         };
         assert!(!environment.is_ready());
-        assert_eq!(environment.status().0, "Compilador C/C++ ausente");
         assert_eq!(
             environment.can_prepare_environment(),
             cfg!(any(target_os = "windows", target_os = "macos"))
