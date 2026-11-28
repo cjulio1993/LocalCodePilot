@@ -195,7 +195,7 @@ const SECTIONS: &[HelpSection] = &[
                 "Docker e Podman precisam estar instalados e com o motor ativo. Se o Docker ou o Podman estiver instalado e parado, o LocalCodePilot pode ligá-lo após sua confirmação. Ele não instala o motor. Com os dois prontos, escolha em \"Iniciar com\" qual deles usar; a escolha vale até você trocar.",
             ),
             Block::Text(
-                "Em Containers, cada projeto aparece com seus serviços e o estado de cada um: Rodando, Parado, Pausado, Com problema ou Ainda não criado. Iniciar e Parar ficam no projeto e pedem confirmação. Antes de parar, a confirmação diz quais serviços vão parar e quais continuam rodando; o Parar do cartão usa a mesma confirmação. Use Buscar projeto ou serviço quando a lista for longa; Detalhes técnicos mostra imagem, portas, ID e o comando exato. Containers que não são de um projeto da lista ficam em Outros containers. Um container rodando ou uma porta publicada não prova que o site está respondendo.",
+                "Encontre o projeto em Projetos (a busca acha também serviço, porta e container) e abra a página dele: em O que roda, cada ambiente Compose aparece com seus serviços e o estado de cada um: Rodando, Parado, Pausado, Com problema ou Ainda não criado. Iniciar e Parar ficam no ambiente e pedem confirmação. Antes de parar, a confirmação diz quais serviços vão parar e quais continuam rodando; o Parar da lista de Projetos usa a mesma confirmação. Detalhes técnicos mostra imagem, portas, ID e o comando exato. Os motores Docker e Podman e os containers que não são de um projeto da lista ficam em Ambiente. Um container rodando ou uma porta publicada não prova que o site está respondendo.",
             ),
             Block::Text(
                 "Dois projetos com o mesmo nome de ambiente Compose, por exemplo duas pastas docker/ com compose.yaml, ficam bloqueados para iniciar e parar até receberem nomes diferentes. Isso evita que um projeto altere os containers e os dados do outro. No aviso do ambiente, Como resolver mostra os passos e a configuração sugerida; se os containers do outro projeto estiverem rodando, Parar containers do outro projeto para só eles, sem remover volumes.",
@@ -333,12 +333,12 @@ const SECTIONS: &[HelpSection] = &[
                 "em Ambiente, cada linguagem aparece com a versão instalada ou como não encontrada nos locais verificados, e Detalhes técnicos mostra onde o aplicativo procurou.",
             ),
             Block::Item(
-                "Processos",
-                "portas, resposta HTTP, PID e logs dos processos que rodam direto na máquina.",
+                "Processos do projeto",
+                "em O que roda, na página do projeto: portas, resposta HTTP, PID e logs dos processos que rodam direto na máquina.",
             ),
             Block::Item(
-                "Containers",
-                "motores, serviços, portas publicadas, logs e os comandos Compose propostos.",
+                "Containers do projeto",
+                "em O que roda, na página do projeto: serviços, portas publicadas, logs e os comandos Compose propostos. Os motores ficam em Ambiente.",
             ),
             Block::Text("Revise o comando e o alcance de cada ação antes de confirmar."),
         ],
@@ -714,6 +714,10 @@ mod tests {
             "Serviços >",
             "Visão geral",
             "aba Processos",
+            "Em Containers",
+            "em Containers",
+            "abra Containers",
+            "Buscar projeto ou serviço",
             "Ver diagnóstico e logs",
             "Aplicação respondendo",
             "Mais ações",

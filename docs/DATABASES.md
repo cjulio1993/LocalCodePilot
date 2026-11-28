@@ -72,7 +72,7 @@ Quando o banco impede o início, o cartão oferece a correção que for segura, 
 
 ## Compose
 
-Quando o host (por exemplo, `db` no `DB_HOST` do `wp-config.php`) é o nome de um serviço declarado num arquivo Compose do projeto, inclusive numa subpasta como `docker/`, o banco é tratado como **serviço do Compose**. Ele só existe na rede dos containers, é iniciado em **Containers** com as proteções de conflito de nomes de sempre, e o cartão mostra "Container ativo; conexão não verificada.". O LocalCodePilot não prepara outro servidor para ele.
+Quando o host (por exemplo, `db` no `DB_HOST` do `wp-config.php`) é o nome de um serviço declarado num arquivo Compose do projeto, inclusive numa subpasta como `docker/`, o banco é tratado como **serviço do Compose**. Ele só existe na rede dos containers, é iniciado em **O que roda**, na página do projeto, com as proteções de conflito de nomes de sempre, e o cartão mostra "Container ativo; conexão não verificada.". O LocalCodePilot não prepara outro servidor para ele.
 
 ## Banco em outro computador
 
