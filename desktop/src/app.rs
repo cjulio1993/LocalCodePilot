@@ -1428,14 +1428,45 @@ impl LocalCodePilot {
             ui.horizontal_wrapped(|ui| summary(ui));
             ui.horizontal(|ui| buttons(ui));
         }
+        // The protection stays; the sentence names who holds it and leads there (CA-9).
         if has_active_processes {
+            let running = self.running_projects();
+            let names = running
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect::<Vec<_>>();
             ui.label(
-                RichText::new(
-                    "Pare os projetos em execução para adicionar uma pasta ou atualizar a lista.",
-                )
-                .color(theme::WARNING)
-                .size(12.0),
+                RichText::new(folder_lock_sentence(&names))
+                    .color(theme::WARNING)
+                    .size(12.0),
             );
+            let mut open = None;
+            let mut open_running = false;
+            ui.horizontal_wrapped(|ui| {
+                for (path, name) in running.iter().take(3) {
+                    let label = format!("Ver {name}");
+                    if announced(ui.link(&label), egui::Role::Link, &label).clicked() {
+                        open = Some(path.clone());
+                    }
+                }
+                if running.len() > 3
+                    && announced(
+                        ui.link("Ver os projetos rodando"),
+                        egui::Role::Link,
+                        "Ver os projetos rodando",
+                    )
+                    .clicked()
+                {
+                    open_running = true;
+                }
+            });
+            if let Some(path) = open {
+                self.open_project_page(ctx, path);
+            }
+            if open_running {
+                self.workspace_state.project_filter = "running".to_owned();
+                self.workspace_dirty = true;
+            }
         }
         if let Some(migration) = &self.scan_root_migration {
             ui.add_space(6.0);
@@ -7932,6 +7963,22 @@ fn button_width(ui: &egui::Ui, text: &str) -> f32 {
     galley.size().x + 2.0 * ui.spacing().button_padding.x
 }
 
+/// Why "Adicionar pasta" and "Atualizar" wait (T039.03, CA-9): up to three running
+/// projects by name, then how many more.
+fn folder_lock_sentence(names: &[String]) -> String {
+    let shown = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    match names.len() {
+        0 => "Não é possível alterar as pastas enquanto houver projetos rodando.".to_owned(),
+        1..=3 => {
+            format!("Não é possível alterar as pastas enquanto houver projetos rodando: {shown}.")
+        }
+        count => format!(
+            "Não é possível alterar as pastas enquanto houver projetos rodando: {shown}, e mais {}.",
+            count - 3
+        ),
+    }
+}
+
 /// Gives a search field without a visible label a name for assistive technologies.
 pub(crate) fn name_search_field(response: &egui::Response, name: &str, value: &str) {
     response.widget_info(|| {
@@ -8051,6 +8098,27 @@ mod tests {
         );
         assert_eq!(super::choose_listening_port(&[port(9229)], &[]), None);
         assert_eq!(super::choose_listening_port(&[], &printed), None);
+    }
+
+    #[test]
+    fn the_folder_lock_names_up_to_three_running_projects() {
+        let names = |count: usize| {
+            (1..=count)
+                .map(|index| format!("p{index}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            super::folder_lock_sentence(&names(1)),
+            "Não é possível alterar as pastas enquanto houver projetos rodando: p1."
+        );
+        assert_eq!(
+            super::folder_lock_sentence(&names(3)),
+            "Não é possível alterar as pastas enquanto houver projetos rodando: p1, p2, p3."
+        );
+        assert_eq!(
+            super::folder_lock_sentence(&names(5)),
+            "Não é possível alterar as pastas enquanto houver projetos rodando: p1, p2, p3, e mais 2."
+        );
     }
 
     #[test]

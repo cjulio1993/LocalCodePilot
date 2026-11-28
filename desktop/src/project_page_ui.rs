@@ -24,6 +24,16 @@ impl LocalCodePilot {
         }
     }
 
+    /// The projects with a process the app started that still runs, in list order, with
+    /// their names (T039.03).
+    pub(in crate::app) fn running_projects(&self) -> Vec<(PathBuf, String)> {
+        self.projects
+            .iter()
+            .filter(|project| self.managed.project_is_running(&project.path))
+            .map(|project| (project.path.clone(), project.name.clone()))
+            .collect()
+    }
+
     /// Shows a project's page where no context is at hand (a notice, a guided fix): the page
     /// refreshes its containers on its own schedule (T038.04).
     pub(in crate::app) fn show_project_page(&mut self, path: PathBuf) {
