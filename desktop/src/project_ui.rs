@@ -4,6 +4,9 @@
 use super::*;
 use egui_phosphor::regular::{LIST, SQUARES_FOUR, STOP, WARNING_CIRCLE};
 
+#[path = "project_page_ui.rs"]
+mod project_page;
+
 /// Execution state shown to the user. HTTP availability is reported separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProjectState {
@@ -1110,6 +1113,16 @@ impl LocalCodePilot {
     /// Turns a card or row action into navigation or a process operation.
     pub(super) fn apply_project_action(&mut self, ctx: &egui::Context, action: ProjectCardAction) {
         match action {
+            // On the project page the logs and the containers are already there (T038.01).
+            ProjectCardAction::ViewDetails(path) if self.page == Page::Project => {
+                if let Some(id) = self.project_log_target(&path) {
+                    self.managed.terminal = Some(id);
+                }
+            }
+            // The environment's own Iniciar is under O que roda, with the Compose checks.
+            ProjectCardAction::ViewContainers(path) if self.page == Page::Project => {
+                self.reveal_containers_of(ctx, &path);
+            }
             ProjectCardAction::ViewDetails(path) => {
                 self.focused_project = Some(path);
                 self.search.clear();
@@ -1139,7 +1152,24 @@ impl LocalCodePilot {
             ProjectCardAction::DatabaseFix(path, fix) => self.ask_database_fix(&path, fix),
             ProjectCardAction::StopDatabase(path) => self.stop_project_database(&path),
             ProjectCardAction::TestRemoteDatabase(path) => self.test_remote_database(&path),
-            ProjectCardAction::Stop(path) => self.stop_project(&path),
+            ProjectCardAction::Stop(path) => {
+                // The database server may serve other projects: it keeps running (T038, CA-9).
+                let database_running =
+                    self.project_environments
+                        .get(&path)
+                        .is_some_and(|environment| {
+                            environment.databases.iter().any(|status| {
+                                status
+                                    .managed
+                                    .as_ref()
+                                    .is_some_and(|managed| managed.running)
+                            })
+                        });
+                self.stop_project(&path);
+                if database_running {
+                    self.notify("Projeto parado. O banco de dados continua rodando.");
+                }
+            }
             ProjectCardAction::StopContainers(path) => {
                 self.touch_project(&path);
                 match self.card_container_stop(&path) {
@@ -1175,21 +1205,9 @@ impl LocalCodePilot {
                 self.toggle_recent_visibility(&path);
             }
             ProjectCardAction::ExportDiagnostic(path) => self.export_diagnostic(&path),
-            ProjectCardAction::ToggleDetails(path) => {
-                if !self.project_ui.expanded.remove(&path) {
-                    self.project_ui.expanded.insert(path);
-                }
-            }
-            ProjectCardAction::ShowInProjects(path, name) => {
-                self.project_ui.expanded.insert(path);
-                self.search = name;
-                self.workspace_state.project_filter.clear();
-                // Details only open on cards: the list view has no room for them.
-                if !self.workspace_state.project_view.is_empty() {
-                    self.workspace_state.project_view.clear();
-                    self.workspace_dirty = true;
-                }
-                self.page = Page::Projects;
+            // Everything about one project is on its page (T038.01).
+            ProjectCardAction::OpenProject(path) => {
+                self.open_project_page(ctx, path);
             }
         }
     }
@@ -1516,9 +1534,7 @@ fn primary_to_card_action(project: &Project, summary: &ProjectSummary) -> Projec
         PrimaryAction::InstallDependencies => ProjectCardAction::InstallDependencies(path),
         PrimaryAction::DefineCommand => ProjectCardAction::DefineCommand(path),
         PrimaryAction::DatabaseFix(fix) => ProjectCardAction::DatabaseFix(path, *fix),
-        PrimaryAction::Details | PrimaryAction::Wait => {
-            ProjectCardAction::ShowInProjects(path, project.name.clone())
-        }
+        PrimaryAction::Details | PrimaryAction::Wait => ProjectCardAction::OpenProject(path),
     }
 }
 
@@ -1691,7 +1707,7 @@ fn project_row(
     details: RowDetails,
 ) -> Option<ProjectCardAction> {
     let mut action = None;
-    Frame::new()
+    let row = Frame::new()
         .fill(theme::SURFACE)
         .stroke(Stroke::new(1.0, theme::BORDER))
         .corner_radius(10)
@@ -1699,12 +1715,9 @@ fn project_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(&project.name)
-                        .strong()
-                        .size(theme::TEXT_HEADING),
-                )
-                .on_hover_text(display_path(&project.path));
+                if project_name_link(ui, &project.name, theme::TEXT_HEADING, &project.path) {
+                    action = Some(ProjectCardAction::OpenProject(project.path.clone()));
+                }
                 // One label only: the stack, not how it runs (the actions already say Containers).
                 if let Some(technology) = project
                     .shown_technologies()
@@ -1742,13 +1755,7 @@ fn project_row(
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 if primary_button(ui, &summary.primary, 120.0) {
-                    // A row cannot expand: "Detalhes" opens the project's card instead.
-                    action = Some(match primary_to_card_action(project, summary) {
-                        ProjectCardAction::ToggleDetails(path) => {
-                            ProjectCardAction::ShowInProjects(path, project.name.clone())
-                        }
-                        other => other,
-                    });
+                    action = Some(primary_to_card_action(project, summary));
                 }
                 if can_retry(summary) && retry_button(ui) {
                     action = Some(ProjectCardAction::Start(project.path.clone()));
@@ -1763,20 +1770,55 @@ fn project_row(
                 } else if summary.stoppable && stop_button(ui, summary) {
                     action = Some(stop_action(project, summary));
                 }
-                // Opens the project's card with its details expanded.
+                // Opens the project's page (T038.01).
+                let name = format!("Detalhes de {}", project.name);
                 if details == RowDetails::Offer
                     && !matches!(summary.primary, PrimaryAction::Details)
-                    && ui.button("Detalhes técnicos").clicked()
+                    && announced(ui.button("Detalhes"), egui::Role::Button, &name).clicked()
                 {
-                    action = Some(ProjectCardAction::ShowInProjects(
-                        project.path.clone(),
-                        project.name.clone(),
-                    ));
+                    action = Some(ProjectCardAction::OpenProject(project.path.clone()));
                 }
             });
         });
+    // The rest of the row, outside its buttons, opens the project too (T038, CA-1).
+    if action.is_none()
+        && ui
+            .interact(
+                row.response.rect,
+                egui::Id::unique(("project-row", project.path.clone())),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+    {
+        action = Some(ProjectCardAction::OpenProject(project.path.clone()));
+    }
     ui.add_space(8.0);
     action
+}
+
+/// The project's name, which opens its page (T038.01). Looks like a title, works as a link.
+fn project_name_link(ui: &mut egui::Ui, name: &str, size: f32, path: &Path) -> bool {
+    let response = ui
+        .add(
+            egui::Button::new(RichText::new(name).strong().size(size))
+                .frame(false)
+                .min_size(egui::vec2(0.0, 24.0)),
+        )
+        .on_hover_text(display_path(path))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Back from the project's page, the keyboard continues from here (T038, CA-11).
+    let key = project_page::return_focus_key();
+    if ui
+        .ctx()
+        .data(|data| data.get_temp::<PathBuf>(key))
+        .as_deref()
+        == Some(path)
+    {
+        ui.ctx().data_mut(|data| data.remove::<PathBuf>(key));
+        response.request_focus();
+    }
+    announced(response, egui::Role::Link, &format!("Abrir {name}")).clicked()
 }
 
 /// "Pasta: acme\web" under the name, only when another project has the same name (#100).
@@ -1996,12 +2038,9 @@ impl ProjectCard<'_> {
         } = *self;
         let path = || project.path.clone();
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(&project.name)
-                    .strong()
-                    .size(theme::TEXT_TITLE),
-            )
-            .on_hover_text(display_path(&project.path));
+            if project_name_link(ui, &project.name, theme::TEXT_TITLE, &project.path) {
+                *action = Some(ProjectCardAction::OpenProject(path()));
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let name = if self.favorite {
                     "Remover dos favoritos"
@@ -2073,7 +2112,7 @@ impl ProjectCard<'_> {
         let path = || project.path.clone();
         if primary_button(ui, &summary.primary, ui.available_width()) {
             *action = Some(match summary.primary {
-                PrimaryAction::Details => ProjectCardAction::ToggleDetails(path()),
+                PrimaryAction::Details => ProjectCardAction::OpenProject(path()),
                 _ => primary_to_card_action(project, summary),
             });
         }
@@ -2092,15 +2131,11 @@ impl ProjectCard<'_> {
             } else if summary.stoppable && stop_button(ui, summary) {
                 *action = Some(stop_action(project, summary));
             }
-            let details = if self.expanded {
-                "Ocultar detalhes técnicos"
-            } else {
-                "Detalhes técnicos"
-            };
-            if summary.primary != PrimaryAction::Details || self.expanded {
-                let response = ui.button(details);
-                if response.clicked() {
-                    *action = Some(ProjectCardAction::ToggleDetails(path()));
+            // Everything else about the project is on its page (T038.01).
+            if summary.primary != PrimaryAction::Details {
+                let name = format!("Detalhes de {}", project.name);
+                if announced(ui.button("Detalhes"), egui::Role::Button, &name).clicked() {
+                    *action = Some(ProjectCardAction::OpenProject(path()));
                 }
             }
         });

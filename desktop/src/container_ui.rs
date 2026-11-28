@@ -654,7 +654,8 @@ impl ContainerState {
 fn container_refresh_schedule(page: Page) -> Option<(Duration, ContainerRefresh)> {
     match page {
         Page::Containers => Some((Duration::from_secs(15), ContainerRefresh::Full)),
-        Page::Overview | Page::Projects | Page::Processes | Page::Databases => {
+        // The project page opens with a full check (T038.01); then a light one.
+        Page::Overview | Page::Projects | Page::Project | Page::Processes | Page::Databases => {
             Some((Duration::from_secs(30), ContainerRefresh::RuntimeOnly))
         }
         // Ambiente shows whether each engine is available (T037.05).
@@ -1038,7 +1039,7 @@ impl LocalCodePilot {
         }
     }
 
-    fn volume_confirmation_dialog(&mut self, ctx: &egui::Context) {
+    pub(super) fn volume_confirmation_dialog(&mut self, ctx: &egui::Context) {
         let Some(request) = &self.container_state.volume_confirmation else {
             return;
         };
@@ -1125,6 +1126,21 @@ impl LocalCodePilot {
             .find(|container| container.belongs_to(project) && container.answers_to_host(host))
             .map(|container| container.state.eq_ignore_ascii_case("running"))
     }
+    /// Whether a check runs and whether a container command runs.
+    pub(super) fn container_activity(&self) -> (bool, bool) {
+        (
+            self.container_state.pending.is_some(),
+            self.container_state
+                .execution
+                .as_ref()
+                .is_some_and(|session| session.execution.is_some()),
+        )
+    }
+
+    pub(super) fn clear_container_filter(&mut self) {
+        self.container_state.filter.clear();
+    }
+
     pub(super) fn container_refresh_pending(&self) -> bool {
         self.container_state.pending.is_some()
     }
@@ -1543,7 +1559,7 @@ impl LocalCodePilot {
 
     /// One line with the state of each engine; the notice of an engine that is not ready
     /// opens on its own when the app would use it, and on request otherwise.
-    fn engine_overview(&mut self, ui: &mut egui::Ui, busy: bool) {
+    pub(super) fn engine_overview(&mut self, ui: &mut egui::Ui, busy: bool) {
         let selected = self.container_state.selected_engine;
         let usable = |diagnosis: &EngineDiagnosis| {
             diagnosis.state == EngineState::Ready && diagnosis.compose_available
@@ -1900,8 +1916,20 @@ impl LocalCodePilot {
         notice::reveal(ctx, container_group_id(root));
         self.container_state.filter.clear();
         self.focused_project = Some(root.to_path_buf());
-        self.page = Page::Containers;
-        self.notify("Escolha em Containers o que parar.");
+        // The project page already shows the containers (T038.01).
+        if self.page == Page::Project {
+            self.notify("Escolha em O que roda o que parar.");
+        } else {
+            self.page = Page::Containers;
+            self.notify("Escolha em Containers o que parar.");
+        }
+    }
+
+    /// On the project page, opens and scrolls to the project's containers, where each
+    /// environment has its Iniciar with the Compose checks (T038.01).
+    pub(super) fn reveal_containers_of(&mut self, ctx: &egui::Context, root: &Path) {
+        notice::reveal(ctx, container_group_id(root));
+        self.notify("Use Iniciar no ambiente, em O que roda.");
     }
 
     /// Engine an environment's actions use: the one already running it, or the selected one.
@@ -1944,9 +1972,11 @@ impl LocalCodePilot {
         }
     }
 
-    fn container_groups(&mut self, ui: &mut egui::Ui, checking: bool, executing: bool) {
-        if !self.container_state.projects.is_empty()
-            || !self.container_state.runtime_containers.is_empty()
+    pub(super) fn container_groups(&mut self, ui: &mut egui::Ui, checking: bool, executing: bool) {
+        // The project page shows one project: nothing to search (T038.01).
+        if self.page != Page::Project
+            && (!self.container_state.projects.is_empty()
+                || !self.container_state.runtime_containers.is_empty())
         {
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.container_state.filter)
@@ -2527,7 +2557,7 @@ impl LocalCodePilot {
             });
     }
 
-    fn container_execution_panel(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn container_execution_panel(&mut self, ui: &mut egui::Ui) {
         let Some(session) = &mut self.container_state.execution else {
             return;
         };

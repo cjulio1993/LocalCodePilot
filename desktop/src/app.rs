@@ -134,6 +134,8 @@ enum Page {
     Environment,
     Help,
     Settings,
+    /// The page of one project (T038.01): `open_project` says which.
+    Project,
 }
 
 impl Page {
@@ -147,6 +149,8 @@ impl Page {
             Self::Environment => "environment",
             Self::Help => "help",
             Self::Settings => "settings",
+            // The project may be gone on the next start: Projetos opens instead.
+            Self::Project => "projects",
         }
     }
 
@@ -530,9 +534,8 @@ enum ProjectCardAction {
     ToggleRecentVisibility(PathBuf),
     /// "Exportar diagnóstico", in "Detalhes técnicos" (T034).
     ExportDiagnostic(PathBuf),
-    ToggleDetails(PathBuf),
-    /// Opens Projects showing this project with its details expanded.
-    ShowInProjects(PathBuf, String),
+    /// The project's name, row or "Detalhes": opens its page (T038.01).
+    OpenProject(PathBuf),
     /// A guided fix of the project's database, confirmed first.
     DatabaseFix(PathBuf, database_ui::DatabaseFix),
     /// "Parar o banco de dados", in "Detalhes técnicos".
@@ -554,6 +557,8 @@ pub struct LocalCodePilot {
     last_services_tab: Page,
     /// Rows of Serviços > Processos with their details open (T037.02).
     expanded_processes: HashSet<String>,
+    /// The project whose page is open (T038.01).
+    open_project: Option<PathBuf>,
     /// "Parar" of Serviços > Bancos de dados, waiting for the confirmation (T037.06).
     database_stop_request: Option<databases_tab_ui::DatabaseStopRequest>,
     projects: Vec<Project>,
@@ -702,6 +707,7 @@ impl LocalCodePilot {
             page,
             projects: cached_projects,
             expanded_processes: HashSet::new(),
+            open_project: None,
             database_stop_request: None,
             last_services_tab: if page.is_service() {
                 page
@@ -1214,6 +1220,9 @@ impl LocalCodePilot {
         // Serviços is selected on any of its tabs, and opens the last one used.
         let selected = if page.is_service() {
             self.page.is_service()
+        } else if page == Page::Projects {
+            // A project's page belongs to Projetos.
+            matches!(self.page, Page::Projects | Page::Project)
         } else {
             self.page == page
         };
@@ -1353,6 +1362,7 @@ impl LocalCodePilot {
                             Page::Overview => Some("Buscar projeto..."),
                             Page::Processes => Some("Buscar processo..."),
                             Page::Projects
+                            | Page::Project
                             | Page::Help
                             | Page::Settings
                             | Page::Containers
@@ -1380,7 +1390,7 @@ impl LocalCodePilot {
     fn page_title(&self) -> &'static str {
         match self.page {
             Page::Overview => "Visão geral",
-            Page::Projects => "Projetos",
+            Page::Projects | Page::Project => "Projetos",
             Page::Processes | Page::Containers | Page::Databases => "Serviços",
             Page::Environment => "Ambiente",
             Page::Help => "Ajuda",
@@ -3917,10 +3927,17 @@ impl LocalCodePilot {
         }
     }
 
-    fn processes_page(&mut self, ui: &mut egui::Ui) {
+    /// Serviços > Processos. `embedded` is the project page (T038.01): only the rows of the
+    /// focused project, without the page title, the counts or the project header, which the
+    /// project page already shows.
+    fn processes_page(&mut self, ui: &mut egui::Ui, embedded: bool) {
         let mut action = None;
-        let query = self.search.trim().to_lowercase();
-        if let Some(project_path) = self.focused_project.clone() {
+        let query = if embedded {
+            String::new()
+        } else {
+            self.search.trim().to_lowercase()
+        };
+        if !embedded && let Some(project_path) = self.focused_project.clone() {
             ui.horizontal(|ui| {
                 ui.label(format!(
                     "Projeto: {}",
@@ -3961,24 +3978,29 @@ impl LocalCodePilot {
                     .is_none_or(|path| process.project_path == *path)
             })
             .count();
-        ui.heading("Processos");
-        self.container_processes_summary(ui);
-        ui.label(
-            RichText::new(if query.is_empty() {
-                format!(
-                    "{} comando(s) detectado(s) em seus projetos",
-                    visible_process_count
-                )
-            } else {
-                format!(
-                    "{matching_processes} de {} comando(s) encontrado(s)",
-                    visible_process_count
-                )
-            })
-            .color(theme::MUTED),
-        );
-        ui.add_space(20.0);
+        if !embedded {
+            ui.heading("Processos");
+            self.container_processes_summary(ui);
+            ui.label(
+                RichText::new(if query.is_empty() {
+                    format!(
+                        "{} comando(s) detectado(s) em seus projetos",
+                        visible_process_count
+                    )
+                } else {
+                    format!(
+                        "{matching_processes} de {} comando(s) encontrado(s)",
+                        visible_process_count
+                    )
+                })
+                .color(theme::MUTED),
+            );
+            ui.add_space(20.0);
+        }
 
+        if visible_process_count == 0 && embedded {
+            return;
+        }
         if visible_process_count == 0 {
             Frame::new()
                 .fill(theme::SURFACE)
@@ -4108,13 +4130,20 @@ impl LocalCodePilot {
                 .is_some_and(|(path, _)| path == &project.path);
             let has_dependency_logs = self.dependency_installs.contains_key(&project.path);
             let project_history = self.workspace_state.project(&project.path).cloned();
+            let (fill, stroke, margin) = if embedded {
+                (Color32::TRANSPARENT, Stroke::NONE, 0)
+            } else {
+                (theme::SURFACE, Stroke::new(1.0_f32, theme::BORDER), 18)
+            };
             Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0_f32, theme::BORDER))
+                .fill(fill)
+                .stroke(stroke)
                 .corner_radius(12)
-                .inner_margin(Margin::same(18))
+                .inner_margin(Margin::same(margin))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    // The project page has its own header with the state and the main action.
+                    if !embedded {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&project.name).strong().size(15.0));
@@ -4256,6 +4285,7 @@ impl LocalCodePilot {
                         action = Some(ProcessAction::ViewDependencyLogs(project.path.clone()));
                     }
                     ui.add_space(10.0);
+                    }
                     for command in commands {
                         let port_conflict = self.managed.port_conflicts.get(&command.id).cloned();
                         let assigned_port = self.managed.assigned_ports.get(&command.id).copied();
@@ -5030,7 +5060,8 @@ impl LocalCodePilot {
                 egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                     Page::Overview => self.overview(ui),
                     Page::Projects => self.projects_page(&ctx, ui),
-                    Page::Processes => self.processes_page(ui),
+                    Page::Processes => self.processes_page(ui, false),
+                    Page::Project => self.project_page(ui),
                     Page::Settings => self.settings_page(ui),
                     Page::Environment => self.environment_page(ui),
                     Page::Databases => self.databases_page(ui),
@@ -8495,6 +8526,13 @@ mod tests {
         for page in [Page::Overview, Page::Projects, Page::Help, Page::Settings] {
             assert!(!page.is_service());
         }
+    }
+
+    #[test]
+    fn a_project_page_saved_on_close_opens_projetos() {
+        // The project may be gone on the next start, so the saved page is the list.
+        assert!(Page::from_key(Page::Project.key()) == Page::Projects);
+        assert!(!Page::Project.is_service());
     }
 
     #[test]
