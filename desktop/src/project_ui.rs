@@ -2286,7 +2286,7 @@ mod tests {
         assert_eq!(
             refused.reason.as_deref(),
             Some(
-                "O banco recusou o acesso deste projeto. Confira os dados de conexão em Detalhes."
+                "O banco recusou o acesso deste projeto, que não consegue usar o banco com estes dados. Confira os dados de conexão em Detalhes."
             )
         );
         let missing = summarize_project(&facts(&with_database(database(
@@ -2308,18 +2308,35 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("Conexão do banco MySQL · Origem da configuração: .env"));
         assert!(lines[0].ends_with("· Host: 127.0.0.1 · Porta: 3306"));
-        assert!(lines[1].starts_with("Último teste ("));
-        assert!(lines[1].contains("em 127.0.0.1:3306 com o usuário app no banco loja"));
-        assert!(lines[1].ends_with("· Resultado: conectado"));
+        // Date and time of the test, with how long ago (T039.01, CA-2).
+        let moment = lines[1]
+            .strip_prefix("Último teste: ")
+            .and_then(|rest| rest.split(" · ").next())
+            .unwrap();
+        let bytes = moment.as_bytes();
+        assert!(bytes[2] == b'/' && bytes[5] == b'/' && moment[10..].starts_with(" às "));
+        assert!(moment.ends_with("(agora)"));
+        assert!(lines[1].contains(
+            "· Endereço: 127.0.0.1:3306 · Usuário: app · Banco: loja · Resultado: conectado"
+        ));
         // Never tested: said, not guessed (T039.01).
         let untested = database(Some(true), None).technical();
         assert_eq!(untested[1], "Último teste: não testado");
-        assert!(
-            lines
-                .iter()
-                .chain(&untested)
-                .all(|line| !line.contains("senha"))
-        );
+        // The secrets of the project's configuration never show (CA-2).
+        let folder = std::env::temp_dir().join(format!("lcp-t03901-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let env = folder.join(".env");
+        std::fs::write(
+            &env,
+            "DB_USERNAME=app\nDB_PASSWORD=SEGREDO-FIXTURE-91\nAPI_TOKEN=TOKEN-FIXTURE-27\n",
+        )
+        .unwrap();
+        let mut from_file = database(Some(true), Some(ConnectionOutcome::AccessDenied));
+        from_file.requirement.source = env;
+        for line in from_file.technical().iter().chain(&lines).chain(&untested) {
+            assert!(!line.contains("SEGREDO-FIXTURE-91") && !line.contains("TOKEN-FIXTURE-27"));
+        }
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

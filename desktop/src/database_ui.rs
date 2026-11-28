@@ -2104,6 +2104,31 @@ fn with_port(contents: &str, to: u16) -> String {
 }
 
 /// "Usar outra porta": a copy of `.env` next to it, then only `DB_PORT` changes.
+/// "28/11/2026 às 14:02 (há 2 min)": the date and time of a test in the computer's time zone,
+/// or in UTC (said) when the time zone cannot be read (T039.01, CA-2).
+fn test_moment(at: std::time::SystemTime) -> String {
+    let seconds = at
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let relative = relative_time(seconds);
+    let Ok(utc) = time::OffsetDateTime::from_unix_timestamp(seconds as i64) else {
+        return relative;
+    };
+    let (moment, zone) = match time::UtcOffset::local_offset_at(utc) {
+        Ok(offset) => (utc.to_offset(offset), ""),
+        Err(_) => (utc, " UTC"),
+    };
+    format!(
+        "{:02}/{:02}/{} às {:02}:{:02}{zone} ({relative})",
+        moment.day(),
+        u8::from(moment.month()),
+        moment.year(),
+        moment.hour(),
+        moment.minute(),
+    )
+}
+
 /// Where the copies of a project's configuration go: the app's own folder, never the
 /// project's, so a copy holding a password cannot end up in the project's repository
 /// (T039.01).
@@ -2113,34 +2138,46 @@ fn env_copies_directory() -> PathBuf {
         .join("copias")
 }
 
-/// Writes a copy that only the person can read: the folder and the file are private on
-/// macOS and Linux; on Windows the app folder is already in the person's profile.
+/// Writes a copy that only the person can read. On macOS and Linux the folder is created
+/// 0700 and the file 0600 from the start, so the copy is never readable by others, and a
+/// folder that cannot be made private stops the copy. On Windows the app folder is already
+/// in the person's profile.
 fn write_private_copy(directory: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, String> {
-    fs::create_dir_all(directory)
-        .map_err(|error| format!("não foi possível criar a pasta das cópias: {error}"))?;
+    use std::io::Write;
+    let refused = |error: std::io::Error| format!("não foi possível guardar a cópia: {error}");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(directory, fs::Permissions::from_mode(0o700));
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)
+            .map_err(refused)?;
+        // A folder that already existed keeps its mode: make it private or give up.
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(refused)?;
     }
+    #[cfg(not(unix))]
+    fs::create_dir_all(directory).map_err(refused)?;
     let path = directory.join(name);
-    fs::write(&path, contents)
-        .map_err(|error| format!("não foi possível guardar a cópia: {error}"))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("não foi possível proteger a cópia: {error}"))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let mut file = options.open(&path).map_err(refused)?;
+    file.write_all(contents).map_err(refused)?;
     Ok(path)
 }
 
 fn change_env_port(env: &Path, from: u16, to: u16, copies: &Path) -> Result<PortChange, String> {
     let original = fs::read(env)
         .map_err(|error| format!("não foi possível ler {}: {error}", display_path(env)))?;
+    // Nanoseconds: two copies in the same second never collide (the file is created new).
     let moment = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
+        .map(|elapsed| elapsed.as_nanos())
         .unwrap_or_default();
     let name = env
         .file_name()
@@ -2672,8 +2709,9 @@ impl DatabaseStatus {
     pub(super) fn rejection(&self) -> Option<String> {
         let test = self.connection.as_ref()?;
         match &test.outcome {
+            // What happened and what it means for the project (T039.01, CA-1).
             ConnectionOutcome::AccessDenied => Some(
-                "O banco recusou o acesso deste projeto. Confira os dados de conexão em Detalhes."
+                "O banco recusou o acesso deste projeto, que não consegue usar o banco com estes dados. Confira os dados de conexão em Detalhes."
                     .into(),
             ),
             ConnectionOutcome::DatabaseMissing => Some(format!(
@@ -2742,11 +2780,7 @@ impl DatabaseStatus {
                 .map_or_else(|| "?".to_owned(), |port| port.to_string()),
         )];
         if let Some(test) = &self.connection {
-            let when = test
-                .at
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| relative_time(elapsed.as_secs()))
-                .unwrap_or_default();
+            let when = test_moment(test.at);
             let result = match &test.outcome {
                 ConnectionOutcome::Connected => "conectado".to_owned(),
                 ConnectionOutcome::AccessDenied => "acesso recusado pelo servidor".to_owned(),
@@ -2759,7 +2793,7 @@ impl DatabaseStatus {
                 ConnectionOutcome::Failed(message) => format!("falhou: {message}"),
             };
             lines.push(format!(
-                "Último teste ({when}) em {} com o usuário {} no banco {} · Resultado: {result}",
+                "Último teste: {when} · Endereço: {} · Usuário: {} · Banco: {} · Resultado: {result}",
                 test.target,
                 test.user.as_deref().unwrap_or("?"),
                 test.database.as_deref().unwrap_or("?"),
@@ -3459,6 +3493,14 @@ mod tests {
         // The copy holds the password: it stays out of the project's folder (T039.01).
         assert!(change.backup.starts_with(&copies));
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 2);
+        // Only the person can read it, from the start (macOS and Linux).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&copies), 0o700);
+            assert_eq!(mode(&change.backup), 0o600);
+        }
         assert_eq!(
             fs::read_to_string(&env).unwrap(),
             "DB_PORT=3307\nDB_PASSWORD=x\n"
