@@ -124,6 +124,8 @@ impl LocalCodePilot {
         }
         ui.add_space(4.0);
         page_section(ui, "Resumo");
+        // A project with a problem leads to the answer in the Help (T039.04, CA-11).
+        let mut help = false;
         let log_target = self.project_log_target(&project.path);
         let logs_label = log_target
             .as_deref()
@@ -141,6 +143,17 @@ impl LocalCodePilot {
         }
         if header.retest {
             self.retest_database(&project.path);
+        }
+        if summary.state == ProjectState::Problem {
+            let label = "Ajuda: o que fazer com um projeto com problema";
+            if announced(ui.link(label), egui::Role::Link, label).clicked() {
+                help = true;
+            }
+        }
+        if help {
+            let now = ui.input(|input| input.time);
+            self.open_help_for_problem(now);
+            return;
         }
 
         let uses_containers = project.technologies.contains(&TechnologyKind::Containers);

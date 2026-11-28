@@ -58,11 +58,16 @@ const INTRO: &str = "Encontre um projeto, confira seu estado e escolha a próxim
 
 const PROBLEMS: &str = "problemas";
 
+/// The answer for a project "Com problema", opened from the project's page.
+const PROJECT_PROBLEM: &str = "com-problema";
+
 /// Approved in T021: what happens when the configuration files cannot be read.
 const CONFIG_RECOVERY_HELP: &str = "Se não for possível ler seus projetos e configurações, o aplicativo preserva os arquivos. Quando existe uma cópia válida, restaura essa cópia automaticamente. Sem cópia válida, alguns dados podem estar ausentes; use Abrir pasta no aviso para encontrar os arquivos preservados. A descoberta de projetos não recupera favoritos, histórico, comandos personalizados nem confirmações.";
 
 /// Common situations, shown as buttons above the sections.
 const SHORTCUTS: &[(&str, Target)] = &[
+    // The first one is where a project's page leads (T039.04, CA-11).
+    ("Projeto com problema", Target::Block(PROJECT_PROBLEM)),
     ("O site não abre", Target::Block("site-nao-abre")),
     ("Porta ocupada", Target::Block("porta-ocupada")),
     ("Docker ou Podman parado", Target::Block("motor-parado")),
@@ -73,15 +78,16 @@ const SECTIONS: &[HelpSection] = &[
     HelpSection {
         id: "primeiros-passos",
         title: "Primeiros passos",
+        // Three short steps (T039.04, CA-11).
         blocks: &[
-            Block::Text(
-                "Em Projetos, confira as pastas examinadas. Use Adicionar pasta se faltar uma; use Atualizar para refazer a busca.",
+            Block::Item(
+                "1. Encontre o projeto",
+                "confira as pastas examinadas; use Adicionar pasta se faltar uma.",
             ),
-            Block::Text(
-                "Busque pelo nome ou filtre por Rodando, Com problema e Parados. No projeto escolhido, siga a ação exibida.",
-            ),
-            Block::Text(
-                "Antes de executar um comando deste projeto pela primeira vez, confira a pasta e o comando na confirmação. A confirmação volta se o comando efetivo mudar. Os arquivos do projeto podem mudar depois disso. Antes de confirmar uma ação do Compose, confira também o motor e os serviços afetados.",
+            Block::Item("2. Confira o estado", "busque pelo nome ou use um filtro."),
+            Block::Item(
+                "3. Escolha a ação",
+                "leia o motivo no projeto e confira a pasta, o comando e os serviços na confirmação antes de executar.",
             ),
         ],
         link: Some((Page::Projects, "Abrir Projetos")),
@@ -102,9 +108,12 @@ const SECTIONS: &[HelpSection] = &[
                 "Iniciando",
                 "o aplicativo está iniciando o projeto ou instalando dependências. Para projetos com containers, acompanhe o progresso em O que roda, na página do projeto.",
             ),
-            Block::Item(
-                "Com problema",
-                "uma instalação ou execução falhou, ou há um impedimento detectado. A linha do projeto mostra o motivo e a próxima ação. Em Detalhes técnicos, veja a regra e o que foi encontrado; use Ver logs quando precisar investigar a saída. Depois de resolver a causa, tente iniciar novamente. Para pedir suporte, use Exportar diagnóstico em Detalhes técnicos e confira o arquivo antes de compartilhá-lo.",
+            Block::Anchor(
+                PROJECT_PROBLEM,
+                &Block::Item(
+                    "Com problema",
+                    "uma instalação ou execução falhou, ou há um impedimento detectado. A linha do projeto mostra o motivo e a próxima ação. Em Detalhes técnicos, veja a regra e o que foi encontrado; use Ver logs quando precisar investigar a saída. Depois de resolver a causa, tente iniciar novamente. Para pedir suporte, use Exportar diagnóstico em Detalhes técnicos e confira o arquivo antes de compartilhá-lo.",
+                ),
             ),
             Block::Text("Ao lado do endereço, um selo mostra o resultado da verificação do site:"),
             Block::Item("Site respondendo", "o endereço respondeu à verificação."),
@@ -372,6 +381,15 @@ impl Default for HelpState {
             target: None,
             scroll_pending: false,
         }
+    }
+}
+
+impl LocalCodePilot {
+    /// "Ajuda: projeto com problema", from the page of a project with a problem: the Help
+    /// opens on that answer in one click (T039.04, CA-11).
+    pub(super) fn open_help_for_problem(&mut self, now: f64) {
+        self.help.go_to(Target::Block(PROJECT_PROBLEM), now);
+        self.page = Page::Help;
     }
 }
 
@@ -811,7 +829,8 @@ mod tests {
 
     #[test]
     fn every_shortcut_leads_to_an_existing_answer() {
-        assert!(SHORTCUTS.len() <= 4, "more shortcuts become noise");
+        // Five, with "Projeto com problema" (T039.04); more become noise.
+        assert!(SHORTCUTS.len() <= 5, "more shortcuts become noise");
         for (label, target) in SHORTCUTS {
             assert!(section_of(*target).is_some(), "{label} points nowhere");
         }

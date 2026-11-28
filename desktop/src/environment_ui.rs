@@ -116,6 +116,35 @@ impl LocalCodePilot {
                 .inner_margin(Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    // In a narrow window (zoom included) the action goes below the state, so
+                    // it never covers it (T039.04, CA-10).
+                    let narrow = ui.available_width() < 480.0;
+                    let mut actions = |ui: &mut egui::Ui| {
+                        if starting {
+                            ui.label("Ligando...");
+                            ui.spinner();
+                        } else if diagnosis.start.is_some() && state == "Parado" {
+                            let name = format!("Iniciar {engine}");
+                            let button = ui.add_enabled(
+                                !busy,
+                                egui::Button::new(
+                                    RichText::new(format!("{PLAY}  Iniciar"))
+                                        .color(Color32::WHITE)
+                                        .strong(),
+                                )
+                                .fill(theme::PRIMARY_FILL),
+                            );
+                            if announced(button, egui::Role::Button, &name).clicked() {
+                                start = Some(engine);
+                            }
+                        } else if state == "Com problema"
+                            && ui
+                                .add_enabled(!checking, egui::Button::new("Verificar de novo"))
+                                .clicked()
+                        {
+                            check = true;
+                        }
+                    };
                     ui.horizontal(|ui| {
                         ui.allocate_ui_with_layout(
                             egui::vec2(160.0, 24.0),
@@ -130,33 +159,13 @@ impl LocalCodePilot {
                             },
                         );
                         runtime_badge(ui, state, color);
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if starting {
-                                ui.label("Ligando...");
-                                ui.spinner();
-                            } else if diagnosis.start.is_some() && state == "Parado" {
-                                let name = format!("Iniciar {engine}");
-                                let button = ui.add_enabled(
-                                    !busy,
-                                    egui::Button::new(
-                                        RichText::new(format!("{PLAY}  Iniciar"))
-                                            .color(Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(theme::PRIMARY_FILL),
-                                );
-                                if announced(button, egui::Role::Button, &name).clicked() {
-                                    start = Some(engine);
-                                }
-                            } else if state == "Com problema"
-                                && ui
-                                    .add_enabled(!checking, egui::Button::new("Verificar de novo"))
-                                    .clicked()
-                            {
-                                check = true;
-                            }
-                        });
+                        if !narrow {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| actions(ui));
+                        }
                     });
+                    if narrow {
+                        ui.horizontal(|ui| actions(ui));
+                    }
                     if let Some(reason) = &reason {
                         ui.label(
                             RichText::new(reason)
