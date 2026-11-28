@@ -313,8 +313,12 @@ const SECTIONS: &[HelpSection] = &[
         title: "Detalhes técnicos",
         blocks: &[
             Block::Item(
+                "Página do projeto",
+                "clique no nome do projeto, na linha ou em Detalhes para abrir a página dele: Resumo (estado, motivo e a ação principal), O que roda (cada processo e container, com porta, Ver logs e Detalhes), Banco de dados, Logs e Detalhes técnicos. Projetos, no topo da página, volta à lista.",
+            ),
+            Block::Item(
                 "Detalhes técnicos do projeto",
-                "pasta, linguagens e de onde vieram (arquivos do projeto ou imagem do container), comandos detectados e, quando o projeto falha, o processo, o comando e o código de saída.",
+                "no fim da página do projeto: pasta, linguagens e de onde vieram (arquivos do projeto ou imagem do container), comandos detectados e, quando o projeto falha, o processo, o comando e o código de saída.",
             ),
             Block::Item(
                 "Linguagens neste computador",

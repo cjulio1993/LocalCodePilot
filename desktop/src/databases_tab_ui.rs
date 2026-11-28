@@ -298,8 +298,8 @@ impl LocalCodePilot {
         if let Some((path, requirement)) = test {
             self.test_remote_requirement(&path, requirement);
         }
-        if let Some((path, name)) = open {
-            self.apply_project_action(ui.ctx(), ProjectCardAction::ShowInProjects(path, name));
+        if let Some((path, _)) = open {
+            self.apply_project_action(ui.ctx(), ProjectCardAction::OpenProject(path));
         }
     }
 }
