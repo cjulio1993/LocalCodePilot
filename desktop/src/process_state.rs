@@ -63,16 +63,51 @@ impl ManagedProcesses {
         })
     }
 
+    /// A process the app started for this project runs or is starting. It guards
+    /// "Parar o banco de dados": the server of a project that runs is never offered to stop.
     pub(super) fn project_is_running(&self, project_path: &Path) -> bool {
-        project_process_ids(&self.processes, project_path, false)
-            .iter()
-            .filter_map(|id| self.processes.iter().find(|process| process.id == *id))
-            .any(|process| {
-                matches!(
-                    process.state,
-                    ProcessState::Running | ProcessState::Starting
-                )
-            })
+        !project_process_ids(&self.processes, project_path, true).is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process(project: &str, state: ProcessState) -> ProjectProcess {
+        ProjectProcess {
+            id: format!("{project}::start"),
+            project_name: project.into(),
+            project_path: PathBuf::from(project),
+            working_directory: PathBuf::from(project),
+            name: "start".into(),
+            program: "node".into(),
+            args: vec![],
+            state,
+            process_id: None,
+            exit_code: None,
+            expected_port: None,
+            port_override: None,
+            prepare: vec![],
+        }
+    }
+
+    #[test]
+    fn a_project_runs_while_one_of_its_processes_runs_or_starts() {
+        let managed = ManagedProcesses {
+            processes: vec![
+                process("loja-a", ProcessState::Running),
+                process("loja-b", ProcessState::Starting),
+                process("loja-c", ProcessState::Stopped),
+                process("loja-d", ProcessState::Failed),
+            ],
+            ..ManagedProcesses::default()
+        };
+        assert!(managed.project_is_running(Path::new("loja-a")));
+        assert!(managed.project_is_running(Path::new("loja-b")));
+        assert!(!managed.project_is_running(Path::new("loja-c")));
+        assert!(!managed.project_is_running(Path::new("loja-d")));
+        assert!(!managed.project_is_running(Path::new("outro")));
     }
 }
 

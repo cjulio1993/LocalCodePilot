@@ -54,7 +54,14 @@ impl LocalCodePilot {
         parts.push(match (total, problems, unverified) {
             (0, _, _) => "Bancos: nenhum".to_owned(),
             (_, 0, 0) => format!("Bancos: {total}, sem problema encontrado"),
-            _ => format!("Bancos: {problems} com problema, {unverified} não verificados"),
+            _ => format!(
+                "Bancos: {problems} com problema, {unverified} {}",
+                if unverified == 1 {
+                    "não verificado"
+                } else {
+                    "não verificados"
+                }
+            ),
         });
         parts.push(format!(
             "Outros containers: {}",
